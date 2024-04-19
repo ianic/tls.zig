@@ -290,10 +290,9 @@ const ServerCertificate = struct {
 // }
 
 test "client key exchange generation" {
-    const sha256 = std.crypto.auth.hmac.sha2.HmacSha256.create;
-    const sha1 = std.crypto.auth.hmac.HmacSha1.create;
-    //const sha256 = std.crypto.auth.hmac.HmacSha1.create;
     const bytesToHex = std.fmt.bytesToHex;
+    const Sha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    const CipherT = std.crypto.tls.ApplicationCipherT(cbc.CBCAes128, std.crypto.hash.Sha1);
 
     var client_private_key: [32]u8 = undefined;
     var server_random: [32]u8 = undefined;
@@ -331,8 +330,8 @@ test "client key exchange generation" {
 
         var a1: [32]u8 = undefined;
         var a2: [32]u8 = undefined;
-        sha256(&a1, &a_seed, &pre_master_secret);
-        sha256(&a2, &a1, &pre_master_secret);
+        Sha256.create(&a1, &a_seed, &pre_master_secret);
+        Sha256.create(&a2, &a1, &pre_master_secret);
 
         var p_seed: [a_seed.len + 32]u8 = undefined;
         @memcpy(p_seed[0..a1.len], &a1);
@@ -340,11 +339,11 @@ test "client key exchange generation" {
 
         var p1: [32]u8 = undefined;
         var p2: [32]u8 = undefined;
-        sha256(&p1, &p_seed, &pre_master_secret);
+        Sha256.create(&p1, &p_seed, &pre_master_secret);
 
         @memcpy(p_seed[0..a1.len], &a2);
         @memcpy(p_seed[a1.len..], &a_seed);
-        sha256(&p2, &p_seed, &pre_master_secret);
+        Sha256.create(&p2, &p_seed, &pre_master_secret);
 
         @memcpy(master_secret[0..32], &p1);
         @memcpy(master_secret[32..], p2[0..16]);
@@ -355,7 +354,7 @@ test "client key exchange generation" {
         );
     }
 
-    var cipher: std.crypto.tls.ApplicationCipherT(cbc.CBCAes128, std.crypto.hash.Sha1) = undefined;
+    var cipher: CipherT = undefined;
     { // final encryption keys
         const prefix = "key expansion";
         var a_seed: [prefix.len + 32 * 2]u8 = undefined;
@@ -368,10 +367,10 @@ test "client key exchange generation" {
         var a2: [32]u8 = undefined;
         var a3: [32]u8 = undefined;
         var a4: [32]u8 = undefined;
-        sha256(&a1, &a0, &master_secret);
-        sha256(&a2, &a1, &master_secret);
-        sha256(&a3, &a2, &master_secret);
-        sha256(&a4, &a3, &master_secret);
+        Sha256.create(&a1, &a0, &master_secret);
+        Sha256.create(&a2, &a1, &master_secret);
+        Sha256.create(&a3, &a2, &master_secret);
+        Sha256.create(&a4, &a3, &master_secret);
 
         var p1: [32]u8 = undefined;
         var p2: [32]u8 = undefined;
@@ -381,13 +380,13 @@ test "client key exchange generation" {
         var p_seed: [a_seed.len + 32]u8 = undefined;
         @memcpy(p_seed[32..], &a_seed);
         @memcpy(p_seed[0..32], &a1);
-        sha256(&p1, &p_seed, &master_secret);
+        Sha256.create(&p1, &p_seed, &master_secret);
         @memcpy(p_seed[0..32], &a2);
-        sha256(&p2, &p_seed, &master_secret);
+        Sha256.create(&p2, &p_seed, &master_secret);
         @memcpy(p_seed[0..32], &a3);
-        sha256(&p3, &p_seed, &master_secret);
+        Sha256.create(&p3, &p_seed, &master_secret);
         @memcpy(p_seed[0..32], &a4);
-        sha256(&p4, &p_seed, &master_secret);
+        Sha256.create(&p4, &p_seed, &master_secret);
 
         var p: [32 * 4]u8 = undefined;
         @memcpy(p[0..32], &p1);
@@ -419,11 +418,17 @@ test "client key exchange generation" {
         };
     }
 
+    const mac_length = CipherT.Hash.digest_length;
+
     var buf: [1024 * 16 + 1024]u8 = undefined;
-    var sequence: u64 = 0;
-    {
-        sequence = 1;
-        const data = "ping";
+    const sequence: u64 = 1;
+    const nonce = [_]u8{
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    };
+    const data = "ping";
+
+    // encrypt data
+    const ciphertext = brk: {
         const rechdr = [_]u8{ 0x17, 0x03, 0x03 };
 
         std.mem.writeInt(u64, buf[0..8], sequence, .big);
@@ -432,58 +437,39 @@ test "client key exchange generation" {
         @memcpy(buf[13..][0..data.len], data);
         const mac_buf = buf[0 .. 13 + data.len];
 
-        var mac: [20]u8 = undefined;
-        sha1(&mac, mac_buf, &cipher.client_secret);
+        var mac: [mac_length]u8 = undefined;
+        CipherT.Hmac.create(&mac, mac_buf, &cipher.client_secret);
 
         @memcpy(buf[0..data.len], data);
         @memcpy(buf[data.len..][0..mac.len], &mac);
 
         const unpadded_len = data.len + mac.len;
-        const padded_len = cbc.CBCAes128.paddedLength(unpadded_len);
-        @memset(buf[unpadded_len..padded_len], @intCast(padded_len - unpadded_len - 1));
+        const padded_len = CipherT.AEAD.paddedLength(unpadded_len);
+        const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
+        @memset(buf[unpadded_len..padded_len], padding_byte);
         const cleartext = buf[0..padded_len];
 
-        std.debug.print("mac_buf\n {x}\n{x}\n{x}", .{ mac_buf, mac, buf[0..padded_len] });
-
-        // var ciphertext: [4]u8 = undefined;
-        // var auth_tag: [AEAD.tag_length]u8 = undefined;
-        // var ad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x30 };
-        const nonce = [_]u8{
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        };
-
-        // AEAD.encrypt(
-        //     &ciphertext,
-        //     &auth_tag,
-        //     cleartext,
-        //     &ad,
-        //     //cipher.client_iv,
-        //     nonce[0..12].*,
-        //     cipher.client_key,
-        // );
-        // std.debug.print("cipertext: {x} {x}\n", .{ ciphertext, auth_tag });
-        // const cleartext2 = [_]u8{
-        //     0x70, 0x69, 0x6e, 0x67, 0x60, 0x10, 0x12, 0x49, 0xf7, 0x4a, 0x03, 0x77, 0xc9, 0xca, 0xcf, 0x63,
-        //     0x09, 0x75, 0x13, 0x70, 0xd8, 0x0c, 0xfc, 0xaa, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
-        // };
-
-        const z = cbc.CBCAes128.init(cipher.client_key);
-        //var dst = [_]u8{0} ** cbc.CBCAes128.paddedLength(cleartext.len);
-        const ciphertext = buf[0..cbc.CBCAes128.paddedLength(cleartext.len)];
+        const z = CipherT.AEAD.init(cipher.client_key);
+        const ciphertext = buf[0..CipherT.AEAD.paddedLength(cleartext.len)];
         z.encrypt(ciphertext, cleartext, nonce);
 
-        std.debug.print("dst:\n{x} \n", .{ciphertext});
+        const expected_cipertext = [_]u8{
+            0x6c, 0x42, 0x1c, 0x71, 0xc4, 0x2b, 0x18, 0x3b, 0xfa, 0x06, 0x19, 0x5d, 0x13, 0x3d, 0x0a, 0x09,
+            0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1, 0x47, 0xec, 0x79, 0x0c, 0x99,
+            0xC9, 0x05, 0x85, 0x2B, 0xBD, 0x68, 0x7C, 0xCF, 0xC8, 0xD4, 0xD1, 0x2C, 0xFA, 0x54, 0xA4, 0x38,
+        };
+        try testing.expectEqualSlices(u8, &expected_cipertext, ciphertext);
+        break :brk ciphertext;
+    };
 
-        std.debug.print("ciphertext.len: {d} {d} {d} {d}\n", .{
-            cleartext.len,
-            ciphertext.len,
-            cbc.CBCAes128.unpaddedLength(ciphertext.len),
-            cbc.CBCAes128.paddedLength(cbc.CBCAes128.unpaddedLength(ciphertext.len)),
-        });
-
-        const decrypted = buf[0..cbc.CBCAes128.unpaddedLength(ciphertext.len)];
+    // decrypt
+    {
+        const z = CipherT.AEAD.init(cipher.client_key);
+        const decrypted = buf[0..CipherT.AEAD.unpaddedLength(ciphertext.len)];
         try z.decrypt(decrypted, ciphertext, nonce);
+        const padding_len = decrypted[decrypted.len - 1] + 1;
+        const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
 
-        std.debug.print("decrypted:\n{x} \n", .{decrypted});
+        try testing.expectEqualSlices(u8, data, cleartext);
     }
 }
