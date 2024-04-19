@@ -1,6 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const testing = std.testing;
+const cbc = @import("cbc.zig");
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -290,6 +291,7 @@ const ServerCertificate = struct {
 
 test "client key exchange generation" {
     const sha256 = std.crypto.auth.hmac.sha2.HmacSha256.create;
+    //const sha256 = std.crypto.auth.hmac.HmacSha1.create;
     const bytesToHex = std.fmt.bytesToHex;
 
     var client_private_key: [32]u8 = undefined;
@@ -352,6 +354,7 @@ test "client key exchange generation" {
         );
     }
 
+    var cipher: std.crypto.tls.ApplicationCipherT(cbc.CBCAes128, std.crypto.hash.Sha1) = undefined;
     { // final encryption keys
         const prefix = "key expansion";
         var a_seed: [prefix.len + 32 * 2]u8 = undefined;
@@ -391,18 +394,63 @@ test "client key exchange generation" {
         @memcpy(p[64..96], &p3);
         @memcpy(p[96..], &p4);
 
-        const client_write_mac_key = p[0..20];
-        const server_write_mac_key = p[20..40];
-        const client_write_key = p[40..56];
-        const server_write_key = p[56..72];
-        const client_write_iv = p[72..88];
-        const server_write_iv = p[88..104];
+        const client_secret = p[0..20];
+        const server_secret = p[20..40];
+        const client_key = p[40..56];
+        const server_key = p[56..72];
+        const client_iv = p[72..88];
+        const server_iv = p[88..104];
 
-        try testing.expectEqualStrings("1b7d117c7d5f690bc263cae8ef60af0f1878acc2", &bytesToHex(client_write_mac_key, .lower));
-        try testing.expectEqualStrings("2ad8bdd8c601a617126f63540eb20906f781fad2", &bytesToHex(server_write_mac_key, .lower));
-        try testing.expectEqualStrings("f656d037b173ef3e11169f27231a84b6", &bytesToHex(client_write_key, .lower));
-        try testing.expectEqualStrings("752a18e7a9fcb7cbcdd8f98dd8f769eb", &bytesToHex(server_write_key, .lower));
-        try testing.expectEqualStrings("a0d2550c9238eebfef5c32251abb67d6", &bytesToHex(client_write_iv, .lower));
-        try testing.expectEqualStrings("434528db4937d540d393135e06a11bb8", &bytesToHex(server_write_iv, .lower));
+        try testing.expectEqualStrings("1b7d117c7d5f690bc263cae8ef60af0f1878acc2", &bytesToHex(client_secret, .lower));
+        try testing.expectEqualStrings("2ad8bdd8c601a617126f63540eb20906f781fad2", &bytesToHex(server_secret, .lower));
+        try testing.expectEqualStrings("f656d037b173ef3e11169f27231a84b6", &bytesToHex(client_key, .lower));
+        try testing.expectEqualStrings("752a18e7a9fcb7cbcdd8f98dd8f769eb", &bytesToHex(server_key, .lower));
+        try testing.expectEqualStrings("a0d2550c9238eebfef5c32251abb67d6", &bytesToHex(client_iv, .lower));
+        try testing.expectEqualStrings("434528db4937d540d393135e06a11bb8", &bytesToHex(server_iv, .lower));
+
+        cipher = .{
+            .client_secret = p[0..20].*,
+            .server_secret = p[20..40].*,
+            .client_key = p[40..56].*,
+            .server_key = p[56..72].*,
+            .client_iv = p[72..88].*,
+            .server_iv = p[88..104].*,
+        };
+    }
+
+    {
+        //const cleartext = "ping";
+        // var ciphertext: [4]u8 = undefined;
+        // var auth_tag: [AEAD.tag_length]u8 = undefined;
+        // var ad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x30 };
+        const nonce = [_]u8{
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        };
+
+        // AEAD.encrypt(
+        //     &ciphertext,
+        //     &auth_tag,
+        //     cleartext,
+        //     &ad,
+        //     //cipher.client_iv,
+        //     nonce[0..12].*,
+        //     cipher.client_key,
+        // );
+        // std.debug.print("cipertext: {x} {x}\n", .{ ciphertext, auth_tag });
+        const cleartext = [_]u8{
+            0x70, 0x69, 0x6e, 0x67, 0x60, 0x10, 0x12, 0x49, 0xf7, 0x4a, 0x03, 0x77, 0xc9, 0xca, 0xcf, 0x63,
+            0x09, 0x75, 0x13, 0x70, 0xd8, 0x0c, 0xfc, 0xaa, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        };
+
+        const z = cbc.CBCAes128.init(cipher.client_key);
+        var dst = [_]u8{0} ** cbc.CBCAes128.paddedLength(cleartext.len);
+        z.encrypt(&dst, &cleartext, nonce);
+
+        std.debug.print("dst:\n{x} \n", .{dst});
+
+        var decrypted = [_]u8{0} ** cleartext.len;
+        try z.decrypt(&decrypted, &dst, nonce);
+
+        std.debug.print("decrypted:\n{x} \n", .{decrypted});
     }
 }
