@@ -291,6 +291,7 @@ const ServerCertificate = struct {
 
 test "client key exchange generation" {
     const sha256 = std.crypto.auth.hmac.sha2.HmacSha256.create;
+    const sha1 = std.crypto.auth.hmac.HmacSha1.create;
     //const sha256 = std.crypto.auth.hmac.HmacSha1.create;
     const bytesToHex = std.fmt.bytesToHex;
 
@@ -418,8 +419,32 @@ test "client key exchange generation" {
         };
     }
 
+    var buf: [1024 * 16 + 1024]u8 = undefined;
+    var sequence: u64 = 0;
     {
-        //const cleartext = "ping";
+        sequence = 1;
+        const data = "ping";
+        const rechdr = [_]u8{ 0x17, 0x03, 0x03 };
+
+        std.mem.writeInt(u64, buf[0..8], sequence, .big);
+        @memcpy(buf[8..][0..3], &rechdr);
+        std.mem.writeInt(u16, buf[11..][0..2], @intCast(data.len), .big);
+        @memcpy(buf[13..][0..data.len], data);
+        const mac_buf = buf[0 .. 13 + data.len];
+
+        var mac: [20]u8 = undefined;
+        sha1(&mac, mac_buf, &cipher.client_secret);
+
+        @memcpy(buf[0..data.len], data);
+        @memcpy(buf[data.len..][0..mac.len], &mac);
+
+        const unpadded_len = data.len + mac.len;
+        const padded_len = cbc.CBCAes128.paddedLength(unpadded_len);
+        @memset(buf[unpadded_len..padded_len], @intCast(padded_len - unpadded_len - 1));
+        const cleartext = buf[0..padded_len];
+
+        std.debug.print("mac_buf\n {x}\n{x}\n{x}", .{ mac_buf, mac, buf[0..padded_len] });
+
         // var ciphertext: [4]u8 = undefined;
         // var auth_tag: [AEAD.tag_length]u8 = undefined;
         // var ad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x30 };
@@ -437,19 +462,27 @@ test "client key exchange generation" {
         //     cipher.client_key,
         // );
         // std.debug.print("cipertext: {x} {x}\n", .{ ciphertext, auth_tag });
-        const cleartext = [_]u8{
-            0x70, 0x69, 0x6e, 0x67, 0x60, 0x10, 0x12, 0x49, 0xf7, 0x4a, 0x03, 0x77, 0xc9, 0xca, 0xcf, 0x63,
-            0x09, 0x75, 0x13, 0x70, 0xd8, 0x0c, 0xfc, 0xaa, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
-        };
+        // const cleartext2 = [_]u8{
+        //     0x70, 0x69, 0x6e, 0x67, 0x60, 0x10, 0x12, 0x49, 0xf7, 0x4a, 0x03, 0x77, 0xc9, 0xca, 0xcf, 0x63,
+        //     0x09, 0x75, 0x13, 0x70, 0xd8, 0x0c, 0xfc, 0xaa, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+        // };
 
         const z = cbc.CBCAes128.init(cipher.client_key);
-        var dst = [_]u8{0} ** cbc.CBCAes128.paddedLength(cleartext.len);
-        z.encrypt(&dst, &cleartext, nonce);
+        //var dst = [_]u8{0} ** cbc.CBCAes128.paddedLength(cleartext.len);
+        const ciphertext = buf[0..cbc.CBCAes128.paddedLength(cleartext.len)];
+        z.encrypt(ciphertext, cleartext, nonce);
 
-        std.debug.print("dst:\n{x} \n", .{dst});
+        std.debug.print("dst:\n{x} \n", .{ciphertext});
 
-        var decrypted = [_]u8{0} ** cleartext.len;
-        try z.decrypt(&decrypted, &dst, nonce);
+        std.debug.print("ciphertext.len: {d} {d} {d} {d}\n", .{
+            cleartext.len,
+            ciphertext.len,
+            cbc.CBCAes128.unpaddedLength(ciphertext.len),
+            cbc.CBCAes128.paddedLength(cbc.CBCAes128.unpaddedLength(ciphertext.len)),
+        });
+
+        const decrypted = buf[0..cbc.CBCAes128.unpaddedLength(ciphertext.len)];
+        try z.decrypt(decrypted, ciphertext, nonce);
 
         std.debug.print("decrypted:\n{x} \n", .{decrypted});
     }

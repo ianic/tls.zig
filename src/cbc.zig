@@ -37,6 +37,10 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             return (std.math.divCeil(usize, length + 1, EncryptCtx.block_length) catch unreachable) * EncryptCtx.block_length;
         }
 
+        pub fn unpaddedLength(length: usize) usize {
+            return length - EncryptCtx.block_length;
+        }
+
         /// Encrypt the given plaintext for the given IV.
         /// The destination buffer must be large enough to hold the padded plaintext.
         /// Use the `paddedLength()` function to compute the ciphertext size.
