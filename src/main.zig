@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 const testing = std.testing;
 const cbc = @import("cbc.zig");
+const client = @import("client.zig").client;
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -10,15 +11,18 @@ pub fn main() !void {
 
     const url = "https://google.com";
     const uri = try std.Uri.parse(url);
+    const host = uri.host.?.percent_encoded;
 
-    var tcp = try std.net.tcpConnectToHost(gpa, uri.host.?.percent_encoded, 443);
+    var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
 
-    try tcp.writeAll(&client_hello);
+    //try tcp.writeAll(&client_hello);
+
+    var cli = client(tcp);
+    try cli.hello(host);
 
     var file = try std.fs.cwd().createFile("server_hello", .{});
     defer file.close();
-
     var buf: [4096]u8 = undefined;
     while (true) {
         const n = try tcp.readAll(&buf);
