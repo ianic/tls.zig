@@ -8,6 +8,26 @@ const int3 = tls.int3;
 const array = tls.array;
 const enum_array = tls.enum_array;
 
+const Sha1 = std.crypto.hash.Sha1;
+
+// tls.HandshakeType is missing server_key_exchange, server_hello_done
+pub const HandshakeType = enum(u8) {
+    client_hello = 1,
+    server_hello = 2,
+    new_session_ticket = 4,
+    end_of_early_data = 5,
+    encrypted_extensions = 8,
+    certificate = 11,
+    server_key_exchange = 12,
+    certificate_request = 13,
+    server_hello_done = 14,
+    certificate_verify = 15,
+    finished = 20,
+    key_update = 24,
+    message_hash = 254,
+    _,
+};
+
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{ .stream = stream };
 }
@@ -18,6 +38,184 @@ pub fn Client(comptime StreamType: type) type {
         buffer: [tls.max_ciphertext_record_len]u8 = undefined,
 
         const Self = @This();
+
+        const Handshake = struct {
+            stream: StreamType,
+            buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+
+            hash: Sha1 = Sha1.init(.{}),
+            client_random: [32]u8 = undefined,
+            server_random: [32]u8 = undefined,
+            server_public_key: [32]u8 = undefined,
+
+            fn init(stream: StreamType) Handshake {
+                var h: Handshake = .{ .stream = stream };
+                crypto.random.bytes(&h.client_random);
+                return h;
+            }
+
+            fn clientHello(h: *Handshake, host: []const u8) !void {
+                const host_len: u16 = @intCast(host.len);
+
+                const no_compression = [_]u8{ 0x01, 0x00 };
+                const no_session_id = [_]u8{0x00};
+                const cipher_suites = [_]u8{
+                    0x00, 0x02, // 2 bytes of cipher suite data follows
+                    0xc0, 0x13, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
+                };
+
+                const extensions_payload =
+                    tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
+                    .ecdsa_secp256r1_sha256,
+                    .ecdsa_secp384r1_sha384,
+                    .rsa_pss_rsae_sha256,
+                    .rsa_pss_rsae_sha384,
+                    .rsa_pss_rsae_sha512,
+                    .ed25519,
+                })) ++ tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
+                    .x25519,
+                })) ++
+                    int2(@intFromEnum(tls.ExtensionType.server_name)) ++
+                    int2(host_len + 5) ++ // byte length of this extension payload
+                    int2(host_len + 3) ++ // server_name_list byte count
+                    [1]u8{0x00} ++ // name_type
+                    int2(host_len);
+
+                const extensions_header =
+                    int2(@intCast(extensions_payload.len + host_len)) ++
+                    extensions_payload;
+
+                const client_hello =
+                    int2(@intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
+                    h.client_random ++
+                    no_session_id ++
+                    cipher_suites ++
+                    no_compression ++
+                    extensions_header;
+
+                const out_handshake =
+                    [_]u8{@intFromEnum(tls.HandshakeType.client_hello)} ++
+                    int3(@intCast(client_hello.len + host_len)) ++
+                    client_hello;
+
+                const plaintext_header = [_]u8{
+                    @intFromEnum(tls.ContentType.handshake),
+                    0x03, 0x01, // legacy protocol version
+                } ++ int2(@intCast(out_handshake.len + host_len)) ++ out_handshake;
+
+                {
+                    var iovecs = [_]std.posix.iovec_const{
+                        .{
+                            .iov_base = &plaintext_header,
+                            .iov_len = plaintext_header.len,
+                        },
+                        .{
+                            .iov_base = host.ptr,
+                            .iov_len = host.len,
+                        },
+                    };
+                    try h.stream.writevAll(&iovecs);
+
+                    h.hash.update(plaintext_header[5..]);
+                    h.hash.update(host);
+                }
+            }
+
+            // read server hello, certificate, exchange, done
+            fn serverHello(h: *Handshake) !void {
+                var rd: tls.Decoder = .{ .buf = &h.buffer }; // record decoder
+                var handshake_state = HandshakeType.server_hello;
+                while (true) {
+                    try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
+                    const content_type = rd.decode(tls.ContentType);
+                    const protocol_version = rd.decode(tls.ProtocolVersion);
+                    const record_len = rd.decode(u16);
+                    if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
+
+                    try rd.readAtLeast(h.stream, record_len);
+                    var hd = try rd.sub(record_len); // header decoder
+
+                    switch (content_type) {
+                        tls.ContentType.handshake => {
+                            try hd.ensure(4);
+                            const handshake_type = hd.decode(HandshakeType);
+                            if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
+                            const length = hd.decode(u24);
+                            var hsd = try hd.sub(length); // handshake decoder
+                            h.hash.update(hsd.rest());
+
+                            switch (handshake_type) {
+                                .server_hello => { // server hello
+                                    try hsd.ensure(2 + 32 + 1);
+                                    if (hsd.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
+                                    h.server_random = hsd.array(32).*;
+                                    const session_id_len = hsd.decode(u8);
+
+                                    if (session_id_len > 32) return error.TlsIllegalParameter;
+                                    try hsd.ensure(session_id_len);
+                                    hsd.skip(session_id_len);
+
+                                    try hsd.ensure(2 + 1);
+                                    const cipher_suite = hsd.decode(u16);
+                                    if (cipher_suite != 0xc013) return error.TlsIllegalParameter; // the only one we support
+                                    hsd.skip(1); // skip compression method
+
+                                    if (!hsd.eof()) { // TODO is this because we didn't send any extension
+                                        try hsd.ensure(2);
+                                        const extensions_size = hsd.decode(u16);
+                                        try hsd.ensure(extensions_size);
+                                        hsd.skip(extensions_size);
+                                    }
+                                    handshake_state = .certificate;
+                                },
+                                .certificate => {
+                                    try hsd.ensure(3);
+                                    const certs_len = hsd.decode(u24);
+                                    try hsd.ensure(certs_len);
+
+                                    var l: usize = 0;
+                                    while (l < certs_len) {
+                                        const cert_len = hsd.decode(u24);
+                                        try hsd.ensure(cert_len);
+                                        const cert = hsd.slice(cert_len);
+                                        _ = cert; // TODO: check certificate
+                                        l += cert_len + 3;
+                                    }
+                                    handshake_state = .server_key_exchange;
+                                },
+                                .server_key_exchange => {
+                                    try hsd.ensure(1 + 2 + 1);
+                                    const named_curve = hsd.decode(u8);
+                                    const curve = hsd.decode(u16);
+                                    const key_len = hsd.decode(u8);
+                                    if (named_curve != 0x03 or curve != 0x001d or key_len != 0x20)
+                                        return error.TlsIllegalParameter;
+                                    try hsd.ensure(32 + 2 + 2);
+                                    h.server_public_key = hsd.array(32).*;
+
+                                    const rsa_signature = hsd.decode(u16);
+                                    const signature_len = hsd.decode(u16);
+                                    _ = rsa_signature; // TODO what to expect here
+
+                                    if (signature_len != 0x0100)
+                                        return error.TlsIllegalParameter;
+                                    try hsd.ensure(signature_len);
+                                    hsd.skip(signature_len);
+                                    // TODO: how to check signature
+                                    handshake_state = .server_hello_done;
+                                },
+                                .server_hello_done => {
+                                    if (length != 0) return error.TlsIllegalParameter;
+                                    return;
+                                },
+                                else => return error.TlsUnexpectedMessage,
+                            }
+                        },
+                        else => return error.TlsUnexpectedMessage,
+                    }
+                }
+            }
+        };
 
         pub fn clientHello(c: *Self, host: []const u8) ![32]u8 {
             const host_len: u16 = @intCast(host.len);
@@ -190,32 +388,86 @@ pub fn Client(comptime StreamType: type) type {
 const testing = std.testing;
 const bytesToHex = std.fmt.bytesToHex;
 
-test "google reply" {
+test "Handshake.clientHello" {
+    var stream = TestStream{ .buffer = undefined };
+    defer stream.deinit();
+    var h: Client(*TestStream).Handshake = .{
+        .stream = &stream,
+        .client_random = [32]u8{
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        },
+    };
+    try testing.expectEqualStrings(
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+        &bytesToHex(h.hash.peek(), .lower),
+    );
+    const host = "www.example.com";
+    try h.clientHello(host);
+    try testing.expectEqualStrings(
+        "addf49808baa2c4b329898b857b903521be9370d",
+        &bytesToHex(h.hash.peek(), .lower),
+    );
+
+    try testing.expectEqualSlices(u8, &[_]u8{
+        0x16, 0x03, 0x01, 0x00, 0x61, 0x01, 0x00, 0x00, 0x5d, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+        0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x00, 0x00, 0x02, 0xc0, 0x13,
+        0x01, 0x00, 0x00, 0x32, 0x00, 0x0d, 0x00, 0x0e, 0x00, 0x0c, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04,
+        0x08, 0x05, 0x08, 0x06, 0x08, 0x07, 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d, 0x00, 0x00,
+        0x00, 0x14, 0x00, 0x12, 0x00, 0x00, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70,
+        0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
+    }, stream.output.items);
+    try testing.expectEqualStrings(host, stream.output.items[stream.output.items.len - host.len ..]);
+}
+
+test "Handshake.serverHello" {
     var stream = TestStream{ .buffer = @embedFile("testdata/google_server_hello") };
-    var cli = client(&stream);
-    const ret = try cli.serverHello();
+    defer stream.deinit();
+    var h: Client(*TestStream).Handshake = .{
+        .stream = &stream,
+        .client_random = [_]u8{0} ** 32,
+        .server_random = [_]u8{0} ** 32,
+        .server_public_key = [_]u8{0} ** 32,
+    };
+    try h.serverHello();
     try testing.expectEqualStrings(
         "6622823581e433946fff2062e69693714c8e65562778f552444f574e47524401",
-        &bytesToHex(ret.random, .lower),
+        &bytesToHex(h.server_random, .lower),
     );
     try testing.expectEqualStrings(
         "4da89f50a309ddbe6761f99e2fa54e3e5c0e097245703d74debd15c9a2ef6d5f",
-        &bytesToHex(ret.public_key, .lower),
+        &bytesToHex(h.server_public_key, .lower),
+    );
+    // unchanged in serverHello
+    try testing.expectEqualStrings(
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        &bytesToHex(h.client_random, .lower),
+    );
+    try testing.expectEqualStrings(
+        "ebae7b885ad10b9921d7c3ddc5fe974753c40825",
+        &bytesToHex(h.hash.peek(), .lower),
     );
 }
 
 // example from: https://tls12.xargs.org/#server-hello-done
 test "illustrated example" {
     var stream = TestStream{ .buffer = &(server_hello ++ server_certificate ++ server_key_exchange ++ server_hello_done) };
-    var cli = client(&stream);
-    const ret = try cli.serverHello();
+    defer stream.deinit();
+    var h: Client(*TestStream).Handshake = .{
+        .stream = &stream,
+        .client_random = [_]u8{0} ** 32,
+        .server_random = [_]u8{0} ** 32,
+        .server_public_key = [_]u8{0} ** 32,
+    };
+    try h.serverHello();
     try testing.expectEqualStrings(
         "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-        &bytesToHex(ret.random, .lower),
+        &bytesToHex(h.server_random, .lower),
     );
     try testing.expectEqualStrings(
         "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
-        &bytesToHex(ret.public_key, .lower),
+        &bytesToHex(h.server_public_key, .lower),
     );
 }
 
@@ -223,10 +475,18 @@ const TestStream = struct {
     buffer: []const u8,
     pos: usize = 0,
 
+    output: std.ArrayList(u8) = std.ArrayList(u8).init(testing.allocator),
+
     const Self = @This();
 
     pub fn writevAll(self: *Self, iovecs: []posix.iovec_const) !void {
-        _ = .{ self, iovecs };
+        for (iovecs) |iovec| {
+            var buf: []const u8 = undefined;
+            buf.ptr = iovec.iov_base;
+            buf.len = iovec.iov_len;
+
+            try self.output.appendSlice(buf);
+        }
     }
 
     pub fn readAtLeast(self: *Self, buffer: []u8, len: usize) !usize {
@@ -234,6 +494,10 @@ const TestStream = struct {
         @memcpy(buffer[0..n], self.buffer[self.pos..][0..n]);
         self.pos += n;
         return n;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.output.deinit();
     }
 };
 
@@ -322,3 +586,13 @@ const server_key_exchange = [_]u8{
 const server_hello_done = [_]u8{
     0x16, 0x03, 0x03, 0x00, 0x04, 0x0e, 0x00, 0x00, 0x00,
 };
+
+fn bufPrint(buf: []const u8) void {
+    std.debug.print("\n", .{});
+    for (buf, 1..) |b, i| {
+        std.debug.print("0x{x:0>2}, ", .{b});
+        if (i % 16 == 0)
+            std.debug.print("\n", .{});
+    }
+    std.debug.print("\n", .{});
+}
