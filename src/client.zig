@@ -9,6 +9,10 @@ const array = tls.array;
 const enum_array = tls.enum_array;
 
 const Sha1 = std.crypto.hash.Sha1;
+const Sha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+const X25519 = std.crypto.dh.X25519;
+
+const CipherType = std.crypto.tls.ApplicationCipherT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
 
 // tls.HandshakeType is missing server_key_exchange, server_hello_done
 pub const HandshakeType = enum(u8) {
@@ -44,16 +48,27 @@ pub fn Client(comptime StreamType: type) type {
             buffer: [tls.max_ciphertext_record_len]u8 = undefined,
 
             hash: Sha1 = Sha1.init(.{}),
+            client_public_key: [32]u8 = undefined,
+            client_private_key: [32]u8 = undefined,
             client_random: [32]u8 = undefined,
             server_random: [32]u8 = undefined,
             server_public_key: [32]u8 = undefined,
+            master_secret: [32 + 16]u8 = undefined,
+            cipher: CipherType = undefined,
 
-            fn init(stream: StreamType) Handshake {
-                var h: Handshake = .{ .stream = stream };
-                crypto.random.bytes(&h.client_random);
-                return h;
+            fn init(stream: StreamType) !Handshake {
+                const kp = try X25519.KeyPair.create(null);
+                var rnd: [32]u8 = undefined;
+                crypto.random.bytes(&rnd);
+                return .{
+                    .stream = stream,
+                    .client_random = rnd,
+                    .client_private_key = kp.private_key,
+                    .client_public_key = kp.public_key,
+                };
             }
 
+            /// Send client hello message.
             fn clientHello(h: *Handshake, host: []const u8) !void {
                 const host_len: u16 = @intCast(host.len);
 
@@ -121,7 +136,8 @@ pub fn Client(comptime StreamType: type) type {
                 }
             }
 
-            // read server hello, certificate, exchange, done
+            /// Read server hello, certificate, key_exchange and hello done messages.
+            /// Extract server public key and server random.
             fn serverHello(h: *Handshake) !void {
                 var rd: tls.Decoder = .{ .buf = &h.buffer }; // record decoder
                 var handshake_state = HandshakeType.server_hello;
@@ -215,173 +231,54 @@ pub fn Client(comptime StreamType: type) type {
                     }
                 }
             }
-        };
 
-        pub fn clientHello(c: *Self, host: []const u8) ![32]u8 {
-            const host_len: u16 = @intCast(host.len);
-            var hello_rand: [32]u8 = undefined;
-            crypto.random.bytes(&hello_rand);
+            fn generateMasterSecret(h: *Handshake) !void {
+                const pre_master_secret = try X25519.scalarmult(h.client_private_key, h.server_public_key);
+                const seed = "master secret" ++ h.client_random ++ h.server_random;
 
-            const no_compression = [_]u8{ 0x01, 0x00 };
-            const no_session_id = [_]u8{0x00};
-            const cipher_suites = [_]u8{
-                0x00, 0x02, // 2 bytes of cipher suite data follows
-                0xc0, 0x13, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
-            };
+                var a1: [32]u8 = undefined;
+                var a2: [32]u8 = undefined;
+                Sha256.create(&a1, seed, &pre_master_secret);
+                Sha256.create(&a2, &a1, &pre_master_secret);
 
-            const extensions_payload =
-                tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
-                .ecdsa_secp256r1_sha256,
-                .ecdsa_secp384r1_sha384,
-                .rsa_pss_rsae_sha256,
-                .rsa_pss_rsae_sha384,
-                .rsa_pss_rsae_sha512,
-                .ed25519,
-            })) ++ tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
-                .x25519,
-            })) ++
-                int2(@intFromEnum(tls.ExtensionType.server_name)) ++
-                int2(host_len + 5) ++ // byte length of this extension payload
-                int2(host_len + 3) ++ // server_name_list byte count
-                [1]u8{0x00} ++ // name_type
-                int2(host_len);
+                var p1: [32]u8 = undefined;
+                var p2: [32]u8 = undefined;
+                Sha256.create(&p1, a1 ++ seed, &pre_master_secret);
+                Sha256.create(&p2, a2 ++ seed, &pre_master_secret);
 
-            const extensions_header =
-                int2(@intCast(extensions_payload.len + host_len)) ++
-                extensions_payload;
+                h.master_secret[0..32].* = p1;
+                h.master_secret[32..].* = p2[0..16].*;
+            }
 
-            const client_hello =
-                int2(@intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
-                hello_rand ++
-                no_session_id ++
-                cipher_suites ++
-                no_compression ++
-                extensions_header;
+            fn generateEncryptionKeys(h: *Handshake) !void {
+                const seed = "key expansion" ++ h.server_random ++ h.client_random;
+                const a0 = seed;
 
-            const out_handshake =
-                [_]u8{@intFromEnum(tls.HandshakeType.client_hello)} ++
-                int3(@intCast(client_hello.len + host_len)) ++
-                client_hello;
+                var a1: [32]u8 = undefined;
+                var a2: [32]u8 = undefined;
+                var a3: [32]u8 = undefined;
+                var a4: [32]u8 = undefined;
+                Sha256.create(&a1, a0, &h.master_secret);
+                Sha256.create(&a2, &a1, &h.master_secret);
+                Sha256.create(&a3, &a2, &h.master_secret);
+                Sha256.create(&a4, &a3, &h.master_secret);
 
-            const plaintext_header = [_]u8{
-                @intFromEnum(tls.ContentType.handshake),
-                0x03, 0x01, // legacy protocol version
-            } ++ int2(@intCast(out_handshake.len + host_len)) ++ out_handshake;
+                var p: [32 * 4]u8 = undefined;
+                Sha256.create(p[0..32], a1 ++ seed, &h.master_secret);
+                Sha256.create(p[32..64], a2 ++ seed, &h.master_secret);
+                Sha256.create(p[64..96], a3 ++ seed, &h.master_secret);
+                Sha256.create(p[96..], a4 ++ seed, &h.master_secret);
 
-            {
-                var iovecs = [_]std.posix.iovec_const{
-                    .{
-                        .iov_base = &plaintext_header,
-                        .iov_len = plaintext_header.len,
-                    },
-                    .{
-                        .iov_base = host.ptr,
-                        .iov_len = host.len,
-                    },
+                h.cipher = .{
+                    .client_secret = p[0..20].*,
+                    .server_secret = p[20..40].*,
+                    .client_key = p[40..56].*,
+                    .server_key = p[56..72].*,
+                    .client_iv = p[72..88].*,
+                    .server_iv = p[88..104].*,
                 };
-                try c.stream.writevAll(&iovecs);
             }
-
-            return hello_rand;
-        }
-
-        const ServerHello = struct {
-            random: [32]u8,
-            public_key: [32]u8,
         };
-        fn serverHello(c: *Self) !ServerHello {
-            var ret: ServerHello = undefined;
-
-            // read server hello, certificate, exchange, done
-            var d: tls.Decoder = .{ .buf = &c.buffer };
-            var handshake_state = @intFromEnum(tls.HandshakeType.server_hello);
-            while (true) {
-                try d.readAtLeastOurAmt(c.stream, tls.record_header_len);
-                const ct = d.decode(tls.ContentType);
-                const version = d.decode(tls.ProtocolVersion);
-                if (version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
-                const record_len = d.decode(u16);
-                try d.readAtLeast(c.stream, record_len);
-                var ptd = try d.sub(record_len);
-
-                switch (ct) {
-                    tls.ContentType.handshake => {
-                        try ptd.ensure(4);
-                        const handshake_type = ptd.decode(u8);
-                        if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
-                        const length = ptd.decode(u24);
-                        var hsd = try ptd.sub(length); // handshake decoder
-                        switch (handshake_type) {
-                            @intFromEnum(tls.HandshakeType.server_hello) => { // server hello
-                                try hsd.ensure(2 + 32 + 1);
-                                if (hsd.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
-                                ret.random = hsd.array(32).*;
-                                const session_id_len = hsd.decode(u8);
-
-                                if (session_id_len > 32) return error.TlsIllegalParameter;
-                                try hsd.ensure(session_id_len);
-                                hsd.skip(session_id_len);
-
-                                try hsd.ensure(2 + 1);
-                                const cipher_suite = hsd.decode(u16);
-                                if (cipher_suite != 0xc013) return error.TlsIllegalParameter; // the only one we support
-                                hsd.skip(1); // skip compression method
-
-                                if (!hsd.eof()) { // TODO is this because we didn't send any extension
-                                    try hsd.ensure(2);
-                                    const extensions_size = hsd.decode(u16);
-                                    try hsd.ensure(extensions_size);
-                                    hsd.skip(extensions_size);
-                                }
-                                handshake_state = @intFromEnum(tls.HandshakeType.certificate);
-                            },
-                            @intFromEnum(tls.HandshakeType.certificate) => { // server certificate
-                                try hsd.ensure(3);
-                                const certs_len = hsd.decode(u24);
-                                try hsd.ensure(certs_len);
-
-                                var l: usize = 0;
-                                while (l < certs_len) {
-                                    const cert_len = hsd.decode(u24);
-                                    try hsd.ensure(cert_len);
-                                    const cert = hsd.slice(cert_len);
-                                    _ = cert; // TODO: check certificate
-                                    l += cert_len + 3;
-                                }
-                                handshake_state = 0x0c;
-                            },
-                            0x0c => { // server key exchange
-                                try hsd.ensure(1 + 2 + 1);
-                                const named_curve = hsd.decode(u8);
-                                const curve = hsd.decode(u16);
-                                const key_len = hsd.decode(u8);
-                                if (named_curve != 0x03 or curve != 0x001d or key_len != 0x20)
-                                    return error.TlsIllegalParameter;
-                                try hsd.ensure(32 + 2 + 2);
-                                ret.public_key = hsd.array(32).*;
-
-                                const rsa_signature = hsd.decode(u16);
-                                const signature_len = hsd.decode(u16);
-                                _ = rsa_signature; // TODO what to expect here
-
-                                if (signature_len != 0x0100)
-                                    return error.TlsIllegalParameter;
-                                try hsd.ensure(signature_len);
-                                hsd.skip(signature_len);
-                                // TODO: how to check signature
-                                handshake_state = 0x0e;
-                            },
-                            0x0e => { // server hello done
-                                if (length != 0) return error.TlsIllegalParameter;
-                                return ret;
-                            },
-                            else => return error.TlsUnexpectedMessage,
-                        }
-                    },
-                    else => return error.TlsUnexpectedMessage,
-                }
-            }
-        }
     };
 }
 
@@ -449,6 +346,42 @@ test "Handshake.serverHello" {
         &bytesToHex(h.hash.peek(), .lower),
     );
 }
+
+test "Handshake.generateMasterSecret" {
+    const hexToBytes = std.fmt.hexToBytes;
+    var h: Client(TestStream).Handshake = .{ .stream = undefined };
+    _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
+    _ = try hexToBytes(h.server_random[0..], "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
+    _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    _ = try hexToBytes(h.server_public_key[0..], "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615");
+    try h.generateMasterSecret();
+    try testing.expectEqualStrings(
+        "916abf9da55973e13614ae0a3f5d3f37b023ba129aee02cc9134338127cd7049781c8e19fc1eb2a7387ac06ae237344c",
+        &bytesToHex(h.master_secret, .lower),
+    );
+
+    try h.generateEncryptionKeys();
+    try testing.expectEqualStrings("1b7d117c7d5f690bc263cae8ef60af0f1878acc2", &bytesToHex(h.cipher.client_secret, .lower));
+    try testing.expectEqualStrings("2ad8bdd8c601a617126f63540eb20906f781fad2", &bytesToHex(h.cipher.server_secret, .lower));
+    // try testing.expectEqualStrings("f656d037b173ef3e11169f27231a84b6", &bytesToHex(client_key, .lower));
+    // try testing.expectEqualStrings("752a18e7a9fcb7cbcdd8f98dd8f769eb", &bytesToHex(server_key, .lower));
+    // try testing.expectEqualStrings("a0d2550c9238eebfef5c32251abb67d6", &bytesToHex(client_iv, .lower));
+    // try testing.expectEqualStrings("434528db4937d540d393135e06a11bb8", &bytesToHex(server_iv, .lower));
+}
+
+// test "Handshake.generateEncryptionKeys" {
+//     const hexToBytes = std.fmt.hexToBytes;
+//     var h: Client(TestStream).Handshake = .{ .stream = undefined };
+//     _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
+//     _ = try hexToBytes(h.server_random[0..], "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
+//     _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+//     _ = try hexToBytes(h.server_public_key[0..], "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615");
+//     try h.generateMasterSecret();
+//     try testing.expectEqualStrings(
+//         "916abf9da55973e13614ae0a3f5d3f37b023ba129aee02cc9134338127cd7049781c8e19fc1eb2a7387ac06ae237344c",
+//         &bytesToHex(h.master_secret, .lower),
+//     );
+// }
 
 // example from: https://tls12.xargs.org/#server-hello-done
 test "illustrated example" {
