@@ -21,6 +21,7 @@ pub const HandshakeType = enum(u8) {
     new_session_ticket = 4,
     end_of_early_data = 5,
     encrypted_extensions = 8,
+    client_key_exchange = 10,
     certificate = 11,
     server_key_exchange = 12,
     certificate_request = 13,
@@ -31,6 +32,14 @@ pub const HandshakeType = enum(u8) {
     message_hash = 254,
     _,
 };
+
+pub inline fn int1(x: u8) [1]u8 {
+    return .{x};
+}
+
+pub inline fn int1e(x: anytype) [1]u8 {
+    return .{@intFromEnum(x)};
+}
 
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{ .stream = stream };
@@ -69,7 +78,7 @@ pub fn Client(comptime StreamType: type) type {
             }
 
             /// Send client hello message.
-            fn clientHello(h: *Handshake, host: []const u8) !void {
+            fn hello(h: *Handshake, host: []const u8) !void {
                 const host_len: u16 = @intCast(host.len);
 
                 const no_compression = [_]u8{ 0x01, 0x00 };
@@ -130,10 +139,9 @@ pub fn Client(comptime StreamType: type) type {
                         },
                     };
                     try h.stream.writevAll(&iovecs);
-
-                    h.hash.update(plaintext_header[5..]);
-                    h.hash.update(host);
                 }
+                h.hash.update(plaintext_header[5..]);
+                h.hash.update(host);
             }
 
             /// Read server hello, certificate, key_exchange and hello done messages.
@@ -278,6 +286,53 @@ pub fn Client(comptime StreamType: type) type {
                     .server_iv = p[88..104].*,
                 };
             }
+
+            fn keyExchange(h: *Handshake) !void {
+                const len = h.client_public_key.len;
+                const header =
+                    int1e(tls.ContentType.handshake) ++
+                    int2(0x0303) ++
+                    int2(5 + len) ++
+                    int1e(HandshakeType.client_key_exchange) ++
+                    int3(1 + len) ++
+                    int1(len);
+                {
+                    var iovecs = [_]std.posix.iovec_const{
+                        .{
+                            .iov_base = &header,
+                            .iov_len = header.len,
+                        },
+                        .{
+                            .iov_base = &h.client_public_key,
+                            .iov_len = len,
+                        },
+                    };
+                    try h.stream.writevAll(&iovecs);
+                }
+                h.hash.update(header[5..]);
+                h.hash.update(&h.client_public_key);
+            }
+
+            fn changeCipherSpec(h: *Handshake) !void {
+                const header =
+                    int1e(tls.ContentType.change_cipher_spec) ++
+                    int2(0x0303) ++
+                    int2(0x0001) ++
+                    int1(0);
+                {
+                    var iovecs = [_]std.posix.iovec_const{
+                        .{
+                            .iov_base = &header,
+                            .iov_len = header.len,
+                        },
+                    };
+                    try h.stream.writevAll(&iovecs);
+                }
+            }
+
+            fn handshakeFinished(h: *Handshake) !void {
+                _ = h;
+            }
         };
     };
 }
@@ -300,7 +355,7 @@ test "Handshake.clientHello" {
         &bytesToHex(h.hash.peek(), .lower),
     );
     const host = "www.example.com";
-    try h.clientHello(host);
+    try h.hello(host);
     try testing.expectEqualStrings(
         "addf49808baa2c4b329898b857b903521be9370d",
         &bytesToHex(h.hash.peek(), .lower),
@@ -363,25 +418,25 @@ test "Handshake.generateMasterSecret" {
     try h.generateEncryptionKeys();
     try testing.expectEqualStrings("1b7d117c7d5f690bc263cae8ef60af0f1878acc2", &bytesToHex(h.cipher.client_secret, .lower));
     try testing.expectEqualStrings("2ad8bdd8c601a617126f63540eb20906f781fad2", &bytesToHex(h.cipher.server_secret, .lower));
-    // try testing.expectEqualStrings("f656d037b173ef3e11169f27231a84b6", &bytesToHex(client_key, .lower));
-    // try testing.expectEqualStrings("752a18e7a9fcb7cbcdd8f98dd8f769eb", &bytesToHex(server_key, .lower));
-    // try testing.expectEqualStrings("a0d2550c9238eebfef5c32251abb67d6", &bytesToHex(client_iv, .lower));
-    // try testing.expectEqualStrings("434528db4937d540d393135e06a11bb8", &bytesToHex(server_iv, .lower));
 }
 
-// test "Handshake.generateEncryptionKeys" {
-//     const hexToBytes = std.fmt.hexToBytes;
-//     var h: Client(TestStream).Handshake = .{ .stream = undefined };
-//     _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
-//     _ = try hexToBytes(h.server_random[0..], "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
-//     _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
-//     _ = try hexToBytes(h.server_public_key[0..], "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615");
-//     try h.generateMasterSecret();
-//     try testing.expectEqualStrings(
-//         "916abf9da55973e13614ae0a3f5d3f37b023ba129aee02cc9134338127cd7049781c8e19fc1eb2a7387ac06ae237344c",
-//         &bytesToHex(h.master_secret, .lower),
-//     );
-// }
+test "Handshake.clientKeyExchange" {
+    var stream = TestStream{ .buffer = undefined };
+    defer stream.deinit();
+    var h: Client(*TestStream).Handshake = .{
+        .stream = &stream,
+        .client_public_key = [32]u8{
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        },
+    };
+    try h.keyExchange();
+    try testing.expectEqualSlices(u8, &[_]u8{
+        0x16, 0x03, 0x03, 0x00, 0x25, 0x0a, 0x00, 0x00, 0x21, 0x20, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+        0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+        0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    }, stream.output.items);
+}
 
 // example from: https://tls12.xargs.org/#server-hello-done
 test "illustrated example" {
