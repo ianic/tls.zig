@@ -19,17 +19,18 @@ pub fn main() !void {
     //try tcp.writeAll(&client_hello);
 
     var cli = client(tcp);
-    try cli.hello(host);
+    try cli.handshake(host);
+    std.debug.print("handshake finished\n", .{});
 
-    var file = try std.fs.cwd().createFile("server_hello", .{});
-    defer file.close();
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = try tcp.readAll(&buf);
-        //std.debug.print("{x}\n", .{buf});
-        try file.writer().writeAll(buf[0..n]);
-        if (n < buf.len) break;
-    }
+    // var file = try std.fs.cwd().createFile("server_hello", .{});
+    // defer file.close();
+    // var buf: [4096]u8 = undefined;
+    // while (true) {
+    //     const n = try tcp.readAll(&buf);
+    //     //std.debug.print("{x}\n", .{buf});
+    //     try file.writer().writeAll(buf[0..n]);
+    //     if (n < buf.len) break;
+    // }
 }
 
 const client_hello = [_]u8{

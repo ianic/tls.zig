@@ -41,6 +41,21 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             return length - EncryptCtx.block_length;
         }
 
+        pub fn encryptBlocks(self: Self, dst: []u8, src: []const u8, iv: [EncryptCtx.block_length]u8) void {
+            // Note: encryption *could* be parallelized, see https://research.kudelskisecurity.com/2022/11/17/some-aes-cbc-encryption-myth-busting/
+            const block_length = EncryptCtx.block_length;
+            debug.assert(src.len % block_length == 0);
+            debug.assert(src.len == dst.len);
+            var cv = iv;
+            var i: usize = 0;
+            while (i + block_length <= src.len) : (i += block_length) {
+                const in = src[i..][0..block_length];
+                for (cv[0..], in) |*x, y| x.* ^= y;
+                self.enc_ctx.encrypt(&cv, &cv);
+                @memcpy(dst[i..][0..block_length], &cv);
+            }
+        }
+
         /// Encrypt the given plaintext for the given IV.
         /// The destination buffer must be large enough to hold the padded plaintext.
         /// Use the `paddedLength()` function to compute the ciphertext size.
@@ -96,6 +111,23 @@ pub fn CBC(comptime BlockCipher: anytype) type {
                 self.dec_ctx.decrypt(&out, in);
                 for (&out, cv) |*x, y| x.* ^= y;
                 @memcpy(dst[i..], out[0 .. dst.len - i]);
+            }
+        }
+
+        pub fn decryptBlocks(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
+            const block_length = DecryptCtx.block_length;
+            debug.assert(src.len % block_length == 0);
+            debug.assert(src.len == dst.len);
+            var i: usize = 0;
+            var cv = iv;
+            var out: [block_length]u8 = undefined;
+            // Decryption could be parallelized
+            while (i + block_length <= dst.len) : (i += block_length) {
+                const in = src[i..][0..block_length];
+                self.dec_ctx.decrypt(&out, in);
+                for (&out, cv) |*x, y| x.* ^= y;
+                cv = in.*;
+                @memcpy(dst[i..][0..block_length], &out);
             }
         }
     };
