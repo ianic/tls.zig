@@ -9,6 +9,25 @@ pub fn main() !void {
     //var arena_instance = std.heap.ArenaAllocator.init(gpa);
     //const arena = arena_instance.allocator();
 
+    const url = "https://localhost";
+    const uri = try std.Uri.parse(url);
+    const host = uri.host.?.percent_encoded;
+
+    var tcp = try std.net.tcpConnectToHost(gpa, host, 8443);
+    defer tcp.close();
+
+    //try tcp.writeAll(&client_hello);
+
+    var cli = client(tcp);
+    try cli.handshake("example.ulfheim.net");
+    std.debug.print("handshake finished\n", .{});
+}
+
+pub fn main_() !void {
+    const gpa = std.heap.page_allocator;
+    //var arena_instance = std.heap.ArenaAllocator.init(gpa);
+    //const arena = arena_instance.allocator();
+
     const url = "https://google.com";
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;

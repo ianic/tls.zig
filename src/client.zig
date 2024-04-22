@@ -38,6 +38,7 @@ pub inline fn int1(x: u8) [1]u8 {
     return .{x};
 }
 
+// int1 from enum
 pub inline fn int1e(x: anytype) [1]u8 {
     return int1(@intFromEnum(x));
 }
@@ -48,6 +49,14 @@ pub inline fn int2e(x: anytype) [2]u8 {
 
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{ .stream = stream };
+}
+
+inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
+    return int2e(tls.ExtensionType.server_name) ++
+        int2(host_len + 5) ++ // byte length of this extension payload
+        int2(host_len + 3) ++ // server_name_list byte count
+        [1]u8{0x00} ++ // name_type
+        int2(host_len);
 }
 
 pub fn Client(comptime StreamType: type) type {
@@ -106,6 +115,10 @@ pub fn Client(comptime StreamType: type) type {
                 };
 
                 const extensions_payload =
+                    [_]u8{ 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00 } ++ // status request
+                    [_]u8{ 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00 } ++ // ec point formats
+                    [_]u8{ 0xff, 0x01, 0x00, 0x01, 0x00 } ++ // renegotiation info
+                    [_]u8{ 0x00, 0x12, 0x00, 0x00 } ++ // sct
                     tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
                     .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
@@ -113,42 +126,38 @@ pub fn Client(comptime StreamType: type) type {
                     .rsa_pss_rsae_sha384,
                     .rsa_pss_rsae_sha512,
                     .ed25519,
-                })) ++ tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
+                    .rsa_pkcs1_sha1,
+                })) ++
+                    tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
                     .x25519,
                 })) ++
-                    int2(@intFromEnum(tls.ExtensionType.server_name)) ++
-                    int2(host_len + 5) ++ // byte length of this extension payload
-                    int2(host_len + 3) ++ // server_name_list byte count
-                    [1]u8{0x00} ++ // name_type
-                    int2(host_len);
+                    serverNameExtensionHeader(host_len);
 
-                const extensions_header =
-                    int2(@intCast(extensions_payload.len + host_len)) ++
-                    extensions_payload;
-
-                const client_hello =
-                    int2(@intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
+                const payload =
+                    int2e(tls.ProtocolVersion.tls_1_2) ++
                     h.client_random ++
                     no_session_id ++
                     cipher_suites ++
                     no_compression ++
-                    extensions_header;
+                    int2(@intCast(extensions_payload.len + host_len)) ++
+                    extensions_payload;
 
-                const out_handshake =
-                    [_]u8{@intFromEnum(tls.HandshakeType.client_hello)} ++
-                    int3(@intCast(client_hello.len + host_len)) ++
-                    client_hello;
+                const handshake_header =
+                    int1e(tls.HandshakeType.client_hello) ++
+                    int3(@intCast(payload.len + host_len));
 
-                const plaintext_header = [_]u8{
-                    @intFromEnum(tls.ContentType.handshake),
-                    0x03, 0x01, // legacy protocol version
-                } ++ int2(@intCast(out_handshake.len + host_len)) ++ out_handshake;
+                const record =
+                    int1e(tls.ContentType.handshake) ++
+                    int2e(tls.ProtocolVersion.tls_1_2) ++
+                    int2(@intCast(handshake_header.len + payload.len + host_len)) ++
+                    handshake_header ++
+                    payload;
 
                 {
                     var iovecs = [_]std.posix.iovec_const{
                         .{
-                            .iov_base = &plaintext_header,
-                            .iov_len = plaintext_header.len,
+                            .iov_base = &record,
+                            .iov_len = record.len,
                         },
                         .{
                             .iov_base = host.ptr,
@@ -157,7 +166,7 @@ pub fn Client(comptime StreamType: type) type {
                     };
                     try h.stream.writevAll(&iovecs);
                 }
-                h.transcript.update(plaintext_header[5..]);
+                h.transcript.update(record[5..]);
                 h.transcript.update(host);
             }
 
@@ -175,6 +184,7 @@ pub fn Client(comptime StreamType: type) type {
 
                     try rd.readAtLeast(h.stream, record_len);
                     var hd = try rd.sub(record_len); // header decoder
+                    h.transcript.update(hd.rest());
 
                     switch (content_type) {
                         tls.ContentType.handshake => {
@@ -183,7 +193,6 @@ pub fn Client(comptime StreamType: type) type {
                             if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                             const length = hd.decode(u24);
                             var hsd = try hd.sub(length); // handshake decoder
-                            h.transcript.update(hsd.rest());
 
                             switch (handshake_type) {
                                 .server_hello => { // server hello
@@ -335,7 +344,7 @@ pub fn Client(comptime StreamType: type) type {
                     int1e(tls.ContentType.change_cipher_spec) ++
                     int2e(tls.ProtocolVersion.tls_1_2) ++
                     int2(1) ++
-                    int1(0);
+                    int1(1);
                 {
                     var iovecs = [_]std.posix.iovec_const{
                         .{
@@ -389,6 +398,7 @@ pub fn Client(comptime StreamType: type) type {
                     const record_len = rd.decode(u16);
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                     if (content_type != tls.ContentType.change_cipher_spec) return error.TlsUnexpectedMessage;
+                    try rd.readAtLeast(h.stream, record_len);
                     try rd.ensure(record_len);
                     rd.skip(record_len);
                 }
@@ -399,6 +409,7 @@ pub fn Client(comptime StreamType: type) type {
                     const record_len = rd.decode(u16);
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                     if (content_type != tls.ContentType.handshake) return error.TlsUnexpectedMessage;
+                    try rd.readAtLeast(h.stream, record_len);
                     try rd.ensure(record_len);
                     rd.skip(record_len);
                 }
@@ -449,7 +460,7 @@ pub fn Client(comptime StreamType: type) type {
                 const cleartext = buf[0..padded_len];
 
                 const z = CipherType.AEAD.init(h.cipher.client_key);
-                const ciphertext = buf[0..cleartext.len]; // CipherType.AEAD.paddedLength(cleartext.len)];
+                const ciphertext = buf[0..cleartext.len];
                 z.encryptBlocks(ciphertext, cleartext, iv);
                 return ciphertext;
             }
@@ -470,6 +481,7 @@ pub fn Client(comptime StreamType: type) type {
 
 const testing = std.testing;
 const bytesToHex = std.fmt.bytesToHex;
+const hexToBytes = std.fmt.hexToBytes;
 
 test "Handshake.clientHello" {
     var stream = TestStream{ .buffer = undefined };
@@ -483,15 +495,15 @@ test "Handshake.clientHello" {
     };
     const host = "www.example.com";
     try h.hello(host);
-
     try testing.expectEqualSlices(u8, &[_]u8{
-        0x16, 0x03, 0x01, 0x00, 0x61, 0x01, 0x00, 0x00, 0x5d, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
+        0x16, 0x03, 0x03, 0x00, 0x7b, 0x01, 0x00, 0x00, 0x77, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
         0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
         0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x00, 0x00, 0x02, 0xc0, 0x13,
-        0x01, 0x00, 0x00, 0x32, 0x00, 0x0d, 0x00, 0x0e, 0x00, 0x0c, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04,
-        0x08, 0x05, 0x08, 0x06, 0x08, 0x07, 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d, 0x00, 0x00,
-        0x00, 0x14, 0x00, 0x12, 0x00, 0x00, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70,
-        0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
+        0x01, 0x00, 0x00, 0x4c, 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0b, 0x00,
+        0x02, 0x01, 0x00, 0xff, 0x01, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x10,
+        0x00, 0x0e, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04, 0x08, 0x05, 0x08, 0x06, 0x08, 0x07, 0x02, 0x01,
+        0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d, 0x00, 0x00, 0x00, 0x14, 0x00, 0x12, 0x00, 0x00,
+        0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
     }, stream.output.items);
     try testing.expectEqualStrings(host, stream.output.items[stream.output.items.len - host.len ..]);
 }
@@ -522,7 +534,6 @@ test "Handshake.serverHello" {
 }
 
 test "Handshake.generateMasterSecret" {
-    const hexToBytes = std.fmt.hexToBytes;
     var h: Client(TestStream).Handshake = .{ .stream = undefined };
     { // init with known keys
         _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
@@ -616,17 +627,6 @@ test "Handshake.verifyData" {
         "1400000ccf919626f1360c536aaad73a",
         &bytesToHex(verify_data, .lower),
     );
-
-    // ako nadjes nacina da posaljes svoju rendom funkciju onda ovo ima smisla
-    // iv mora biti: 40 41 42 43 44 45 46 47 48 49 4a 4b 4c 4d 4e 4f
-    // try h.handshakeFinished();
-    // try testing.expectEqualSlices(u8, &[_]u8{
-    //     0x16, 0x03, 0x03, 0x00, 0x40, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
-    //     0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x22, 0x7b, 0xc9, 0xba, 0x81, 0xef, 0x30, 0xf2, 0xa8, 0xa7, 0x8f,
-    //     0xf1, 0xdf, 0x50, 0x84, 0x4d, 0x58, 0x04, 0xb7, 0xee, 0xb2, 0xe2, 0x14, 0xc3, 0x2b, 0x68, 0x92,
-    //     0xac, 0xa3, 0xdb, 0x7b, 0x78, 0x07, 0x7f, 0xdd, 0x90, 0x06, 0x7c, 0x51, 0x6b, 0xac, 0xb3, 0xba,
-    //     0x90, 0xde, 0xdf, 0x72, 0x0f,
-    // }, encrypted);
 }
 
 // example from: https://tls12.xargs.org/#server-hello-done
@@ -639,15 +639,35 @@ test "illustrated example" {
         .server_random = [_]u8{0} ** 32,
         .server_public_key = [_]u8{0} ** 32,
     };
+    { // set masster key
+        _ = try std.fmt.hexToBytes(
+            h.master_secret[0..],
+            "916abf9da55973e13614ae0a3f5d3f37b023ba129aee02cc9134338127cd7049781c8e19fc1eb2a7387ac06ae237344c",
+        );
+    }
+
+    h.transcript.update(client_hello_msg[5..]);
     try h.serverHello();
-    try testing.expectEqualStrings(
-        "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-        &bytesToHex(h.server_random, .lower),
-    );
-    try testing.expectEqualStrings(
-        "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
-        &bytesToHex(h.server_public_key, .lower),
-    );
+    h.transcript.update(client_key_exchange[5..]);
+
+    { // server random and public key are extracted from server messages
+        try testing.expectEqualStrings(
+            "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+            &bytesToHex(h.server_random, .lower),
+        );
+        try testing.expectEqualStrings(
+            "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+            &bytesToHex(h.server_public_key, .lower),
+        );
+    }
+
+    { // expect verify data
+        const verify_data = h.verifyData();
+        try testing.expectEqualStrings(
+            "1400000ccf919626f1360c536aaad73a",
+            &bytesToHex(verify_data, .lower),
+        );
+    }
 }
 
 const TestStream = struct {
