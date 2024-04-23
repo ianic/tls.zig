@@ -324,7 +324,23 @@ pub fn ClientT(comptime StreamType: type) type {
                     try rd.readAtLeast(h.stream, record_len);
                     var hd = try rd.sub(record_len); // header decoder
 
-                    if (content_type != .handshake) return error.TlsUnexpectedMessage;
+                    switch (content_type) {
+                        .alert => {
+                            try hd.ensure(2);
+                            const level = hd.decode(tls.AlertLevel);
+                            const desc = hd.decode(tls.AlertDescription);
+                            _ = level;
+                            try desc.toError();
+                            return error.TlsServerSideClosure; // TODO
+                        },
+                        .handshake => {}, // continue
+                        else => return error.TlsUnexpectedMessage,
+                    }
+                    if (content_type != .handshake) {
+                        std.debug.print("content_type: {}\n", .{content_type});
+                        bufPrint(hd.rest());
+                        return error.TlsUnexpectedMessage;
+                    }
                     h.transcript.update(hd.rest());
 
                     try hd.ensure(4);
