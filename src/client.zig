@@ -65,16 +65,15 @@ pub fn Client(comptime StreamType: type) type {
         client_sequence: usize = 0,
         server_sequence: usize = 0,
 
-        //read_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
-        //read_pos: usize = 0,
         cipher: CipherType = undefined,
 
-        ciphertext_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
-        ciphertext_buffer_head: usize = 0,
-        ciphertext_buffer_tail: usize = 0,
-        cleartext_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
-        cleartext_buffer_head: usize = 0,
-        cleartext_buffer_tail: usize = 0,
+        read_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+        // Part of the read buffer with decrypted application data.
+        cleartext_start: usize = 0,
+        cleartext_end: usize = 0,
+        // Filled from stream but unencrypted part of the buffer.
+        ciphertext_start: usize = 0,
+        ciphertext_end: usize = 0,
 
         const Self = @This();
 
@@ -120,48 +119,49 @@ pub fn Client(comptime StreamType: type) type {
 
         pub fn read(c: *Self, buf: []u8) !usize {
             while (true) {
-                if (c.cleartext_buffer_tail > c.cleartext_buffer_head) {
-                    const n = @min(buf.len, c.cleartext_buffer_tail - c.cleartext_buffer_head);
-                    @memcpy(buf[0..n], c.cleartext_buffer[c.cleartext_buffer_head..][0..n]);
-
-                    //std.debug.print("read more {d} {d} {d}\n", .{ c.cleartext_buffer_head, c.cleartext_buffer_tail, n });
-                    c.cleartext_buffer_head += n;
+                // If we have unread cleartext data, return them to the caller
+                if (c.cleartext_end > c.cleartext_start) {
+                    const n = @min(buf.len, c.cleartext_end - c.cleartext_start);
+                    @memcpy(buf[0..n], c.read_buffer[c.cleartext_start..][0..n]);
+                    c.cleartext_start += n;
                     return n;
                 }
-                //std.debug.print("read mor2 {d} {d}\n", .{ c.cleartext_buffer_head, c.cleartext_buffer_tail });
-                c.cleartext_buffer_head = 0;
-                c.cleartext_buffer_tail = 0;
 
-                //std.debug.print("read_buf {d}..{d}\n", .{ c.ciphertext_buffer_head, c.ciphertext_buffer_tail });
-                const read_buf = c.ciphertext_buffer[c.ciphertext_buffer_head..c.ciphertext_buffer_tail];
-                if (read_buf.len > tls.record_header_len) {
-                    const record_header = read_buf[0..tls.record_header_len];
+                const read_buffer = c.read_buffer[c.ciphertext_start..c.ciphertext_end];
+                // If we have 5 bytes header
+                if (read_buffer.len > tls.record_header_len) {
+                    const record_header = read_buffer[0..tls.record_header_len];
                     const content_type: tls.ContentType = @enumFromInt(record_header[0]);
-                    if (content_type != .application_data) return error.TlsUnexpectedMessage;
-                    const app_data_len = std.mem.readInt(u16, record_header[3..5], .big);
-                    if (read_buf[tls.record_header_len..].len >= app_data_len) {
-                        const app_data = read_buf[tls.record_header_len .. tls.record_header_len + app_data_len];
-                        const cleartext = try decrypt(c.cipher, &c.cleartext_buffer, app_data[0..16].*, app_data[16..]);
-                        c.cleartext_buffer_tail += cleartext.len;
-                        c.ciphertext_buffer_head += tls.record_header_len + app_data_len;
+                    if (content_type != .application_data) // TODO: handle other types
+                        return error.TlsUnexpectedMessage;
+                    const data_len = std.mem.readInt(u16, record_header[3..5], .big);
+                    // If we have whole encrypted record, decrypt it.
+                    if (read_buffer[tls.record_header_len..].len >= data_len) {
+                        const data = read_buffer[tls.record_header_len .. tls.record_header_len + data_len];
+                        c.cleartext_start = c.ciphertext_start;
+                        const cleartext = try decrypt(c.cipher, c.read_buffer[c.cleartext_start..], data[0..16].*, data[16..]);
+                        c.cleartext_end = c.cleartext_start + cleartext.len;
+                        c.ciphertext_start += tls.record_header_len + data_len;
                         continue;
                     }
                 }
-
-                //std.debug.print("read more {d} {d}\n", .{ c.ciphertext_buffer_head, c.ciphertext_buffer_tail });
-                if (c.ciphertext_buffer_tail > c.ciphertext_buffer_head) {
-                    std.mem.copyForwards(
-                        u8,
-                        c.ciphertext_buffer[0 .. c.ciphertext_buffer_tail - c.ciphertext_buffer_head],
-                        c.ciphertext_buffer[c.ciphertext_buffer_head..c.ciphertext_buffer_tail],
-                    );
+                { // Move dirty part to the start of the buffer.
+                    const n = c.ciphertext_end - c.ciphertext_start;
+                    if (n > 0 and c.ciphertext_start > 0) {
+                        if (c.ciphertext_start > n) {
+                            @memcpy(c.read_buffer[0..n], c.read_buffer[c.ciphertext_start..][0..n]);
+                        } else {
+                            std.mem.copyForwards(u8, c.read_buffer[0..n], c.read_buffer[c.ciphertext_start..][0..n]);
+                        }
+                    }
+                    c.ciphertext_start = 0;
+                    c.ciphertext_end = n;
                 }
-                c.ciphertext_buffer_tail -= c.ciphertext_buffer_head;
-                c.ciphertext_buffer_head = 0;
-
-                const n = try c.stream.read(c.ciphertext_buffer[c.ciphertext_buffer_tail..]);
-                if (n == 0) return 0;
-                c.ciphertext_buffer_tail += n;
+                { // Read more from stream into read_buffer.
+                    const n = try c.stream.read(c.read_buffer[c.ciphertext_end..]);
+                    if (n == 0) return 0;
+                    c.ciphertext_end += n;
+                }
             }
         }
 
