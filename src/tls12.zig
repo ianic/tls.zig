@@ -58,13 +58,12 @@ pub const extension = struct {
 pub const hello = struct {
     pub const no_compression = [_]u8{ 0x01, 0x00 };
     pub const no_session_id = [_]u8{0x00};
+    pub const protocol_version = int2e(tls.ProtocolVersion.tls_1_2);
 };
 
-pub inline fn handshakeHeader(payload_len: usize) [9]u8 {
-    return int1e(tls.ContentType.handshake) ++
-        int2e(tls.ProtocolVersion.tls_1_2) ++
-        int2(@intCast(4 + payload_len)) ++
-        int1e(tls.HandshakeType.client_hello) ++
+pub inline fn handshakeHeader(handshake_type: HandshakeType, payload_len: usize) [9]u8 {
+    return recordHeader(.handshake, 4 + payload_len) ++
+        int1e(handshake_type) ++
         int3(@intCast(payload_len));
 }
 
