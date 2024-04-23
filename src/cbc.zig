@@ -41,8 +41,11 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             return length - EncryptCtx.block_length;
         }
 
-        pub fn encryptBlocks(self: Self, dst: []u8, src: []const u8, iv: [EncryptCtx.block_length]u8) void {
-            // Note: encryption *could* be parallelized, see https://research.kudelskisecurity.com/2022/11/17/some-aes-cbc-encryption-myth-busting/
+        /// Encrypt the given plaintext for the given IV.
+        /// The destination buffer must be large enough to hold the padded plaintext.
+        /// Use the `paddedLength()` function to compute the ciphertext size.
+        /// IV must be secret and unpredictable.
+        pub fn encrypt(self: Self, dst: []u8, src: []const u8, iv: [EncryptCtx.block_length]u8) void {
             const block_length = EncryptCtx.block_length;
             debug.assert(src.len % block_length == 0);
             debug.assert(src.len == dst.len);
@@ -56,11 +59,7 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             }
         }
 
-        /// Encrypt the given plaintext for the given IV.
-        /// The destination buffer must be large enough to hold the padded plaintext.
-        /// Use the `paddedLength()` function to compute the ciphertext size.
-        /// IV must be secret and unpredictable.
-        pub fn encrypt(self: Self, dst: []u8, src: []const u8, iv: [EncryptCtx.block_length]u8) void {
+        pub fn encryptPad(self: Self, dst: []u8, src: []const u8, iv: [EncryptCtx.block_length]u8) void {
             // Note: encryption *could* be parallelized, see https://research.kudelskisecurity.com/2022/11/17/some-aes-cbc-encryption-myth-busting/
             const block_length = EncryptCtx.block_length;
             const padded_length = paddedLength(src.len);
@@ -83,10 +82,7 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             @memcpy(dst[i..], cv[0 .. dst.len - i]);
         }
 
-        /// Decrypt the given ciphertext for the given IV.
-        /// The destination buffer must be large enough to hold the plaintext.
-        /// IV must be secret, unpredictable and match the one used for encryption.
-        pub fn decrypt(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
+        pub fn decryptPad(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
             const block_length = DecryptCtx.block_length;
             const padded_length = paddedLength(dst.len);
             if (src.len != padded_length) {
@@ -114,7 +110,10 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             }
         }
 
-        pub fn decryptBlocks(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
+        /// Decrypt the given ciphertext for the given IV.
+        /// The destination buffer must be large enough to hold the plaintext.
+        /// IV must be secret, unpredictable and match the one used for encryption.
+        pub fn decrypt(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
             const block_length = DecryptCtx.block_length;
             debug.assert(src.len % block_length == 0);
             debug.assert(src.len == dst.len);
@@ -150,11 +149,11 @@ test "CBC mode" {
     inline for (0..src_.len) |len| {
         const src = src_[0..len];
         var dst = [_]u8{0} ** M.paddedLength(src.len);
-        z.encrypt(&dst, src, iv);
+        z.encryptPad(&dst, src, iv);
         h.update(&dst);
 
         var decrypted = [_]u8{0} ** src.len;
-        try z.decrypt(&decrypted, &dst, iv);
+        try z.decryptPad(&decrypted, &dst, iv);
 
         try std.testing.expectEqualSlices(u8, src, &decrypted);
     }
@@ -166,10 +165,10 @@ test "CBC mode" {
     inline for (0..src_.len) |len| {
         var buf = [_]u8{0} ** M.paddedLength(len);
         @memcpy(buf[0..len], src_[0..len]);
-        z.encrypt(&buf, buf[0..len], iv);
+        z.encryptPad(&buf, buf[0..len], iv);
         h.update(&buf);
 
-        try z.decrypt(buf[0..len], &buf, iv);
+        try z.decryptPad(buf[0..len], &buf, iv);
 
         try std.testing.expectEqualSlices(u8, src_[0..len], buf[0..len]);
     }
