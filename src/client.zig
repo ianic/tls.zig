@@ -249,7 +249,6 @@ pub fn ClientT(comptime StreamType: type) type {
                 });
 
                 const extensions_payload =
-                    tls12.extension.status_request ++
                     tls12.extension.ec_point_formats ++
                     tls12.extension.renegotiation_info ++
                     tls12.extension.sct ++

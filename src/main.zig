@@ -64,3 +64,13 @@ pub fn main__() !void {
     try cli.handshake("example.ulfheim.net");
     std.debug.print("handshake finished\n", .{});
 }
+
+// Using curl to test different ciphers:
+// Cipher code for curl can be found at:
+// https://github.com/curl/curl/blob/cf337d851ae0120ec5ed801ad7eb128561bd8cf6/lib/vtls/sectransp.c#L729
+//
+// Example of
+// supported:
+// curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://www.supersport.hr
+// not supported:
+// curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-SHA https://www.supersport.hr
