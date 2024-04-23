@@ -25,11 +25,10 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     var cli = client(tcp);
     try cli.handshake(host);
 
-    //std.debug.print("handshake finished\n", .{});
-
-    _ = try cli.write("GET / HTTP/1.0\r\n\r\n");
-
     var buf: [4096]u8 = undefined;
+    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    _ = try cli.write(req);
+
     while (true) {
         const n = try cli.read(&buf);
         std.debug.print("{s}", .{buf[0..n]});

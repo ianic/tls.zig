@@ -168,9 +168,9 @@ pub fn ClientT(comptime StreamType: type) type {
                 if (read_buffer.len > tls.record_header_len) {
                     const record_header = read_buffer[0..tls.record_header_len];
                     const content_type: tls.ContentType = @enumFromInt(record_header[0]);
-                    if (content_type != .application_data) // TODO: handle other types
-                        return error.TlsUnexpectedMessage;
                     const data_len = std.mem.readInt(u16, record_header[3..5], .big);
+                    if (data_len > tls.max_ciphertext_len) return error.TlsRecordOverflow;
+
                     // If we have whole encrypted record, decrypt it.
                     if (read_buffer[tls.record_header_len..].len >= data_len) {
                         const data = read_buffer[tls.record_header_len .. tls.record_header_len + data_len];
@@ -178,7 +178,20 @@ pub fn ClientT(comptime StreamType: type) type {
                         const cleartext = try c.cipher.decrypt(c.read_buffer[c.cleartext_start..], data[0..16].*, data[16..]);
                         c.cleartext_end = c.cleartext_start + cleartext.len;
                         c.ciphertext_start += tls.record_header_len + data_len;
-                        continue;
+                        switch (content_type) {
+                            .application_data => {
+                                continue;
+                            },
+                            .alert => {
+                                const level: tls.AlertLevel = @enumFromInt(cleartext[0]);
+                                const desc: tls.AlertDescription = @enumFromInt(cleartext[1]);
+                                if (level == .warning and desc == .close_notify)
+                                    return 0;
+                                try desc.toError();
+                                return error.TlsUnexpectedMessage;
+                            },
+                            else => return error.TlsUnexpectedMessage,
+                        }
                     }
                 }
                 { // Move dirty part to the start of the buffer.
