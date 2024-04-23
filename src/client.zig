@@ -45,7 +45,7 @@ pub inline fn int2e(x: anytype) [2]u8 {
     return int2(@intFromEnum(x));
 }
 
-pub fn client(stream: anytype) Client(@TypeOf(stream)) {
+pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
     return .{ .stream = stream };
 }
 
@@ -57,7 +57,7 @@ inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
         int2(host_len);
 }
 
-pub fn Client(comptime StreamType: type) type {
+pub fn ClientT(comptime StreamType: type) type {
     const CipherType = std.crypto.tls.ApplicationCipherT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
     return struct {
         stream: StreamType,
@@ -74,10 +74,9 @@ pub fn Client(comptime StreamType: type) type {
         ciphertext_start: usize = 0,
         ciphertext_end: usize = 0,
 
-        const Self = @This();
-        const ClientType = @TypeOf(@This());
+        const Client = @This();
 
-        pub fn handshake(c: *Self, host: []const u8) !void {
+        pub fn handshake(c: *Client, host: []const u8) !void {
             var h = try Handshake.init(c.stream);
             try h.hello(host);
             try h.serverHello();
@@ -90,7 +89,7 @@ pub fn Client(comptime StreamType: type) type {
             c.cipher = h.cipher;
         }
 
-        pub fn write(c: *Self, buf: []const u8) !usize {
+        pub fn write(c: *Client, buf: []const u8) !usize {
             const len = @min(buf.len, tls.max_cipertext_inner_record_len);
 
             var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
@@ -117,7 +116,7 @@ pub fn Client(comptime StreamType: type) type {
             return len;
         }
 
-        pub fn read(c: *Self, buf: []u8) !usize {
+        pub fn read(c: *Client, buf: []u8) !usize {
             while (true) {
                 // If we have unread cleartext data, return them to the caller
                 if (c.cleartext_end > c.cleartext_start) {
@@ -533,8 +532,7 @@ pub fn Client(comptime StreamType: type) type {
                 const record_header =
                     int1e(tls.ContentType.handshake) ++
                     int2e(tls.ProtocolVersion.tls_1_2);
-                const data = ClientType.encryptIV(h.cipher, &h.buffer, 0, record_header, &verify_data);
-                //const data = h.encryptIV(&h.buffer, 0, record_header, &verify_data);
+                const data = Client.encrypt(h.cipher, &h.buffer, 0, record_header, &verify_data);
                 const header = record_header ++ int2(@intCast(data.len));
 
                 {
@@ -648,7 +646,7 @@ const hexToBytes = std.fmt.hexToBytes;
 test "Handshake.clientHello" {
     var stream = TestStream{ .buffer = undefined };
     defer stream.deinit();
-    var h: Client(*TestStream).Handshake = .{
+    var h: ClientT(*TestStream).Handshake = .{
         .stream = &stream,
         .client_random = [32]u8{
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -673,7 +671,7 @@ test "Handshake.clientHello" {
 test "Handshake.serverHello" {
     var stream = TestStream{ .buffer = @embedFile("testdata/google_server_hello") };
     defer stream.deinit();
-    var h: Client(*TestStream).Handshake = .{
+    var h: ClientT(*TestStream).Handshake = .{
         .stream = &stream,
         .client_random = [_]u8{0} ** 32,
         .server_random = [_]u8{0} ** 32,
@@ -696,7 +694,7 @@ test "Handshake.serverHello" {
 }
 
 test "Handshake.generateMasterSecret" {
-    const ClientType = Client(TestStream);
+    const ClientType = ClientT(TestStream);
     var h: ClientType.Handshake = .{ .stream = undefined };
     { // init with known keys
         _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
@@ -751,7 +749,7 @@ test "Handshake.generateMasterSecret" {
 test "Handshake.clientKeyExchange" {
     var stream = TestStream{ .buffer = undefined };
     defer stream.deinit();
-    var h: Client(*TestStream).Handshake = .{
+    var h: ClientT(*TestStream).Handshake = .{
         .stream = &stream,
         .client_public_key = [32]u8{
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -770,7 +768,7 @@ test "Handshake.verifyData" {
     // init client with master secret
     var stream = TestStream{ .buffer = undefined };
     defer stream.deinit();
-    var h: Client(*TestStream).Handshake = .{ .stream = &stream };
+    var h: ClientT(*TestStream).Handshake = .{ .stream = &stream };
     _ = try std.fmt.hexToBytes(
         h.master_secret[0..],
         "916abf9da55973e13614ae0a3f5d3f37b023ba129aee02cc9134338127cd7049781c8e19fc1eb2a7387ac06ae237344c",
@@ -796,7 +794,7 @@ test "Handshake.verifyData" {
 test "illustrated example" {
     var stream = TestStream{ .buffer = &(server_hello ++ server_certificate ++ server_key_exchange ++ server_hello_done) };
     defer stream.deinit();
-    var h: Client(*TestStream).Handshake = .{
+    var h: ClientT(*TestStream).Handshake = .{
         .stream = &stream,
         .client_random = [_]u8{0} ** 32,
         .server_random = [_]u8{0} ** 32,
