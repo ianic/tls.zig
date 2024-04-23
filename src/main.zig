@@ -4,7 +4,7 @@ const testing = std.testing;
 const cbc = @import("cbc.zig");
 const client = @import("client.zig").client;
 
-pub fn main() !void {
+pub fn main_() !void {
     const gpa = std.heap.page_allocator;
     //var arena_instance = std.heap.ArenaAllocator.init(gpa);
     //const arena = arena_instance.allocator();
@@ -23,7 +23,7 @@ pub fn main() !void {
     std.debug.print("handshake finished\n", .{});
 }
 
-pub fn main_() !void {
+pub fn main() !void {
     const gpa = std.heap.page_allocator;
     //var arena_instance = std.heap.ArenaAllocator.init(gpa);
     //const arena = arena_instance.allocator();
@@ -40,6 +40,16 @@ pub fn main_() !void {
     var cli = client(tcp);
     try cli.handshake(host);
     std.debug.print("handshake finished\n", .{});
+
+    _ = try cli.write("GET / HTTP/1.0\r\n\r\n");
+
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = try cli.read(&buf);
+        //std.debug.print("n:{d} buf: {d}\n", .{ n, buf[0..n] });
+        std.debug.print("{s}", .{buf[0..n]});
+        if (n == 0) break;
+    }
 
     // var file = try std.fs.cwd().createFile("server_hello", .{});
     // defer file.close();
