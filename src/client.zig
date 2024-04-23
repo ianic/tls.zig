@@ -13,48 +13,13 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const X25519 = std.crypto.dh.X25519;
 
-// tls.HandshakeType is missing server_key_exchange, server_hello_done
-pub const HandshakeType = enum(u8) {
-    client_hello = 1,
-    server_hello = 2,
-    new_session_ticket = 4,
-    end_of_early_data = 5,
-    encrypted_extensions = 8,
-    certificate = 11,
-    server_key_exchange = 12,
-    certificate_request = 13,
-    server_hello_done = 14,
-    certificate_verify = 15,
-    client_key_exchange = 16,
-    finished = 20,
-    key_update = 24,
-    message_hash = 254,
-    _,
-};
-
-pub inline fn int1(x: u8) [1]u8 {
-    return .{x};
-}
-
-// int1 from enum
-pub inline fn int1e(x: anytype) [1]u8 {
-    return int1(@intFromEnum(x));
-}
-
-pub inline fn int2e(x: anytype) [2]u8 {
-    return int2(@intFromEnum(x));
-}
+const tls12 = @import("tls12.zig");
+const int1 = tls12.int1;
+const int1e = tls12.int1e;
+const int2e = tls12.int2e;
 
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
     return .{ .stream = stream };
-}
-
-inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
-    return int2e(tls.ExtensionType.server_name) ++
-        int2(host_len + 5) ++ // byte length of this extension payload
-        int2(host_len + 3) ++ // server_name_list byte count
-        [1]u8{0x00} ++ // name_type
-        int2(host_len);
 }
 
 pub fn ClientT(comptime StreamType: type) type {
@@ -94,7 +59,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
             c.client_sequence += 1;
-            const cipher_text = encrypt(c.cipher, &buffer, c.client_sequence, [_]u8{ 0x17, 0x03, 0x03 }, buf[0..len]);
+            const cipher_text = encrypt(c.cipher, &buffer, c.client_sequence, .application_data, buf[0..len]);
 
             const record_header =
                 int1e(tls.ContentType.application_data) ++
@@ -170,13 +135,13 @@ pub fn ClientT(comptime StreamType: type) type {
             cipher: CipherType,
             buf: []u8,
             sequence: u64,
-            record_header: [3]u8,
+            content_type: tls.ContentType,
             data: []const u8,
         ) []const u8 {
             var iv: [16]u8 = undefined;
             crypto.random.bytes(&iv);
             buf[0..16].* = iv;
-            const chipertext = try encryptIv(cipher, buf[16..], sequence, record_header, iv, data);
+            const chipertext = try encryptIv(cipher, buf[16..], sequence, content_type, iv, data);
             return buf[0 .. 16 + chipertext.len];
         }
 
@@ -186,15 +151,15 @@ pub fn ClientT(comptime StreamType: type) type {
             cipher: CipherType,
             buf: []u8,
             sequence: u64,
-            record_header: [3]u8,
+            content_type: tls.ContentType,
             iv: [16]u8,
             data: []const u8,
         ) ![]const u8 {
             const mac_length = CipherType.Hash.digest_length;
 
             std.mem.writeInt(u64, buf[0..8], sequence, .big);
-            buf[8..][0..3].* = record_header;
-            std.mem.writeInt(u16, buf[11..][0..2], @intCast(data.len), .big);
+            buf[8..][0..5].* = tls12.recordHeader(content_type, data.len);
+
             @memcpy(buf[13..][0..data.len], data);
             const mac_buf = buf[0 .. 13 + data.len];
 
@@ -268,18 +233,15 @@ pub fn ClientT(comptime StreamType: type) type {
             fn hello(h: *Handshake, host: []const u8) !void {
                 const host_len: u16 = @intCast(host.len);
 
-                const no_compression = [_]u8{ 0x01, 0x00 };
-                const no_session_id = [_]u8{0x00};
-                const cipher_suites = [_]u8{
-                    0x00, 0x02, // 2 bytes of cipher suite data follows
-                    0xc0, 0x13, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
-                };
+                const cipher_suites = enum_array(tls12.CipherSuite, &.{
+                    .AES_128_CBC_SHA,
+                });
 
                 const extensions_payload =
-                    [_]u8{ 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00 } ++ // status request
-                    [_]u8{ 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00 } ++ // ec point formats
-                    [_]u8{ 0xff, 0x01, 0x00, 0x01, 0x00 } ++ // renegotiation info
-                    [_]u8{ 0x00, 0x12, 0x00, 0x00 } ++ // sct
+                    tls12.extension.status_request ++
+                    tls12.extension.ec_point_formats ++
+                    tls12.extension.renegotiation_info ++
+                    tls12.extension.sct ++
                     tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
                     .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
@@ -292,26 +254,19 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
                     .x25519,
                 })) ++
-                    serverNameExtensionHeader(host_len);
+                    tls12.serverNameExtensionHeader(host_len);
 
                 const payload =
                     int2e(tls.ProtocolVersion.tls_1_2) ++
                     h.client_random ++
-                    no_session_id ++
+                    tls12.hello.no_session_id ++
                     cipher_suites ++
-                    no_compression ++
+                    tls12.hello.no_compression ++
                     int2(@intCast(extensions_payload.len + host_len)) ++
                     extensions_payload;
 
-                const handshake_header =
-                    int1e(tls.HandshakeType.client_hello) ++
-                    int3(@intCast(payload.len + host_len));
-
                 const record =
-                    int1e(tls.ContentType.handshake) ++
-                    int2e(tls.ProtocolVersion.tls_1_2) ++
-                    int2(@intCast(handshake_header.len + payload.len + host_len)) ++
-                    handshake_header ++
+                    tls12.handshakeHeader(payload.len + host_len) ++
                     payload;
 
                 {
@@ -335,7 +290,7 @@ pub fn ClientT(comptime StreamType: type) type {
             /// Extract server public key and server random.
             fn serverHello(h: *Handshake) !void {
                 var rd: tls.Decoder = .{ .buf = &h.buffer }; // record decoder
-                var handshake_state = HandshakeType.server_hello;
+                var handshake_state = tls12.HandshakeType.server_hello;
                 while (true) {
                     try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
                     const content_type = rd.decode(tls.ContentType);
@@ -350,7 +305,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     switch (content_type) {
                         tls.ContentType.handshake => {
                             try hd.ensure(4);
-                            const handshake_type = hd.decode(HandshakeType);
+                            const handshake_type = hd.decode(tls12.HandshakeType);
                             if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                             const length = hd.decode(u24);
                             var hsd = try hd.sub(length); // handshake decoder
@@ -480,7 +435,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     int1e(tls.ContentType.handshake) ++
                     int2e(tls.ProtocolVersion.tls_1_2) ++
                     int2(5 + len) ++
-                    int1e(HandshakeType.client_key_exchange) ++
+                    int1e(tls12.HandshakeType.client_key_exchange) ++
                     int3(1 + len) ++
                     int1(len);
                 {
@@ -502,9 +457,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn changeCipherSpec(h: *Handshake) !void {
                 const header =
-                    int1e(tls.ContentType.change_cipher_spec) ++
-                    int2e(tls.ProtocolVersion.tls_1_2) ++
-                    int2(1) ++
+                    tls12.recordHeader(.change_cipher_spec, 1) ++
                     int1(1);
                 {
                     var iovecs = [_]std.posix.iovec_const{
@@ -528,12 +481,8 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn handshakeFinished(h: *Handshake) !void {
                 const verify_data = h.verifyData();
-
-                const record_header =
-                    int1e(tls.ContentType.handshake) ++
-                    int2e(tls.ProtocolVersion.tls_1_2);
-                const data = Client.encrypt(h.cipher, &h.buffer, 0, record_header, &verify_data);
-                const header = record_header ++ int2(@intCast(data.len));
+                const data = Client.encrypt(h.cipher, &h.buffer, 0, .handshake, &verify_data);
+                const header = tls12.recordHeader(.handshake, data.len);
 
                 {
                     var iovecs = [_]std.posix.iovec_const{
@@ -576,65 +525,6 @@ pub fn ClientT(comptime StreamType: type) type {
                     rd.skip(record_len);
                 }
             }
-
-            // fn encryptIV(
-            //     h: *Handshake,
-            //     buf: []u8,
-            //     sequence: u64,
-            //     record_header: [3]u8,
-            //     data: []const u8,
-            // ) []const u8 {
-            //     var iv: [16]u8 = undefined;
-            //     crypto.random.bytes(&iv);
-            //     buf[0..16].* = iv;
-            //     const chipertext = try h.encrypt(buf[16..], sequence, record_header, iv, data);
-            //     return buf[0 .. 16 + chipertext.len];
-            // }
-
-            // fn encrypt(
-            //     h: *Handshake,
-            //     buf: []u8,
-            //     sequence: u64,
-            //     record_header: [3]u8,
-            //     iv: [16]u8,
-            //     data: []const u8,
-            // ) ![]const u8 {
-            //     const mac_length = CipherType.Hash.digest_length;
-
-            //     std.mem.writeInt(u64, buf[0..8], sequence, .big);
-            //     buf[8..][0..3].* = record_header;
-            //     std.mem.writeInt(u16, buf[11..][0..2], @intCast(data.len), .big);
-            //     @memcpy(buf[13..][0..data.len], data);
-            //     const mac_buf = buf[0 .. 13 + data.len];
-
-            //     var mac: [mac_length]u8 = undefined;
-            //     CipherType.Hmac.create(&mac, mac_buf, &h.cipher.client_secret);
-
-            //     @memcpy(buf[0..data.len], data);
-            //     @memcpy(buf[data.len..][0..mac.len], &mac);
-
-            //     const unpadded_len = data.len + mac.len;
-            //     const padded_len = CipherType.AEAD.paddedLength(unpadded_len);
-            //     const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
-            //     @memset(buf[unpadded_len..padded_len], padding_byte);
-            //     const cleartext = buf[0..padded_len];
-
-            //     const z = CipherType.AEAD.init(h.cipher.client_key);
-            //     const ciphertext = buf[0..cleartext.len];
-            //     z.encryptBlocks(ciphertext, cleartext, iv);
-            //     return ciphertext;
-            // }
-
-            // fn decrypt(h: *Handshake, buf: []u8, iv: [16]u8, ciphertext: []const u8) ![]const u8 {
-            //     const mac_length = CipherType.Hash.digest_length;
-            //     const z = CipherType.AEAD.init(h.cipher.client_key);
-            //     const decrypted = buf[0..ciphertext.len];
-            //     try z.decryptBlocks(decrypted, ciphertext, iv);
-            //     const padding_len = decrypted[decrypted.len - 1] + 1;
-            //     // TODO check mac
-            //     const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
-            //     return cleartext;
-            // }
         };
     };
 }
@@ -720,7 +610,7 @@ test "Handshake.generateMasterSecret" {
         const iv = [_]u8{
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
         };
-        const ciphertext = try ClientType.encryptIv(h.cipher, &buf, 1, [_]u8{ 0x17, 0x03, 0x03 }, iv, cleartext);
+        const ciphertext = try ClientType.encryptIv(h.cipher, &buf, 1, .application_data, iv, cleartext);
         const expected_ciphertext = [_]u8{
             0x6c, 0x42, 0x1c, 0x71, 0xc4, 0x2b, 0x18, 0x3b, 0xfa, 0x06, 0x19, 0x5d, 0x13, 0x3d, 0x0a, 0x09,
             0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1, 0x47, 0xec, 0x79, 0x0c, 0x99,
@@ -736,7 +626,7 @@ test "Handshake.generateMasterSecret" {
         const data = [_]u8{
             0x14, 0x00, 0x00, 0x0c, 0xcf, 0x91, 0x96, 0x26, 0xf1, 0x36, 0x0c, 0x53, 0x6a, 0xaa, 0xd7, 0x3a,
         };
-        const ciphertext = try ClientType.encryptIv(h.cipher, &buf, 0, [_]u8{ 0x16, 0x03, 0x03 }, iv, &data);
+        const ciphertext = try ClientType.encryptIv(h.cipher, &buf, 0, .handshake, iv, &data);
         const expected_ciphertext = [_]u8{
             0x22, 0x7b, 0xc9, 0xba, 0x81, 0xef, 0x30, 0xf2, 0xa8, 0xa7, 0x8f, 0xf1, 0xdf, 0x50, 0x84, 0x4d,
             0x58, 0x04, 0xb7, 0xee, 0xb2, 0xe2, 0x14, 0xc3, 0x2b, 0x68, 0x92, 0xac, 0xa3, 0xdb, 0x7b, 0x78,
