@@ -13,8 +13,6 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const X25519 = std.crypto.dh.X25519;
 
-const CipherType = std.crypto.tls.ApplicationCipherT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
-
 // tls.HandshakeType is missing server_key_exchange, server_hello_done
 pub const HandshakeType = enum(u8) {
     client_hello = 1,
@@ -60,6 +58,7 @@ inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
 }
 
 pub fn Client(comptime StreamType: type) type {
+    const CipherType = std.crypto.tls.ApplicationCipherT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
     return struct {
         stream: StreamType,
         client_sequence: usize = 0,
@@ -76,6 +75,7 @@ pub fn Client(comptime StreamType: type) type {
         ciphertext_end: usize = 0,
 
         const Self = @This();
+        const ClientType = @TypeOf(@This());
 
         pub fn handshake(c: *Self, host: []const u8) !void {
             var h = try Handshake.init(c.stream);
@@ -95,7 +95,7 @@ pub fn Client(comptime StreamType: type) type {
 
             var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
             c.client_sequence += 1;
-            const cipher_text = encryptIV(c.cipher, &buffer, c.client_sequence, [_]u8{ 0x17, 0x03, 0x03 }, buf[0..len]);
+            const cipher_text = encrypt(c.cipher, &buffer, c.client_sequence, [_]u8{ 0x17, 0x03, 0x03 }, buf[0..len]);
 
             const record_header =
                 int1e(tls.ContentType.application_data) ++
@@ -165,9 +165,9 @@ pub fn Client(comptime StreamType: type) type {
             }
         }
 
-        // generete iv, encrypt data, put iv and chipertext into buf
-        // after this buf contains iv and chipertext
-        fn encryptIV(
+        /// Generete iv, encrypt data, put iv and chipertext into buf.
+        /// After this buf contains iv and chipertext.
+        fn encrypt(
             cipher: CipherType,
             buf: []u8,
             sequence: u64,
@@ -177,11 +177,13 @@ pub fn Client(comptime StreamType: type) type {
             var iv: [16]u8 = undefined;
             crypto.random.bytes(&iv);
             buf[0..16].* = iv;
-            const chipertext = try encrypt(cipher, buf[16..], sequence, record_header, iv, data);
+            const chipertext = try encryptIv(cipher, buf[16..], sequence, record_header, iv, data);
             return buf[0 .. 16 + chipertext.len];
         }
 
-        fn encrypt(
+        /// Encrypt with provided iv. Encrypted data are put into buf.
+        /// Returns part of the buf with ciphertext data.
+        fn encryptIv(
             cipher: CipherType,
             buf: []u8,
             sequence: u64,
@@ -218,6 +220,18 @@ pub fn Client(comptime StreamType: type) type {
         fn decrypt(cipher: CipherType, buf: []u8, iv: [16]u8, ciphertext: []const u8) ![]const u8 {
             const mac_length = CipherType.Hash.digest_length;
             const z = CipherType.AEAD.init(cipher.server_key);
+            const decrypted = buf[0..ciphertext.len];
+            try z.decryptBlocks(decrypted, ciphertext, iv);
+            const padding_len = decrypted[decrypted.len - 1] + 1;
+            // TODO check mac
+            const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
+            return cleartext;
+        }
+
+        // decrypt with client key
+        fn clientDecrypt(cipher: CipherType, buf: []u8, iv: [16]u8, ciphertext: []const u8) ![]const u8 {
+            const mac_length = CipherType.Hash.digest_length;
+            const z = CipherType.AEAD.init(cipher.client_key);
             const decrypted = buf[0..ciphertext.len];
             try z.decryptBlocks(decrypted, ciphertext, iv);
             const padding_len = decrypted[decrypted.len - 1] + 1;
@@ -519,7 +533,8 @@ pub fn Client(comptime StreamType: type) type {
                 const record_header =
                     int1e(tls.ContentType.handshake) ++
                     int2e(tls.ProtocolVersion.tls_1_2);
-                const data = h.encryptIV(&h.buffer, 0, record_header, &verify_data);
+                const data = ClientType.encryptIV(h.cipher, &h.buffer, 0, record_header, &verify_data);
+                //const data = h.encryptIV(&h.buffer, 0, record_header, &verify_data);
                 const header = record_header ++ int2(@intCast(data.len));
 
                 {
@@ -539,7 +554,7 @@ pub fn Client(comptime StreamType: type) type {
 
             fn serverHandshakeFinished(h: *Handshake) !void {
                 var rd: tls.Decoder = .{ .buf = &h.buffer }; // record decoder
-                {
+                { // server change cipher spec message
                     try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
                     const content_type = rd.decode(tls.ContentType);
                     const protocol_version = rd.decode(tls.ProtocolVersion);
@@ -550,7 +565,7 @@ pub fn Client(comptime StreamType: type) type {
                     try rd.ensure(record_len);
                     rd.skip(record_len);
                 }
-                {
+                { // server finished message
                     try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
                     const content_type = rd.decode(tls.ContentType);
                     const protocol_version = rd.decode(tls.ProtocolVersion);
@@ -558,71 +573,70 @@ pub fn Client(comptime StreamType: type) type {
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                     if (content_type != tls.ContentType.handshake) return error.TlsUnexpectedMessage;
                     try rd.readAtLeast(h.stream, record_len);
+                    // TODO check finished message
                     try rd.ensure(record_len);
                     rd.skip(record_len);
                 }
             }
 
-            // generete iv, encrypt data, put iv and chipertext into buf
-            // after this buf contains iv and chipertext
-            fn encryptIV(
-                h: *Handshake,
-                buf: []u8,
-                sequence: u64,
-                record_header: [3]u8,
-                data: []const u8,
-            ) []const u8 {
-                var iv: [16]u8 = undefined;
-                crypto.random.bytes(&iv);
-                buf[0..16].* = iv;
-                const chipertext = try h.encrypt(buf[16..], sequence, record_header, iv, data);
-                return buf[0 .. 16 + chipertext.len];
-            }
+            // fn encryptIV(
+            //     h: *Handshake,
+            //     buf: []u8,
+            //     sequence: u64,
+            //     record_header: [3]u8,
+            //     data: []const u8,
+            // ) []const u8 {
+            //     var iv: [16]u8 = undefined;
+            //     crypto.random.bytes(&iv);
+            //     buf[0..16].* = iv;
+            //     const chipertext = try h.encrypt(buf[16..], sequence, record_header, iv, data);
+            //     return buf[0 .. 16 + chipertext.len];
+            // }
 
-            fn encrypt(
-                h: *Handshake,
-                buf: []u8,
-                sequence: u64,
-                record_header: [3]u8,
-                iv: [16]u8,
-                data: []const u8,
-            ) ![]const u8 {
-                const mac_length = CipherType.Hash.digest_length;
+            // fn encrypt(
+            //     h: *Handshake,
+            //     buf: []u8,
+            //     sequence: u64,
+            //     record_header: [3]u8,
+            //     iv: [16]u8,
+            //     data: []const u8,
+            // ) ![]const u8 {
+            //     const mac_length = CipherType.Hash.digest_length;
 
-                std.mem.writeInt(u64, buf[0..8], sequence, .big);
-                buf[8..][0..3].* = record_header;
-                std.mem.writeInt(u16, buf[11..][0..2], @intCast(data.len), .big);
-                @memcpy(buf[13..][0..data.len], data);
-                const mac_buf = buf[0 .. 13 + data.len];
+            //     std.mem.writeInt(u64, buf[0..8], sequence, .big);
+            //     buf[8..][0..3].* = record_header;
+            //     std.mem.writeInt(u16, buf[11..][0..2], @intCast(data.len), .big);
+            //     @memcpy(buf[13..][0..data.len], data);
+            //     const mac_buf = buf[0 .. 13 + data.len];
 
-                var mac: [mac_length]u8 = undefined;
-                CipherType.Hmac.create(&mac, mac_buf, &h.cipher.client_secret);
+            //     var mac: [mac_length]u8 = undefined;
+            //     CipherType.Hmac.create(&mac, mac_buf, &h.cipher.client_secret);
 
-                @memcpy(buf[0..data.len], data);
-                @memcpy(buf[data.len..][0..mac.len], &mac);
+            //     @memcpy(buf[0..data.len], data);
+            //     @memcpy(buf[data.len..][0..mac.len], &mac);
 
-                const unpadded_len = data.len + mac.len;
-                const padded_len = CipherType.AEAD.paddedLength(unpadded_len);
-                const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
-                @memset(buf[unpadded_len..padded_len], padding_byte);
-                const cleartext = buf[0..padded_len];
+            //     const unpadded_len = data.len + mac.len;
+            //     const padded_len = CipherType.AEAD.paddedLength(unpadded_len);
+            //     const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
+            //     @memset(buf[unpadded_len..padded_len], padding_byte);
+            //     const cleartext = buf[0..padded_len];
 
-                const z = CipherType.AEAD.init(h.cipher.client_key);
-                const ciphertext = buf[0..cleartext.len];
-                z.encryptBlocks(ciphertext, cleartext, iv);
-                return ciphertext;
-            }
+            //     const z = CipherType.AEAD.init(h.cipher.client_key);
+            //     const ciphertext = buf[0..cleartext.len];
+            //     z.encryptBlocks(ciphertext, cleartext, iv);
+            //     return ciphertext;
+            // }
 
-            fn decrypt(h: *Handshake, buf: []u8, iv: [16]u8, ciphertext: []const u8) ![]const u8 {
-                const mac_length = CipherType.Hash.digest_length;
-                const z = CipherType.AEAD.init(h.cipher.client_key);
-                const decrypted = buf[0..ciphertext.len];
-                try z.decryptBlocks(decrypted, ciphertext, iv);
-                const padding_len = decrypted[decrypted.len - 1] + 1;
-                // TODO check mac
-                const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
-                return cleartext;
-            }
+            // fn decrypt(h: *Handshake, buf: []u8, iv: [16]u8, ciphertext: []const u8) ![]const u8 {
+            //     const mac_length = CipherType.Hash.digest_length;
+            //     const z = CipherType.AEAD.init(h.cipher.client_key);
+            //     const decrypted = buf[0..ciphertext.len];
+            //     try z.decryptBlocks(decrypted, ciphertext, iv);
+            //     const padding_len = decrypted[decrypted.len - 1] + 1;
+            //     // TODO check mac
+            //     const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
+            //     return cleartext;
+            // }
         };
     };
 }
@@ -682,7 +696,8 @@ test "Handshake.serverHello" {
 }
 
 test "Handshake.generateMasterSecret" {
-    var h: Client(TestStream).Handshake = .{ .stream = undefined };
+    const ClientType = Client(TestStream);
+    var h: ClientType.Handshake = .{ .stream = undefined };
     { // init with known keys
         _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
         _ = try hexToBytes(h.server_random[0..], "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
@@ -707,14 +722,14 @@ test "Handshake.generateMasterSecret" {
         const iv = [_]u8{
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
         };
-        const ciphertext = try h.encrypt(&buf, 1, [_]u8{ 0x17, 0x03, 0x03 }, iv, cleartext);
+        const ciphertext = try ClientType.encryptIv(h.cipher, &buf, 1, [_]u8{ 0x17, 0x03, 0x03 }, iv, cleartext);
         const expected_ciphertext = [_]u8{
             0x6c, 0x42, 0x1c, 0x71, 0xc4, 0x2b, 0x18, 0x3b, 0xfa, 0x06, 0x19, 0x5d, 0x13, 0x3d, 0x0a, 0x09,
             0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1, 0x47, 0xec, 0x79, 0x0c, 0x99,
         };
         try testing.expectEqualSlices(u8, &expected_ciphertext, ciphertext);
 
-        try testing.expectEqualStrings(cleartext, try h.decrypt(&buf, iv, ciphertext[0..32]));
+        try testing.expectEqualStrings(cleartext, try ClientType.clientDecrypt(h.cipher, &buf, iv, ciphertext[0..32]));
     }
     { // encrypt verify data from illustrated example
         const iv = [_]u8{
@@ -723,7 +738,7 @@ test "Handshake.generateMasterSecret" {
         const data = [_]u8{
             0x14, 0x00, 0x00, 0x0c, 0xcf, 0x91, 0x96, 0x26, 0xf1, 0x36, 0x0c, 0x53, 0x6a, 0xaa, 0xd7, 0x3a,
         };
-        const ciphertext = try h.encrypt(&buf, 0, [_]u8{ 0x16, 0x03, 0x03 }, iv, &data);
+        const ciphertext = try ClientType.encryptIv(h.cipher, &buf, 0, [_]u8{ 0x16, 0x03, 0x03 }, iv, &data);
         const expected_ciphertext = [_]u8{
             0x22, 0x7b, 0xc9, 0xba, 0x81, 0xef, 0x30, 0xf2, 0xa8, 0xa7, 0x8f, 0xf1, 0xdf, 0x50, 0x84, 0x4d,
             0x58, 0x04, 0xb7, 0xee, 0xb2, 0xe2, 0x14, 0xc3, 0x2b, 0x68, 0x92, 0xac, 0xa3, 0xdb, 0x7b, 0x78,
