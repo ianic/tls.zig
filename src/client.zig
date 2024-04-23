@@ -62,7 +62,19 @@ inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
 pub fn Client(comptime StreamType: type) type {
     return struct {
         stream: StreamType,
-        buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+        client_sequence: usize = 0,
+        server_sequence: usize = 0,
+
+        //read_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+        //read_pos: usize = 0,
+        cipher: CipherType = undefined,
+
+        ciphertext_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+        ciphertext_buffer_head: usize = 0,
+        ciphertext_buffer_tail: usize = 0,
+        cleartext_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+        cleartext_buffer_head: usize = 0,
+        cleartext_buffer_tail: usize = 0,
 
         const Self = @This();
 
@@ -76,6 +88,142 @@ pub fn Client(comptime StreamType: type) type {
             try h.changeCipherSpec();
             try h.handshakeFinished();
             try h.serverHandshakeFinished();
+            c.cipher = h.cipher;
+        }
+
+        pub fn write(c: *Self, buf: []const u8) !usize {
+            const len = @min(buf.len, tls.max_cipertext_inner_record_len);
+
+            var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+            c.client_sequence += 1;
+            const cipher_text = encryptIV(c.cipher, &buffer, c.client_sequence, [_]u8{ 0x17, 0x03, 0x03 }, buf[0..len]);
+
+            const record_header =
+                int1e(tls.ContentType.application_data) ++
+                int2e(tls.ProtocolVersion.tls_1_2) ++
+                int2(@intCast(cipher_text.len));
+            {
+                var iovecs = [_]std.posix.iovec_const{
+                    .{
+                        .iov_base = &record_header,
+                        .iov_len = record_header.len,
+                    },
+                    .{
+                        .iov_base = cipher_text.ptr,
+                        .iov_len = cipher_text.len,
+                    },
+                };
+                try c.stream.writevAll(&iovecs);
+            }
+            return len;
+        }
+
+        pub fn read(c: *Self, buf: []u8) !usize {
+            while (true) {
+                if (c.cleartext_buffer_tail > c.cleartext_buffer_head) {
+                    const n = @min(buf.len, c.cleartext_buffer_tail - c.cleartext_buffer_head);
+                    @memcpy(buf[0..n], c.cleartext_buffer[c.cleartext_buffer_head..][0..n]);
+
+                    //std.debug.print("read more {d} {d} {d}\n", .{ c.cleartext_buffer_head, c.cleartext_buffer_tail, n });
+                    c.cleartext_buffer_head += n;
+                    return n;
+                }
+                //std.debug.print("read mor2 {d} {d}\n", .{ c.cleartext_buffer_head, c.cleartext_buffer_tail });
+                c.cleartext_buffer_head = 0;
+                c.cleartext_buffer_tail = 0;
+
+                //std.debug.print("read_buf {d}..{d}\n", .{ c.ciphertext_buffer_head, c.ciphertext_buffer_tail });
+                const read_buf = c.ciphertext_buffer[c.ciphertext_buffer_head..c.ciphertext_buffer_tail];
+                if (read_buf.len > tls.record_header_len) {
+                    const record_header = read_buf[0..tls.record_header_len];
+                    const content_type: tls.ContentType = @enumFromInt(record_header[0]);
+                    if (content_type != .application_data) return error.TlsUnexpectedMessage;
+                    const app_data_len = std.mem.readInt(u16, record_header[3..5], .big);
+                    if (read_buf[tls.record_header_len..].len >= app_data_len) {
+                        const app_data = read_buf[tls.record_header_len .. tls.record_header_len + app_data_len];
+                        const cleartext = try decrypt(c.cipher, &c.cleartext_buffer, app_data[0..16].*, app_data[16..]);
+                        c.cleartext_buffer_tail += cleartext.len;
+                        c.ciphertext_buffer_head += tls.record_header_len + app_data_len;
+                        continue;
+                    }
+                }
+
+                //std.debug.print("read more {d} {d}\n", .{ c.ciphertext_buffer_head, c.ciphertext_buffer_tail });
+                if (c.ciphertext_buffer_tail > c.ciphertext_buffer_head) {
+                    std.mem.copyForwards(
+                        u8,
+                        c.ciphertext_buffer[0 .. c.ciphertext_buffer_tail - c.ciphertext_buffer_head],
+                        c.ciphertext_buffer[c.ciphertext_buffer_head..c.ciphertext_buffer_tail],
+                    );
+                }
+                c.ciphertext_buffer_tail -= c.ciphertext_buffer_head;
+                c.ciphertext_buffer_head = 0;
+
+                const n = try c.stream.read(c.ciphertext_buffer[c.ciphertext_buffer_tail..]);
+                if (n == 0) return 0;
+                c.ciphertext_buffer_tail += n;
+            }
+        }
+
+        // generete iv, encrypt data, put iv and chipertext into buf
+        // after this buf contains iv and chipertext
+        fn encryptIV(
+            cipher: CipherType,
+            buf: []u8,
+            sequence: u64,
+            record_header: [3]u8,
+            data: []const u8,
+        ) []const u8 {
+            var iv: [16]u8 = undefined;
+            crypto.random.bytes(&iv);
+            buf[0..16].* = iv;
+            const chipertext = try encrypt(cipher, buf[16..], sequence, record_header, iv, data);
+            return buf[0 .. 16 + chipertext.len];
+        }
+
+        fn encrypt(
+            cipher: CipherType,
+            buf: []u8,
+            sequence: u64,
+            record_header: [3]u8,
+            iv: [16]u8,
+            data: []const u8,
+        ) ![]const u8 {
+            const mac_length = CipherType.Hash.digest_length;
+
+            std.mem.writeInt(u64, buf[0..8], sequence, .big);
+            buf[8..][0..3].* = record_header;
+            std.mem.writeInt(u16, buf[11..][0..2], @intCast(data.len), .big);
+            @memcpy(buf[13..][0..data.len], data);
+            const mac_buf = buf[0 .. 13 + data.len];
+
+            var mac: [mac_length]u8 = undefined;
+            CipherType.Hmac.create(&mac, mac_buf, &cipher.client_secret);
+
+            @memcpy(buf[0..data.len], data);
+            @memcpy(buf[data.len..][0..mac.len], &mac);
+
+            const unpadded_len = data.len + mac.len;
+            const padded_len = CipherType.AEAD.paddedLength(unpadded_len);
+            const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
+            @memset(buf[unpadded_len..padded_len], padding_byte);
+            const cleartext = buf[0..padded_len];
+
+            const z = CipherType.AEAD.init(cipher.client_key);
+            const ciphertext = buf[0..cleartext.len];
+            z.encryptBlocks(ciphertext, cleartext, iv);
+            return ciphertext;
+        }
+
+        fn decrypt(cipher: CipherType, buf: []u8, iv: [16]u8, ciphertext: []const u8) ![]const u8 {
+            const mac_length = CipherType.Hash.digest_length;
+            const z = CipherType.AEAD.init(cipher.server_key);
+            const decrypted = buf[0..ciphertext.len];
+            try z.decryptBlocks(decrypted, ciphertext, iv);
+            const padding_len = decrypted[decrypted.len - 1] + 1;
+            // TODO check mac
+            const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
+            return cleartext;
         }
 
         const Handshake = struct {
