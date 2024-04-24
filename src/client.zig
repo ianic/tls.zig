@@ -28,6 +28,17 @@ fn CipherT(comptime AeadType: type, comptime HashType: type) type {
 
         const Self = @This();
 
+        fn init(p: [128]u8) Self {
+            const dl = Hash.digest_length;
+            const kl = AEAD.key_length;
+            return .{
+                .client_secret = p[0..dl].*,
+                .server_secret = p[dl..][0..dl].*,
+                .client_key = p[2 * dl ..][0..kl].*,
+                .server_key = p[2 * dl + kl ..][0..kl].*,
+            };
+        }
+
         /// Generete iv, encrypt data, put iv and chipertext into buf.
         /// After this buf contains iv and chipertext.
         fn encrypt(
@@ -39,9 +50,9 @@ fn CipherT(comptime AeadType: type, comptime HashType: type) type {
         ) []const u8 {
             var iv: [iv_length]u8 = undefined;
             crypto.random.bytes(&iv);
-            buf[0..16].* = iv;
-            const chipertext = try encryptIv(cipher, buf[16..], sequence, content_type, iv, data);
-            return buf[0 .. 16 + chipertext.len];
+            buf[0..iv_length].* = iv;
+            const chipertext = try encryptIv(cipher, buf[iv_length..], sequence, content_type, iv, data);
+            return buf[0 .. iv_length + chipertext.len];
         }
 
         /// Encrypt with provided iv. Encrypted data are put into buf.
@@ -454,12 +465,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 HmacSha256.create(p[64..96], a3 ++ seed, &h.master_secret);
                 HmacSha256.create(p[96..], a4 ++ seed, &h.master_secret);
 
-                h.cipher = .{
-                    .client_secret = p[0..20].*,
-                    .server_secret = p[20..40].*,
-                    .client_key = p[40..56].*,
-                    .server_key = p[56..72].*,
-                };
+                h.cipher = CipherType.init(p);
             }
 
             fn keyExchange(h: *Handshake) !void {
