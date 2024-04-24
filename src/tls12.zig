@@ -46,6 +46,7 @@ pub inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
 
 pub const CipherSuite = enum(u16) {
     AES_128_CBC_SHA = 0xc013,
+    AES_128_GCM_SHA256 = 0xc02f,
 };
 
 pub const extension = struct {

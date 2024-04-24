@@ -18,24 +18,23 @@ fn CipherT(comptime AeadType: type, comptime HashType: type) type {
         pub const AEAD = AeadType;
         pub const Hash = HashType;
         pub const Hmac = crypto.auth.hmac.Hmac(Hash);
-        const mac_length = Hash.digest_length;
-        const iv_length = AEAD.nonce_length;
+        pub const explicit_iv_len = 8;
 
-        client_secret: [Hash.digest_length]u8,
-        server_secret: [Hash.digest_length]u8,
         client_key: [AEAD.key_length]u8,
         server_key: [AEAD.key_length]u8,
+        client_iv: [AEAD.nonce_length - explicit_iv_len]u8,
+        server_iv: [AEAD.nonce_length - explicit_iv_len]u8,
 
         const Self = @This();
 
         fn init(p: [128]u8) Self {
-            const dl = Hash.digest_length;
             const kl = AEAD.key_length;
+            const il = AEAD.nonce_length - explicit_iv_len;
             return .{
-                .client_secret = p[0..dl].*,
-                .server_secret = p[dl..][0..dl].*,
-                .client_key = p[2 * dl ..][0..kl].*,
-                .server_key = p[2 * dl + kl ..][0..kl].*,
+                .client_key = p[0..kl].*,
+                .server_key = p[kl..][0..kl].*,
+                .client_iv = p[2 * kl ..][0..il].*,
+                .server_iv = p[2 * kl + il ..][0..il].*,
             };
         }
 
@@ -46,70 +45,52 @@ fn CipherT(comptime AeadType: type, comptime HashType: type) type {
             buf: []u8,
             sequence: u64,
             content_type: tls.ContentType,
-            data: []const u8,
+            cleartext: []const u8,
         ) []const u8 {
-            var iv: [iv_length]u8 = undefined;
-            crypto.random.bytes(&iv);
-            buf[0..iv_length].* = iv;
-            const chipertext = try encryptIv(cipher, buf[iv_length..], sequence, content_type, iv, data);
-            return buf[0 .. iv_length + chipertext.len];
+            var explicit_iv: [explicit_iv_len]u8 = undefined;
+            crypto.random.bytes(&explicit_iv);
+            buf[0..explicit_iv_len].* = explicit_iv;
+
+            const iv = cipher.client_iv ++ explicit_iv;
+            const ciphertext = buf[explicit_iv.len..][0..cleartext.len];
+            const auth_tag = buf[explicit_iv.len + ciphertext.len ..][0..AEAD.tag_length];
+            const ad = additonalData(sequence, content_type, cleartext.len);
+            AEAD.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, cipher.client_key);
+            return buf[0 .. explicit_iv.len + ciphertext.len + auth_tag.len];
         }
 
-        /// Encrypt with provided iv. Encrypted data are put into buf.
-        /// Returns part of the buf with ciphertext data.
-        fn encryptIv(
+        fn decrypt(
             cipher: Self,
             buf: []u8,
             sequence: u64,
             content_type: tls.ContentType,
-            iv: [iv_length]u8,
-            data: []const u8,
+            payload: []const u8,
         ) ![]const u8 {
-            std.mem.writeInt(u64, buf[0..8], sequence, .big);
-            buf[8..][0..5].* = tls12.recordHeader(content_type, data.len);
+            if (payload.len < AEAD.tag_length + explicit_iv_len)
+                return error.TlsDecryptError;
 
-            @memcpy(buf[13..][0..data.len], data);
-            const mac_buf = buf[0 .. 13 + data.len];
+            const iv = cipher.server_iv ++ payload[0..explicit_iv_len].*;
+            const cleartext_len = payload.len - AEAD.tag_length - explicit_iv_len;
+            const ciphertext = payload[explicit_iv_len..][0..cleartext_len];
+            const auth_tag = payload[explicit_iv_len + cleartext_len ..][0..AEAD.tag_length];
+            const ad = additonalData(sequence, content_type, cleartext_len);
 
-            var mac: [mac_length]u8 = undefined;
-            Hmac.create(&mac, mac_buf, &cipher.client_secret);
-
-            @memcpy(buf[0..data.len], data);
-            @memcpy(buf[data.len..][0..mac.len], &mac);
-
-            const unpadded_len = data.len + mac.len;
-            const padded_len = AEAD.paddedLength(unpadded_len);
-            const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
-            @memset(buf[unpadded_len..padded_len], padding_byte);
-            const cleartext = buf[0..padded_len];
-
-            const ciphertext = buf[0..cleartext.len];
-            AEAD.init(cipher.client_key).encrypt(ciphertext, cleartext, iv);
-            return ciphertext;
-        }
-
-        fn decrypt(cipher: Self, buf: []u8, iv: [iv_length]u8, ciphertext: []const u8) ![]const u8 {
-            return decryptKey(cipher.server_key, buf, iv, ciphertext);
-        }
-
-        // decrypt with client key
-        fn clientDecrypt(cipher: Self, buf: []u8, iv: [iv_length]u8, ciphertext: []const u8) ![]const u8 {
-            return decryptKey(cipher.client_key, buf, iv, ciphertext);
-        }
-
-        fn decryptKey(key: [AEAD.key_length]u8, buf: []u8, iv: [iv_length]u8, ciphertext: []const u8) ![]const u8 {
-            const decrypted = buf[0..ciphertext.len];
-            try AEAD.init(key).decrypt(decrypted, ciphertext, iv);
-            const padding_len = decrypted[decrypted.len - 1] + 1;
-            // TODO check mac
-            const cleartext = decrypted[0 .. decrypted.len - padding_len - mac_length];
+            const cleartext = buf[0..cleartext_len];
+            try AEAD.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, cipher.server_key);
             return cleartext;
+        }
+
+        fn additonalData(sequence: u64, content_type: tls.ContentType, cleartext_len: usize) [13]u8 {
+            var ad: [13]u8 = undefined;
+            std.mem.writeInt(u64, ad[0..8], sequence, .big);
+            ad[8..13].* = tls12.recordHeader(content_type, cleartext_len);
+            return ad;
         }
     };
 }
 
 pub fn ClientT(comptime StreamType: type) type {
-    const CipherType = CipherT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
+    const CipherType = CipherT(std.crypto.aead.aes_gcm.Aes128Gcm, std.crypto.hash.sha2.Sha256);
     return struct {
         stream: StreamType,
         client_sequence: usize = 0,
@@ -186,7 +167,13 @@ pub fn ClientT(comptime StreamType: type) type {
                     if (read_buffer[tls.record_header_len..].len >= data_len) {
                         const data = read_buffer[tls.record_header_len .. tls.record_header_len + data_len];
                         c.cleartext_start = c.ciphertext_start;
-                        const cleartext = try c.cipher.decrypt(c.read_buffer[c.cleartext_start..], data[0..16].*, data[16..]);
+                        c.server_sequence += 1;
+                        const cleartext = try c.cipher.decrypt(
+                            c.read_buffer[c.cleartext_start..],
+                            c.server_sequence,
+                            content_type,
+                            data,
+                        );
                         c.cleartext_end = c.cleartext_start + cleartext.len;
                         c.ciphertext_start += tls.record_header_len + data_len;
                         switch (content_type) {
@@ -256,7 +243,8 @@ pub fn ClientT(comptime StreamType: type) type {
                 const host_len: u16 = @intCast(host.len);
 
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
-                    .AES_128_CBC_SHA,
+                    .AES_128_GCM_SHA256,
+                    //.AES_128_CBC_SHA,
                 });
 
                 const extensions_payload =
@@ -346,11 +334,7 @@ pub fn ClientT(comptime StreamType: type) type {
                         .handshake => {}, // continue
                         else => return error.TlsUnexpectedMessage,
                     }
-                    if (content_type != .handshake) {
-                        std.debug.print("content_type: {}\n", .{content_type});
-                        bufPrint(hd.rest());
-                        return error.TlsUnexpectedMessage;
-                    }
+                    if (content_type != .handshake) return error.TlsUnexpectedMessage;
                     h.transcript.update(hd.rest());
 
                     try hd.ensure(4);
@@ -372,7 +356,8 @@ pub fn ClientT(comptime StreamType: type) type {
 
                             try hsd.ensure(2 + 1);
                             const cipher_suite = hsd.decode(u16);
-                            if (cipher_suite != 0xc013) return error.TlsIllegalParameter; // the only one we support
+                            // TODO: stavi ovdje provjeru da je jedan od predlozenih
+                            if (cipher_suite != 0xc02f) return error.TlsIllegalParameter; // the only one we support
                             hsd.skip(1); // skip compression method
 
                             if (!hsd.eof()) { // TODO is this because we didn't send any extension
@@ -511,6 +496,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     const record_len = rd.decode(u16);
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                     if (content_type != tls.ContentType.change_cipher_spec) return error.TlsUnexpectedMessage;
+
                     try rd.readAtLeast(h.stream, record_len);
                     try rd.ensure(record_len);
                     rd.skip(record_len);
@@ -525,7 +511,9 @@ pub fn ClientT(comptime StreamType: type) type {
                     try rd.readAtLeast(h.stream, record_len);
                     // TODO check finished message
                     try rd.ensure(record_len);
-                    rd.skip(record_len);
+                    const data = rd.slice(record_len);
+                    _ = try h.cipher.decrypt(&h.buffer, 0, content_type, data);
+                    //rd.skip(record_len);
                 }
             }
         };
@@ -609,7 +597,7 @@ test "Handshake.generateMasterSecret" {
     { // encrypt ping
         const cleartext = "ping";
         const iv = [_]u8{
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
         };
         const ciphertext = try h.cipher.encryptIv(&buf, 1, .application_data, iv, cleartext);
         const expected_ciphertext = [_]u8{
