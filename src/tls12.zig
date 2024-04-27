@@ -47,6 +47,8 @@ pub inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
 pub const CipherSuite = enum(u16) {
     AES_128_CBC_SHA = 0xc013,
     AES_128_GCM_SHA256 = 0xc02f,
+    //TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+    _,
 };
 
 pub const extension = struct {
@@ -73,3 +75,5 @@ pub inline fn recordHeader(content_type: tls.ContentType, payload_len: usize) [5
         int2e(tls.ProtocolVersion.tls_1_2) ++
         int2(@intCast(payload_len));
 }
+
+pub const explicit_iv_len = 8;
