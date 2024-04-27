@@ -71,8 +71,87 @@ fn CipherT(comptime AeadType: type) type {
     };
 }
 
+fn CipherCBCT(comptime CbcType: type, comptime HashType: type) type {
+    const mac_length = HashType.digest_length;
+    const key_length = CbcType.key_length;
+    const iv_length = CbcType.nonce_length;
+
+    return struct {
+        pub const CBC = CbcType;
+        pub const Hmac = crypto.auth.hmac.Hmac(HashType);
+
+        client_secret: [mac_length]u8,
+        server_secret: [mac_length]u8,
+        client_key: [key_length]u8,
+        server_key: [key_length]u8,
+        rnd: std.Random,
+
+        const Cipher = @This();
+
+        fn cleartextLen(payload_len: usize) !usize {
+            const overhead = iv_length + mac_length;
+            if (payload_len < overhead) return error.TlsDecryptError;
+            return payload_len - overhead;
+        }
+
+        fn init(p: [128]u8, rnd: std.Random) Cipher {
+            return .{
+                .rnd = rnd,
+                .client_secret = p[0..mac_length].*,
+                .server_secret = p[mac_length..][0..mac_length].*,
+                .client_key = p[2 * mac_length ..][0..key_length].*,
+                .server_key = p[2 * mac_length + key_length ..][0..key_length].*,
+            };
+        }
+
+        fn encrypt(cipher: Cipher, buf: []u8, ad: []const u8, cleartext: []const u8) []const u8 {
+            const cleartext_idx = @max(ad.len, iv_length);
+
+            // unused | ad | cleartext | mac
+            const mac_input_buf = buf[cleartext_idx - ad.len ..][0 .. ad.len + cleartext.len + mac_length];
+            @memcpy(mac_input_buf[0..ad.len], ad);
+            @memcpy(mac_input_buf[ad.len..][0..cleartext.len], cleartext);
+            const mac_output_buf = mac_input_buf[ad.len + cleartext.len ..][0..mac_length];
+            Hmac.create(mac_output_buf, mac_input_buf[0 .. ad.len + cleartext.len], &cipher.client_secret);
+
+            // unused | ad | cleartext | mac | padding
+            const unpadded_len = cleartext.len + mac_length;
+            const padded_len = CBC.paddedLength(unpadded_len);
+            const payload_buf = buf[cleartext_idx..][0..padded_len];
+            const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
+            @memset(payload_buf[unpadded_len..padded_len], padding_byte);
+
+            // iv | cleartext | mac | padding
+            // iv | -------   payload -------
+            const iv = buf[cleartext_idx - iv_length .. cleartext_idx];
+            cipher.rnd.bytes(iv);
+
+            CBC.init(cipher.client_key).encrypt(payload_buf, payload_buf, iv[0..iv_length].*);
+            return buf[cleartext_idx - iv_length .. cleartext_idx + payload_buf.len];
+        }
+
+        fn decrypt(cipher: Cipher, buf: []u8, ad: []const u8, payload: []const u8) ![]const u8 {
+            _ = ad;
+            const iv = payload[0..iv_length];
+
+            const crypted = payload[iv_length..];
+            const decrypted = buf[0..crypted.len];
+            try CBC.init(cipher.server_key).decrypt(decrypted, crypted, iv[0..iv_length].*);
+
+            const padding_len = decrypted[decrypted.len - 1] + 1;
+            return decrypted[0 .. decrypted.len - mac_length - padding_len];
+            // TODO: ostavi mjesta u buf i tamo zaljepi ad nakon decrypt napravi
+            // mac od ad + cleartext to je ad_actual i usporedi s ovim koji je
+            // poslan (ad expected)
+            // Pazi ovaj ad koji ulazi ima unutar i padding... kako njega odbiti
+        }
+    };
+}
+
 pub fn ClientT(comptime StreamType: type) type {
-    const CipherType = CipherT(std.crypto.aead.aes_gcm.Aes128Gcm);
+    //const CipherType = CipherT(std.crypto.aead.aes_gcm.Aes128Gcm);
+    const CipherType = CipherCBCT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
+
     return struct {
         stream: StreamType,
         rnd: std.Random = std.crypto.random,
@@ -251,7 +330,6 @@ pub fn ClientT(comptime StreamType: type) type {
             server_random: [32]u8 = undefined,
             server_public_key: [32]u8 = undefined,
             master_secret: [32 + 16]u8 = undefined,
-            cipher: CipherType = undefined,
             client: *Client,
 
             fn init(cli: *Client) !Handshake {
@@ -272,8 +350,8 @@ pub fn ClientT(comptime StreamType: type) type {
                 const host_len: u16 = @intCast(host.len);
 
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
-                    .AES_128_GCM_SHA256,
-                    //.AES_128_CBC_SHA,
+                    //.AES_128_GCM_SHA256,
+                    .AES_128_CBC_SHA,
                     //.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
                 });
 
@@ -537,58 +615,84 @@ const bytesToHex = std.fmt.bytesToHex;
 const hexToBytes = std.fmt.hexToBytes;
 
 test "Handshake.clientHello" {
+    // predictable random number generator
+    var ptr = Predictable{};
+    const rnd = std.Random.init(&ptr, Predictable.fillFn);
+    // test stream
     var stream = TestStream{ .input = undefined };
     defer stream.deinit();
-    var h: ClientT(*TestStream).Handshake = .{
-        .stream = &stream,
-        .client_random = [32]u8{
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-        },
-    };
-    const host = "www.example.com";
-    try h.hello(host);
-    try testing.expectEqualSlices(u8, &[_]u8{
-        0x16, 0x03, 0x03, 0x00, 0x72, 0x01, 0x00, 0x00, 0x6e, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
-        0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
-        0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x00, 0x00, 0x02, 0xc0, 0x13,
-        0x01, 0x00, 0x00, 0x43, 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00, 0xff, 0x01, 0x00, 0x01, 0x00, 0x00,
-        0x12, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x10, 0x00, 0x0e, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04, 0x08,
-        0x05, 0x08, 0x06, 0x08, 0x07, 0x02, 0x01, 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d, 0x00,
-        0x00, 0x00, 0x14, 0x00, 0x12, 0x00, 0x00, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d,
-        0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
-    }, stream.output.items);
-    try testing.expectEqualStrings(host, stream.output.items[stream.output.items.len - host.len ..]);
+    // client and handshake with test stream and predictable random
+    const ClientType = ClientT(*TestStream);
+    var c = ClientType{ .stream = &stream, .rnd = rnd };
+    var h = try ClientType.Handshake.init(&c);
+
+    { // client random is set to predictable pattern
+        try testing.expectEqualStrings(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            &bytesToHex(h.client_random, .lower),
+        );
+    }
+
+    { // client hello message
+        const host = "www.example.com";
+        try h.hello(host);
+        try testing.expectEqualSlices(u8, &[_]u8{
+            0x16, 0x03, 0x03, 0x00, 0x72, 0x01, 0x00, 0x00, 0x6e, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
+            0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+            0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x00, 0x00, 0x02, 0xc0, 0x13,
+            0x01, 0x00, 0x00, 0x43, 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00, 0xff, 0x01, 0x00, 0x01, 0x00, 0x00,
+            0x12, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x10, 0x00, 0x0e, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04, 0x08,
+            0x05, 0x08, 0x06, 0x08, 0x07, 0x02, 0x01, 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d, 0x00,
+            0x00, 0x00, 0x14, 0x00, 0x12, 0x00, 0x00, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d,
+            0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
+        }, stream.output.items);
+        try testing.expectEqualStrings(host, stream.output.items[stream.output.items.len - host.len ..]);
+    }
 }
 
 test "Handshake.serverHello" {
+    // predictable random number generator
+    var ptr = Predictable{};
+    const rnd = std.Random.init(&ptr, Predictable.fillFn);
+    // test stream
     var stream = TestStream{ .input = &example.server_hello_responses };
     defer stream.deinit();
-    var h: ClientT(*TestStream).Handshake = .{
-        .stream = &stream,
-        .client_random = [_]u8{0} ** 32,
-        .server_random = [_]u8{0} ** 32,
-        .server_public_key = [_]u8{0} ** 32,
-    };
-    try h.serverHello();
-    try testing.expectEqualStrings(
-        "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-        &bytesToHex(h.server_random, .lower),
-    );
-    try testing.expectEqualStrings(
-        "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
-        &bytesToHex(h.server_public_key, .lower),
-    );
-    // unchanged in serverHello
-    try testing.expectEqualStrings(
-        "0000000000000000000000000000000000000000000000000000000000000000",
-        &bytesToHex(h.client_random, .lower),
-    );
+    // client and handshake with test stream and predictable random
+    const ClientType = ClientT(*TestStream);
+    var c = ClientType{ .stream = &stream, .rnd = rnd };
+    var h = try ClientType.Handshake.init(&c);
+
+    { // read server random and server public key from server hello, certificate
+        // and key exchange messages
+        try h.serverHello();
+        try testing.expectEqualStrings(
+            "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+            &bytesToHex(h.server_random, .lower),
+        );
+        try testing.expectEqualStrings(
+            "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615",
+            &bytesToHex(h.server_public_key, .lower),
+        );
+        // unchanged in serverHello
+        try testing.expectEqualStrings(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            &bytesToHex(h.client_random, .lower),
+        );
+    }
 }
 
 test "Handshake.generateMasterSecret" {
-    const ClientType = ClientT(TestStream);
-    var h: ClientType.Handshake = .{ .stream = undefined };
+    // predictable random number generator
+    var ptr = Predictable{};
+    const rnd = std.Random.init(&ptr, Predictable.fillFn);
+    // test stream
+    var stream = TestStream{ .input = &example.server_hello_responses };
+    defer stream.deinit();
+    // client and handshake with test stream and predictable random
+    const ClientType = ClientT(*TestStream);
+    var c = ClientType{ .stream = &stream, .rnd = rnd };
+    var h = try ClientType.Handshake.init(&c);
+
     { // init with known keys
         _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
         _ = try hexToBytes(h.server_random[0..], "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
@@ -601,50 +705,59 @@ test "Handshake.generateMasterSecret" {
     }
     { // generate encryption keys
         try h.generateEncryptionKeys();
-        try testing.expectEqualStrings("1b7d117c7d5f690bc263cae8ef60af0f1878acc2", &bytesToHex(h.cipher.client_secret, .lower));
-        try testing.expectEqualStrings("2ad8bdd8c601a617126f63540eb20906f781fad2", &bytesToHex(h.cipher.server_secret, .lower));
+        try testing.expectEqualStrings("1b7d117c7d5f690bc263cae8ef60af0f1878acc2", &bytesToHex(c.cipher.client_secret, .lower));
+        try testing.expectEqualStrings("2ad8bdd8c601a617126f63540eb20906f781fad2", &bytesToHex(c.cipher.server_secret, .lower));
     }
-    var buf: [1024]u8 = undefined;
+    //var buf: [1024]u8 = undefined;
     { // encrypt ping
         const cleartext = "ping";
-        const iv = [_]u8{
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
-        };
-        const ciphertext = try h.cipher.encryptIv(&buf, 1, .application_data, iv, cleartext);
-        const expected_ciphertext = [_]u8{
-            0x6c, 0x42, 0x1c, 0x71, 0xc4, 0x2b, 0x18, 0x3b, 0xfa, 0x06, 0x19, 0x5d, 0x13, 0x3d, 0x0a, 0x09,
-            0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1, 0x47, 0xec, 0x79, 0x0c, 0x99,
-        };
-        try testing.expectEqualSlices(u8, &expected_ciphertext, ciphertext);
+        c.client_sequence = 1;
+        ptr.idx = 0;
+        try c.send(.application_data, cleartext);
 
-        try testing.expectEqualStrings(cleartext, try h.cipher.clientDecrypt(&buf, iv, ciphertext[0..32]));
-    }
-    { // encrypt verify data from illustrated example
-        const iv = [_]u8{
-            0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
+        const expected = [_]u8{
+            0x17, 0x03, 0x03, 0x00, 0x30, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+            0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x6c, 0x42, 0x1c, 0x71, 0xc4, 0x2b, 0x18, 0x3b, 0xfa, 0x06, 0x19,
+            0x5d, 0x13, 0x3d, 0x0a, 0x09, 0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1,
+            0x47, 0xec, 0x79, 0x0c, 0x99,
         };
+        try testing.expectEqualSlices(u8, &expected, stream.output.items);
+
+        //try testing.expectEqualStrings(cleartext, try h.cipher.clientDecrypt(&buf, iv, ciphertext[0..32]));
+    }
+    const output_pos = stream.output.items.len;
+    { // encrypt verify data from illustrated example
         const data = [_]u8{
             0x14, 0x00, 0x00, 0x0c, 0xcf, 0x91, 0x96, 0x26, 0xf1, 0x36, 0x0c, 0x53, 0x6a, 0xaa, 0xd7, 0x3a,
         };
-        const ciphertext = try h.cipher.encryptIv(&buf, 0, .handshake, iv, &data);
-        const expected_ciphertext = [_]u8{
+        c.client_sequence = 0;
+        ptr.idx = 0x40;
+        try c.send(.handshake, &data);
+        const expected = [_]u8{
             0x22, 0x7b, 0xc9, 0xba, 0x81, 0xef, 0x30, 0xf2, 0xa8, 0xa7, 0x8f, 0xf1, 0xdf, 0x50, 0x84, 0x4d,
             0x58, 0x04, 0xb7, 0xee, 0xb2, 0xe2, 0x14, 0xc3, 0x2b, 0x68, 0x92, 0xac, 0xa3, 0xdb, 0x7b, 0x78,
             0x07, 0x7f, 0xdd, 0x90, 0x06, 0x7c, 0x51, 0x6b, 0xac, 0xb3, 0xba, 0x90, 0xde, 0xdf, 0x72, 0x0f,
         };
-        try testing.expectEqualSlices(u8, &expected_ciphertext, ciphertext);
+        const actual = stream.output.items[output_pos + 16 + 5 ..]; // skip header and iv
+        try testing.expectEqualSlices(u8, &expected, actual);
     }
 }
 
 test "Handshake.clientKeyExchange" {
+    // predictable random number generator
+    var ptr = Predictable{};
+    const rnd = std.Random.init(&ptr, Predictable.fillFn);
+    // test stream
     var stream = TestStream{};
     defer stream.deinit();
-    var h: ClientT(*TestStream).Handshake = .{
-        .stream = &stream,
-        .client_public_key = [32]u8{
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
-        },
+    // client and handshake with test stream and predictable random
+    const ClientType = ClientT(*TestStream);
+    var c = ClientType{ .stream = &stream, .rnd = rnd };
+    var h = try ClientType.Handshake.init(&c);
+    // set public key
+    h.client_public_key = [32]u8{
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
     };
     try h.keyExchange();
     try testing.expectEqualSlices(u8, &[_]u8{
@@ -655,10 +768,17 @@ test "Handshake.clientKeyExchange" {
 }
 
 test "Handshake.verifyData" {
-    // init client with master secret known
+    // predictable random number generator
+    var ptr = Predictable{};
+    const rnd = std.Random.init(&ptr, Predictable.fillFn);
+    // test stream
     var stream = TestStream{};
     defer stream.deinit();
-    var h: ClientT(*TestStream).Handshake = .{ .stream = &stream };
+    // client and handshake with test stream and predictable random
+    const ClientType = ClientT(*TestStream);
+    var c = ClientType{ .stream = &stream, .rnd = rnd };
+    var h = try ClientType.Handshake.init(&c);
+
     h.master_secret = example.master_secret;
 
     // add handshake messages to transcript
@@ -712,19 +832,6 @@ fn bufPrint(buf: []const u8) void {
             std.debug.print("\n", .{});
     }
     std.debug.print("\n", .{});
-}
-
-test "mogu li promjeniti crypto random funkciju" {
-    // var ptr = Predictable{};
-    // const rnd = std.Random.init(&ptr, Predictable.fillFn);
-
-    const rnd = crypto.random;
-
-    for (0..5) |_| {
-        var buf: [16]u8 = undefined;
-        rnd.bytes(&buf);
-        bufPrint(&buf);
-    }
 }
 
 const Predictable = struct {
