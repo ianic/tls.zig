@@ -28,12 +28,6 @@ fn CipherAeadT(comptime AeadType: type) type {
 
         const Cipher = @This();
 
-        fn cleartextLen(payload_len: usize) !usize {
-            const overhead = tls12.explicit_iv_len + auth_tag_len;
-            if (payload_len < overhead) return error.TlsDecryptError;
-            return payload_len - overhead;
-        }
-
         fn init(key_material: []const u8, rnd: std.Random) Cipher {
             return .{
                 .rnd = rnd,
@@ -60,8 +54,11 @@ fn CipherAeadT(comptime AeadType: type) type {
         }
 
         fn decrypt(cipher: Cipher, buf: []u8, ad: []u8, payload: []const u8) ![]const u8 {
+            const overhead = tls12.explicit_iv_len + auth_tag_len;
+            if (payload.len < overhead) return error.TlsDecryptError;
+
             const iv = cipher.server_iv ++ payload[0..tls12.explicit_iv_len].*;
-            const cleartext_len = try cleartextLen(payload.len);
+            const cleartext_len = payload.len - overhead;
             const ciphertext = payload[tls12.explicit_iv_len..][0..cleartext_len];
             const auth_tag = payload[tls12.explicit_iv_len + cleartext_len ..][0..auth_tag_len];
             std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
@@ -89,12 +86,6 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
         rnd: std.Random,
 
         const Cipher = @This();
-
-        fn cleartextLen(payload_len: usize) !usize {
-            const overhead = iv_length + mac_length;
-            if (payload_len < overhead) return error.TlsDecryptError;
-            return payload_len - overhead;
-        }
 
         fn init(key_material: []const u8, rnd: std.Random) Cipher {
             return .{
@@ -133,6 +124,8 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
         }
 
         fn decrypt(cipher: Cipher, buf: []u8, ad: []u8, payload: []const u8) ![]const u8 {
+            if (payload.len < iv_length + mac_length + 1) return error.TlsDecryptError;
+
             const iv = payload[0..iv_length];
 
             const crypted = payload[iv_length..];
