@@ -49,6 +49,16 @@ pub const CipherSuite = enum(u16) {
     AES_128_GCM_SHA256 = 0xc02f,
     //TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
     _,
+
+    pub fn validate(cs: CipherSuite) !void {
+        switch (cs) {
+            inline .AES_128_CBC_SHA,
+            .AES_128_GCM_SHA256,
+            //.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            => {},
+            else => return error.TlsIllegalParameter,
+        }
+    }
 };
 
 pub const extension = struct {

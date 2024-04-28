@@ -9,11 +9,12 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const X25519 = std.crypto.dh.X25519;
 
-pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
-    return .{ .stream = stream };
+pub fn client(stream: anytype, host: []const u8) !ClientT(@TypeOf(stream)) {
+    const ClientType = ClientT(@TypeOf(stream));
+    return try ClientType.init(stream, std.crypto.random, host);
 }
 
-fn CipherT(comptime AeadType: type) type {
+fn CipherAeadT(comptime AeadType: type) type {
     const key_len = AeadType.key_length;
     const auth_tag_len = AeadType.tag_length;
     const iv_len = AeadType.nonce_length - tls12.explicit_iv_len;
@@ -33,13 +34,13 @@ fn CipherT(comptime AeadType: type) type {
             return payload_len - overhead;
         }
 
-        fn init(p: [128]u8, rnd: std.Random) Cipher {
+        fn init(key_material: []const u8, rnd: std.Random) Cipher {
             return .{
                 .rnd = rnd,
-                .client_key = p[0..key_len].*,
-                .server_key = p[key_len..][0..key_len].*,
-                .client_iv = p[2 * key_len ..][0..iv_len].*,
-                .server_iv = p[2 * key_len + iv_len ..][0..iv_len].*,
+                .client_key = key_material[0..key_len].*,
+                .server_key = key_material[key_len..][0..key_len].*,
+                .client_iv = key_material[2 * key_len ..][0..iv_len].*,
+                .server_iv = key_material[2 * key_len + iv_len ..][0..iv_len].*,
             };
         }
 
@@ -58,11 +59,12 @@ fn CipherT(comptime AeadType: type) type {
             return buf[0 .. explicit_iv.len + ciphertext.len + auth_tag.len];
         }
 
-        fn decrypt(cipher: Cipher, buf: []u8, ad: []const u8, payload: []const u8) ![]const u8 {
+        fn decrypt(cipher: Cipher, buf: []u8, ad: []u8, payload: []const u8) ![]const u8 {
             const iv = cipher.server_iv ++ payload[0..tls12.explicit_iv_len].*;
             const cleartext_len = try cleartextLen(payload.len);
             const ciphertext = payload[tls12.explicit_iv_len..][0..cleartext_len];
             const auth_tag = payload[tls12.explicit_iv_len + cleartext_len ..][0..auth_tag_len];
+            std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
 
             const cleartext = buf[0..cleartext_len];
             try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, ad, iv, cipher.server_key);
@@ -71,7 +73,7 @@ fn CipherT(comptime AeadType: type) type {
     };
 }
 
-fn CipherCBCT(comptime CbcType: type, comptime HashType: type) type {
+fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
     const mac_length = HashType.digest_length;
     const key_length = CbcType.key_length;
     const iv_length = CbcType.nonce_length;
@@ -94,13 +96,13 @@ fn CipherCBCT(comptime CbcType: type, comptime HashType: type) type {
             return payload_len - overhead;
         }
 
-        fn init(p: [128]u8, rnd: std.Random) Cipher {
+        fn init(key_material: []const u8, rnd: std.Random) Cipher {
             return .{
                 .rnd = rnd,
-                .client_secret = p[0..mac_length].*,
-                .server_secret = p[mac_length..][0..mac_length].*,
-                .client_key = p[2 * mac_length ..][0..key_length].*,
-                .server_key = p[2 * mac_length + key_length ..][0..key_length].*,
+                .client_secret = key_material[0..mac_length].*,
+                .server_secret = key_material[mac_length..][0..mac_length].*,
+                .client_key = key_material[2 * mac_length ..][0..key_length].*,
+                .server_key = key_material[2 * mac_length + key_length ..][0..key_length].*,
             };
         }
 
@@ -130,8 +132,7 @@ fn CipherCBCT(comptime CbcType: type, comptime HashType: type) type {
             return buf[cleartext_idx - iv_length .. cleartext_idx + payload_buf.len];
         }
 
-        fn decrypt(cipher: Cipher, buf: []u8, ad: []const u8, payload: []const u8) ![]const u8 {
-            _ = ad;
+        fn decrypt(cipher: Cipher, buf: []u8, ad: []u8, payload: []const u8) ![]const u8 {
             const iv = payload[0..iv_length];
 
             const crypted = payload[iv_length..];
@@ -139,7 +140,11 @@ fn CipherCBCT(comptime CbcType: type, comptime HashType: type) type {
             try CBC.init(cipher.server_key).decrypt(decrypted, crypted, iv[0..iv_length].*);
 
             const padding_len = decrypted[decrypted.len - 1] + 1;
-            return decrypted[0 .. decrypted.len - mac_length - padding_len];
+
+            const cleartext_len = decrypted.len - mac_length - padding_len;
+            std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
+
+            return decrypted[0..cleartext_len];
             // TODO: ostavi mjesta u buf i tamo zaljepi ad nakon decrypt napravi
             // mac od ad + cleartext to je ad_actual i usporedi s ovim koji je
             // poslan (ad expected)
@@ -148,17 +153,36 @@ fn CipherCBCT(comptime CbcType: type, comptime HashType: type) type {
     };
 }
 
+const AppCipherT = union(enum) {
+    AES_128_CBC_SHA: CipherCbcT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1),
+    AES_128_GCM_SHA256: CipherAeadT(std.crypto.aead.aes_gcm.Aes128Gcm),
+    //TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+
+    fn init(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !AppCipherT {
+        // std.debug.print("using cipher suite {}\n", .{tag});
+        return switch (tag) {
+            .AES_128_CBC_SHA => .{
+                .AES_128_CBC_SHA = CipherCbcT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1).init(key_material, rnd),
+            },
+            .AES_128_GCM_SHA256 => .{
+                .AES_128_GCM_SHA256 = CipherAeadT(std.crypto.aead.aes_gcm.Aes128Gcm).init(key_material, rnd),
+            },
+            else => return error.TlsIllegalParameter,
+        };
+    }
+};
+
 pub fn ClientT(comptime StreamType: type) type {
     //const CipherType = CipherT(std.crypto.aead.aes_gcm.Aes128Gcm);
-    const CipherType = CipherCBCT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
+    //const CipherType = CipherCbcT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1);
 
     return struct {
         stream: StreamType,
         rnd: std.Random = std.crypto.random,
 
+        app_cipher: AppCipherT = undefined,
         client_sequence: usize = 0,
         server_sequence: usize = 0,
-        cipher: CipherType = undefined,
 
         read_buffer: [tls.max_ciphertext_record_len]u8 = undefined,
         // Part of the read buffer with decrypted application data.
@@ -170,16 +194,34 @@ pub fn ClientT(comptime StreamType: type) type {
 
         const Client = @This();
 
-        pub fn handshake(c: *Client, host: []const u8) !void {
-            var h = try Handshake.init(c);
+        pub fn init(stream: StreamType, rnd: std.Random, host: []const u8) !Client {
+            var h = try Handshake.init(stream, rnd);
             try h.hello(host);
             try h.serverHello();
             try h.generateMasterSecret();
             try h.generateEncryptionKeys();
+
+            // const app_cipher: AppCipherT = switch (h.cipher_suite_tag) {
+            //     .AES_128_CBC_SHA => .{
+            //         .AES_128_CBC_SHA = CipherCbcT(@import("cbc.zig").CBCAes128, std.crypto.hash.Sha1).init(h.key_material, rnd),
+            //     },
+            //     .AES_128_GCM_SHA256 => .{
+            //         .AES_128_GCM_SHA256 = CipherAeadT(std.crypto.aead.aes_gcm.Aes128Gcm).init(h.key_material, rnd),
+            //     },
+            //     else => return error.TlsIllegalParameter,
+            // };
+
+            var cli = Client{
+                .stream = stream,
+                .rnd = rnd,
+                .app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd),
+            };
+
             try h.keyExchange();
             try h.changeCipherSpec();
-            try h.handshakeFinished();
-            try h.serverHandshakeFinished();
+            try h.handshakeFinished(&cli);
+            try h.serverHandshakeFinished(&cli);
+            return cli;
         }
 
         pub fn write(c: *Client, buf: []const u8) !usize {
@@ -193,10 +235,15 @@ pub fn ClientT(comptime StreamType: type) type {
 
             const ad = additonalData(c.client_sequence, content_type, cleartext.len);
             c.client_sequence += 1;
-            const payload = c.cipher.encrypt(&buffer, &ad, cleartext);
+
+            const payload = switch (c.app_cipher) {
+                //inline else => |*p| @TypeOf(p).encrypt(p, &buffer, &ad, cleartext),
+                inline else => |*p| p.encrypt(&buffer, &ad, cleartext),
+            };
+            //const payload = c.cipher.encrypt(&buffer, &ad, cleartext);
 
             const header = tls12.recordHeader(content_type, payload.len);
-            try c.streamWrite(&header, payload);
+            try streamWrite(c.stream, &header, payload);
         }
 
         fn decrypt(
@@ -205,9 +252,14 @@ pub fn ClientT(comptime StreamType: type) type {
             content_type: tls.ContentType,
             payload: []const u8,
         ) ![]const u8 {
-            const ad = additonalData(c.server_sequence, content_type, try CipherType.cleartextLen(payload.len));
+            var ad = additonalData(c.server_sequence, content_type, 0);
             c.server_sequence += 1;
-            return try c.cipher.decrypt(cleartext_buffer, &ad, payload);
+
+            return switch (c.app_cipher) {
+                inline else => |*p| p.decrypt(cleartext_buffer, &ad, payload),
+            };
+
+            //return try c.cipher.decrypt(cleartext_buffer, &ad, payload);
         }
 
         fn additonalData(sequence: u64, content_type: tls.ContentType, cleartext_len: usize) [13]u8 {
@@ -217,7 +269,7 @@ pub fn ClientT(comptime StreamType: type) type {
             return ad;
         }
 
-        fn streamWrite(c: *Client, header: []const u8, payload: []const u8) !void {
+        fn streamWrite(stream: StreamType, header: []const u8, payload: []const u8) !void {
             var iovecs = [_]std.posix.iovec_const{
                 .{
                     .iov_base = header.ptr,
@@ -228,17 +280,17 @@ pub fn ClientT(comptime StreamType: type) type {
                     .iov_len = payload.len,
                 },
             };
-            try c.stream.writevAll(&iovecs);
+            try stream.writevAll(&iovecs);
         }
 
-        fn streamWriteHeader(c: *Client, header: []const u8) !void {
+        fn streamWriteHeader(stream: StreamType, header: []const u8) !void {
             var iovecs = [_]std.posix.iovec_const{
                 .{
                     .iov_base = header.ptr,
                     .iov_len = header.len,
                 },
             };
-            try c.stream.writevAll(&iovecs);
+            try stream.writevAll(&iovecs);
         }
 
         pub fn read(c: *Client, buf: []u8) !usize {
@@ -330,14 +382,16 @@ pub fn ClientT(comptime StreamType: type) type {
             server_random: [32]u8 = undefined,
             server_public_key: [32]u8 = undefined,
             master_secret: [32 + 16]u8 = undefined,
-            client: *Client,
+            key_material: [32 * 4]u8 = undefined,
+            cipher_suite_tag: tls12.CipherSuite = undefined,
+            stream: StreamType,
 
-            fn init(cli: *Client) !Handshake {
+            fn init(stream: StreamType, rnd: std.Random) !Handshake {
                 const kp = try X25519.KeyPair.create(null);
                 var client_random: [32]u8 = undefined;
-                cli.rnd.bytes(&client_random);
+                rnd.bytes(&client_random);
                 return .{
-                    .client = cli,
+                    .stream = stream,
                     .client_random = client_random,
                     .client_private_key = kp.secret_key,
                     .client_public_key = kp.public_key,
@@ -350,7 +404,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 const host_len: u16 = @intCast(host.len);
 
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
-                    //.AES_128_GCM_SHA256,
+                    .AES_128_GCM_SHA256,
                     .AES_128_CBC_SHA,
                     //.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
                 });
@@ -386,7 +440,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
                     payload;
 
-                try h.client.streamWrite(&record, host);
+                try streamWrite(h.stream, &record, host);
                 h.transcript.update(record[5..]);
                 h.transcript.update(host);
             }
@@ -397,13 +451,13 @@ pub fn ClientT(comptime StreamType: type) type {
                 var rd: tls.Decoder = .{ .buf = &h.buffer }; // record decoder
                 var handshake_state = tls12.HandshakeType.server_hello;
                 while (true) {
-                    try rd.readAtLeastOurAmt(h.client.stream, tls.record_header_len);
+                    try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
                     const content_type = rd.decode(tls.ContentType);
                     const protocol_version = rd.decode(tls.ProtocolVersion);
                     const record_len = rd.decode(u16);
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
 
-                    try rd.readAtLeast(h.client.stream, record_len);
+                    try rd.readAtLeast(h.stream, record_len);
                     var hd = try rd.sub(record_len); // header decoder
 
                     switch (content_type) {
@@ -439,14 +493,8 @@ pub fn ClientT(comptime StreamType: type) type {
                             hsd.skip(session_id_len);
 
                             try hsd.ensure(2 + 1);
-                            const cipher_suite_tag = hsd.decode(tls12.CipherSuite);
-                            switch (cipher_suite_tag) {
-                                inline .AES_128_CBC_SHA,
-                                .AES_128_GCM_SHA256,
-                                //.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                                => {},
-                                else => return error.TlsIllegalParameter,
-                            }
+                            h.cipher_suite_tag = hsd.decode(tls12.CipherSuite);
+                            try h.cipher_suite_tag.validate();
 
                             hsd.skip(1); // skip compression method
 
@@ -534,13 +582,27 @@ pub fn ClientT(comptime StreamType: type) type {
                 HmacSha256.create(&a3, &a2, &h.master_secret);
                 HmacSha256.create(&a4, &a3, &h.master_secret);
 
-                var p: [32 * 4]u8 = undefined;
-                HmacSha256.create(p[0..32], a1 ++ seed, &h.master_secret);
-                HmacSha256.create(p[32..64], a2 ++ seed, &h.master_secret);
-                HmacSha256.create(p[64..96], a3 ++ seed, &h.master_secret);
-                HmacSha256.create(p[96..], a4 ++ seed, &h.master_secret);
+                HmacSha256.create(h.key_material[0..32], a1 ++ seed, &h.master_secret);
+                HmacSha256.create(h.key_material[32..64], a2 ++ seed, &h.master_secret);
+                HmacSha256.create(h.key_material[64..96], a3 ++ seed, &h.master_secret);
+                HmacSha256.create(h.key_material[96..], a4 ++ seed, &h.master_secret);
 
-                h.client.cipher = CipherType.init(p, h.client.rnd);
+                // switch (h.cipher_suite_tag) {
+                //     inline .AES_128_CBC_SHA,
+                //     .AES_128_GCM_SHA256,
+                //     => |tag| {
+                //         h.cipher_suite_tag = @unionInit(AppCipherT, @tagName(tag), .{});
+                //     },
+                //     else => return error.TlsIllegalParameter,
+                // }
+
+                //h.cipher_suite_tag = @unionInit(AppCipherT, @tagName(h.cipher_suite_tag), .{});
+                // switch (h.client.application_cipher) {
+                //     inline else => |*ac| {
+                //         const P = @TypeOf(ac.*);
+                //         ac.* = P.init(p, h.client.rnd);
+                //     },
+                // }
             }
 
             fn keyExchange(h: *Handshake) !void {
@@ -549,7 +611,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_key_exchange, 1 + key_len) ++
                     tls12.int1(key_len);
 
-                try h.client.streamWrite(&header, &h.client_public_key);
+                try streamWrite(h.stream, &header, &h.client_public_key);
                 h.transcript.update(header[5..]);
                 h.transcript.update(&h.client_public_key);
             }
@@ -558,7 +620,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 const header =
                     tls12.recordHeader(.change_cipher_spec, 1) ++
                     tls12.int1(1);
-                try h.client.streamWriteHeader(&header);
+                try streamWriteHeader(h.stream, &header);
             }
 
             fn verifyData(h: *Handshake) [16]u8 {
@@ -570,37 +632,37 @@ pub fn ClientT(comptime StreamType: type) type {
                 return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
             }
 
-            fn handshakeFinished(h: *Handshake) !void {
+            fn handshakeFinished(h: *Handshake, c: *Client) !void {
                 const verify_data = h.verifyData();
-                try h.client.send(.handshake, &verify_data);
+                try c.send(.handshake, &verify_data);
             }
 
-            fn serverHandshakeFinished(h: *Handshake) !void {
+            fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
                 var rd: tls.Decoder = .{ .buf = &h.buffer }; // record decoder
                 { // server change cipher spec message
-                    try rd.readAtLeastOurAmt(h.client.stream, tls.record_header_len);
+                    try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
                     const content_type = rd.decode(tls.ContentType);
                     const protocol_version = rd.decode(tls.ProtocolVersion);
                     const record_len = rd.decode(u16);
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                     if (content_type != tls.ContentType.change_cipher_spec) return error.TlsUnexpectedMessage;
 
-                    try rd.readAtLeast(h.client.stream, record_len);
+                    try rd.readAtLeast(h.stream, record_len);
                     try rd.ensure(record_len);
                     rd.skip(record_len);
                 }
                 { // server finished message
-                    try rd.readAtLeastOurAmt(h.client.stream, tls.record_header_len);
+                    try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
                     const content_type = rd.decode(tls.ContentType);
                     const protocol_version = rd.decode(tls.ProtocolVersion);
                     const record_len = rd.decode(u16);
                     if (protocol_version != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                     if (content_type != tls.ContentType.handshake) return error.TlsUnexpectedMessage;
-                    try rd.readAtLeast(h.client.stream, record_len);
+                    try rd.readAtLeast(h.stream, record_len);
                     // TODO check finished message
                     try rd.ensure(record_len);
                     const data = rd.slice(record_len);
-                    _ = try h.client.decrypt(&h.buffer, content_type, data);
+                    _ = try c.decrypt(&h.buffer, content_type, data);
                     //rd.skip(record_len);
                     //_ = try h.client.readRecord();
                 }
@@ -692,6 +754,7 @@ test "Handshake.generateMasterSecret" {
     const ClientType = ClientT(*TestStream);
     var c = ClientType{ .stream = &stream, .rnd = rnd };
     var h = try ClientType.Handshake.init(&c);
+    h.cipher_suite_tag = tls12.CipherSuite.AES_128_CBC_SHA;
 
     { // init with known keys
         _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");

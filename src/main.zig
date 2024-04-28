@@ -22,8 +22,7 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
 
-    var cli = client(tcp);
-    try cli.handshake(host);
+    var cli = try client(tcp, host);
 
     var buf: [4096]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
