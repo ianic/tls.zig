@@ -138,6 +138,7 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             try CBC.init(cipher.server_key).decrypt(decrypted, crypted, iv[0..iv_length].*);
 
             const padding_len = decrypted[decrypted.len - 1] + 1;
+            if (decrypted.len < mac_length + padding_len) return error.TlsDecryptError;
 
             const cleartext_len = decrypted.len - mac_length - padding_len;
             std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);

@@ -18,7 +18,6 @@ pub fn client(stream: anytype, host: []const u8) !ClientT(@TypeOf(stream)) {
 pub fn ClientT(comptime StreamType: type) type {
     return struct {
         stream: StreamType,
-        rnd: std.Random = crypto.random,
 
         app_cipher: AppCipherT = undefined,
         client_sequence: usize = 0,
@@ -35,7 +34,7 @@ pub fn ClientT(comptime StreamType: type) type {
         const Client = @This();
 
         pub fn init(stream: StreamType, rnd: std.Random, host: []const u8) !Client {
-            var h = try Handshake.init(stream, rnd);
+            var h = Handshake.init(stream, rnd);
             return try h.run(host, rnd);
         }
 
@@ -184,6 +183,7 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
+            stream: StreamType,
             buffer: [tls.max_ciphertext_record_len]u8 = undefined,
 
             transcript: Sha256 = Sha256.init(.{}),
@@ -195,41 +195,37 @@ pub fn ClientT(comptime StreamType: type) type {
             master_secret: [32 + 16]u8 = undefined,
             key_material: [32 * 4]u8 = undefined,
             cipher_suite_tag: tls12.CipherSuite = undefined,
-            stream: StreamType,
 
-            fn init(stream: StreamType, rnd: std.Random) !Handshake {
-                const kp = try X25519.KeyPair.create(null);
+            fn init(stream: StreamType, rnd: std.Random) Handshake {
                 var client_random: [32]u8 = undefined;
                 rnd.bytes(&client_random);
                 return .{
                     .stream = stream,
                     .client_random = client_random,
-                    .client_private_key = kp.secret_key,
-                    .client_public_key = kp.public_key,
                 };
             }
 
             fn run(h: *Handshake, host: []const u8, rnd: std.Random) !Client {
-                try h.hello(host);
+                try h.clientHello(host);
                 try h.serverHello();
+                try h.generateClientKeys();
                 try h.generateMasterSecret();
                 try h.generateEncryptionKeys();
 
                 var cli = Client{
                     .stream = h.stream,
-                    .rnd = rnd,
                     .app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd),
                 };
 
-                try h.keyExchange();
-                try h.changeCipherSpec();
-                try h.handshakeFinished(&cli);
+                try h.clientKeyExchange();
+                try h.clientChangeCipherSpec();
+                try h.clientHandshakeFinished(&cli);
                 try h.serverHandshakeFinished(&cli);
                 return cli;
             }
 
             /// Send client hello message.
-            fn hello(h: *Handshake, host: []const u8) !void {
+            fn clientHello(h: *Handshake, host: []const u8) !void {
                 const enum_array = tls.enum_array;
                 const host_len: u16 = @intCast(host.len);
 
@@ -380,6 +376,12 @@ pub fn ClientT(comptime StreamType: type) type {
                 }
             }
 
+            fn generateClientKeys(h: *Handshake) !void {
+                const kp = try X25519.KeyPair.create(null);
+                h.client_private_key = kp.secret_key;
+                h.client_public_key = kp.public_key;
+            }
+
             fn generateMasterSecret(h: *Handshake) !void {
                 const pre_master_secret = try X25519.scalarmult(h.client_private_key, h.server_public_key);
                 const seed = "master secret" ++ h.client_random ++ h.server_random;
@@ -415,26 +417,9 @@ pub fn ClientT(comptime StreamType: type) type {
                 HmacSha256.create(h.key_material[32..64], a2 ++ seed, &h.master_secret);
                 HmacSha256.create(h.key_material[64..96], a3 ++ seed, &h.master_secret);
                 HmacSha256.create(h.key_material[96..], a4 ++ seed, &h.master_secret);
-
-                // switch (h.cipher_suite_tag) {
-                //     inline .AES_128_CBC_SHA,
-                //     .AES_128_GCM_SHA256,
-                //     => |tag| {
-                //         h.cipher_suite_tag = @unionInit(AppCipherT, @tagName(tag), .{});
-                //     },
-                //     else => return error.TlsIllegalParameter,
-                // }
-
-                //h.cipher_suite_tag = @unionInit(AppCipherT, @tagName(h.cipher_suite_tag), .{});
-                // switch (h.client.application_cipher) {
-                //     inline else => |*ac| {
-                //         const P = @TypeOf(ac.*);
-                //         ac.* = P.init(p, h.client.rnd);
-                //     },
-                // }
             }
 
-            fn keyExchange(h: *Handshake) !void {
+            fn clientKeyExchange(h: *Handshake) !void {
                 const key_len = h.client_public_key.len;
                 const header =
                     tls12.handshakeHeader(.client_key_exchange, 1 + key_len) ++
@@ -445,7 +430,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 h.transcript.update(&h.client_public_key);
             }
 
-            fn changeCipherSpec(h: *Handshake) !void {
+            fn clientChangeCipherSpec(h: *Handshake) !void {
                 const header =
                     tls12.recordHeader(.change_cipher_spec, 1) ++
                     tls12.int1(1);
@@ -461,7 +446,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
             }
 
-            fn handshakeFinished(h: *Handshake, c: *Client) !void {
+            fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
                 const verify_data = h.verifyData();
                 try c.send(.handshake, &verify_data);
             }
@@ -511,7 +496,7 @@ test "Handshake.clientHello" {
     // test stream
     var stream = TestStream{};
     defer stream.deinit();
-    var h = try ClientT(*TestStream).Handshake.init(&stream, rnd);
+    var h = ClientT(*TestStream).Handshake.init(&stream, rnd);
 
     { // client random is set to predictable pattern
         try testing.expectEqualStrings(
@@ -520,21 +505,10 @@ test "Handshake.clientHello" {
         );
     }
 
-    { // client hello message
-        const host = "www.example.com";
-        try h.hello(host);
-        try testing.expectEqualSlices(u8, &[_]u8{
-            0x16, 0x03, 0x03, 0x00, 0x74, 0x01, 0x00, 0x00, 0x70, 0x03, 0x03, 0x00, 0x01, 0x02, 0x03, 0x04,
-            0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
-            0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x00, 0x00, 0x04, 0xc0, 0x2f,
-            0xc0, 0x13, 0x01, 0x00, 0x00, 0x43, 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00, 0xff, 0x01, 0x00, 0x01,
-            0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x10, 0x00, 0x0e, 0x04, 0x03, 0x05, 0x03, 0x08,
-            0x04, 0x08, 0x05, 0x08, 0x06, 0x08, 0x07, 0x02, 0x01, 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00,
-            0x1d, 0x00, 0x00, 0x00, 0x14, 0x00, 0x12, 0x00, 0x00, 0x0f, 0x77, 0x77, 0x77, 0x2e, 0x65, 0x78,
-            0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
-        }, stream.output.items);
-        try testing.expectEqualStrings(host, stream.output.items[stream.output.items.len - host.len ..]);
-    }
+    const host = "www.example.com";
+    try h.clientHello(host);
+    try testing.expectEqualSlices(u8, &example.client_hello, stream.output.items);
+    try testing.expectEqualStrings(host, stream.output.items[stream.output.items.len - host.len ..]);
 }
 
 test "Handshake.serverHello" {
@@ -543,7 +517,7 @@ test "Handshake.serverHello" {
     // test stream
     var stream = TestStream{ .input = &example.server_hello_responses };
     defer stream.deinit();
-    var h = try ClientT(*TestStream).Handshake.init(&stream, rnd);
+    var h = ClientT(*TestStream).Handshake.init(&stream, rnd);
 
     // read server random and server public key from server hello, certificate
     // and key exchange messages
@@ -571,19 +545,7 @@ test "Handshake.generateMasterSecret" {
     // test stream
     var stream = TestStream{ .input = &example.server_hello_responses };
     defer stream.deinit();
-    var h = try ClientT(*TestStream).Handshake.init(&stream, rnd);
-
-    // // predictable random number generator
-    // var ptr = TestRnd{};
-    // const rnd = std.Random.init(&ptr, TestRnd.fillFn);
-    // // test stream
-    // var stream = TestStream{ .input = &example.server_hello_responses };
-    // defer stream.deinit();
-    // // client and handshake with test stream and predictable random
-    // const ClientType = ClientT(*TestStream);
-    // var c = ClientType{ .stream = &stream, .rnd = rnd };
-    // var h = try ClientType.Handshake.init(&c);
-
+    var h = ClientT(*TestStream).Handshake.init(&stream, rnd);
     h.cipher_suite_tag = tls12.CipherSuite.AES_128_CBC_SHA;
 
     { // init with known keys
@@ -603,39 +565,6 @@ test "Handshake.generateMasterSecret" {
             &bytesToHex(h.key_material, .lower),
         );
     }
-    // //var buf: [1024]u8 = undefined;
-    // { // encrypt ping
-    //     const cleartext = "ping";
-    //     c.client_sequence = 1;
-    //     ptr.idx = 0;
-    //     try c.send(.application_data, cleartext);
-
-    //     const expected = [_]u8{
-    //         0x17, 0x03, 0x03, 0x00, 0x30, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
-    //         0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x6c, 0x42, 0x1c, 0x71, 0xc4, 0x2b, 0x18, 0x3b, 0xfa, 0x06, 0x19,
-    //         0x5d, 0x13, 0x3d, 0x0a, 0x09, 0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1,
-    //         0x47, 0xec, 0x79, 0x0c, 0x99,
-    //     };
-    //     try testing.expectEqualSlices(u8, &expected, stream.output.items);
-
-    //     //try testing.expectEqualStrings(cleartext, try h.cipher.clientDecrypt(&buf, iv, ciphertext[0..32]));
-    // }
-    // const output_pos = stream.output.items.len;
-    // { // encrypt verify data from illustrated example
-    //     const data = [_]u8{
-    //         0x14, 0x00, 0x00, 0x0c, 0xcf, 0x91, 0x96, 0x26, 0xf1, 0x36, 0x0c, 0x53, 0x6a, 0xaa, 0xd7, 0x3a,
-    //     };
-    //     c.client_sequence = 0;
-    //     ptr.idx = 0x40;
-    //     try c.send(.handshake, &data);
-    //     const expected = [_]u8{
-    //         0x22, 0x7b, 0xc9, 0xba, 0x81, 0xef, 0x30, 0xf2, 0xa8, 0xa7, 0x8f, 0xf1, 0xdf, 0x50, 0x84, 0x4d,
-    //         0x58, 0x04, 0xb7, 0xee, 0xb2, 0xe2, 0x14, 0xc3, 0x2b, 0x68, 0x92, 0xac, 0xa3, 0xdb, 0x7b, 0x78,
-    //         0x07, 0x7f, 0xdd, 0x90, 0x06, 0x7c, 0x51, 0x6b, 0xac, 0xb3, 0xba, 0x90, 0xde, 0xdf, 0x72, 0x0f,
-    //     };
-    //     const actual = stream.output.items[output_pos + 16 + 5 ..]; // skip header and iv
-    //     try testing.expectEqualSlices(u8, &expected, actual);
-    // }
 }
 
 test "Client.init" {
@@ -644,14 +573,34 @@ test "Client.init" {
     // test stream
     var stream = TestStream{ .input = &example.server_responses };
     defer stream.deinit();
-    var h = try ClientT(*TestStream).Handshake.init(&stream, rnd);
+    const ClientType = ClientT(*TestStream);
+    var h = ClientType.Handshake.init(&stream, rnd);
     { // init with known keys
-        _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
         _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
-        _ = try hexToBytes(h.client_public_key[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
     }
     const host = "www.example.com";
-    var c = try h.run(host, rnd);
+
+    var c = brk: { // h.run without generateClientKeys
+        try h.clientHello(host);
+        try h.serverHello();
+        { // setting keys instead of generating
+            _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
+            _ = try hexToBytes(h.client_public_key[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+        }
+        try h.generateMasterSecret();
+        try h.generateEncryptionKeys();
+
+        var cli = ClientType{
+            .stream = h.stream,
+            .app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd),
+        };
+
+        try h.clientKeyExchange();
+        try h.clientChangeCipherSpec();
+        try h.clientHandshakeFinished(&cli);
+        try h.serverHandshakeFinished(&cli);
+        break :brk cli;
+    };
 
     var output_pos: usize = 0;
     { // test messages that client sent
@@ -712,7 +661,7 @@ test "Client.init" {
 test "Handshake.verifyData" {
     var stream = TestStream{};
     defer stream.deinit();
-    var h = try ClientT(*TestStream).Handshake.init(&stream, crypto.random);
+    var h = ClientT(*TestStream).Handshake.init(&stream, crypto.random);
     h.master_secret = example.master_secret;
 
     // add handshake messages to transcript
