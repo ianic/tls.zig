@@ -28,12 +28,15 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
     _ = try cli.write(req);
 
-    while (true) {
-        const n = try cli.read(&buf);
-        std.debug.print("{s}", .{buf[0..n]});
-        if (n == 0) break;
+    while (try cli.next()) |data| {
+        std.debug.print("{s}", .{data});
     }
 
+    // while (true) {
+    //     const n = try cli.read(&buf);
+    //     std.debug.print("{s}", .{buf[0..n]});
+    //     if (n == 0) break;
+    // }
     // var file = try std.fs.cwd().createFile("server_hello", .{});
     // defer file.close();
     // var buf: [4096]u8 = undefined;
