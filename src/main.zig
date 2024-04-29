@@ -1,5 +1,5 @@
 const std = @import("std");
-const client = @import("client.zig").client;
+const tls = @import("client.zig");
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -22,7 +22,8 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
 
-    var cli = try client(tcp, host);
+    var cli = tls.client(tcp);
+    try cli.handshake(host);
 
     var buf: [4096]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
@@ -62,7 +63,7 @@ pub fn main__() !void {
 
     //try tcp.writeAll(&client_hello);
 
-    var cli = client(tcp);
+    var cli = tls(tcp);
     try cli.handshake("example.ulfheim.net");
     std.debug.print("handshake finished\n", .{});
 }
