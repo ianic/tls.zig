@@ -25,7 +25,7 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     var cli = tls.client(tcp);
     try cli.handshake(host);
 
-    var buf: [4096]u8 = undefined;
+    var buf: [128]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
     _ = try cli.write(req);
 

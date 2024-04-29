@@ -31,16 +31,16 @@ pub fn ClientT(comptime StreamType: type) type {
 
         pub fn handshake(c: *Client, host: []const u8) !void {
             var h = c.initHandshake();
-            try h.clientHello(host, c);
+            try h.clientHello(host);
             try h.serverHello();
             try h.generateClientKeys();
             try h.generateMasterSecret();
             try h.generateEncryptionKeys();
             c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
-            try h.clientKeyExchange(c);
-            try h.clientHandshakeFinished(c);
+            try h.clientKeyExchange();
+            try h.clientHandshakeFinished();
             try h.serverChangeCipherSpec();
-            try h.serverHandshakeFinished(c);
+            try h.serverHandshakeFinished();
         }
 
         fn initHandshake(c: *Client) Handshake {
@@ -132,7 +132,7 @@ pub fn ClientT(comptime StreamType: type) type {
             cipher_suite_tag: tls12.CipherSuite = undefined,
 
             /// Send client hello message.
-            fn clientHello(h: *Handshake, host: []const u8, c: *Client) !void {
+            fn clientHello(h: *Handshake, host: []const u8) !void {
                 const enum_array = tls.enum_array;
                 const host_len: u16 = @intCast(host.len);
 
@@ -172,7 +172,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
                     payload;
 
-                try c.sendPlain(&record, host);
+                try h.cli.sendPlain(&record, host);
                 h.transcript.update(record[5..]);
                 h.transcript.update(host);
             }
@@ -183,15 +183,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 var handshake_state = tls12.HandshakeType.server_hello;
                 while (true) {
                     var rec = (try h.cli.reader.next()) orelse return error.TlsUnexpectedMessage;
-
-                    // try rd.readAtLeastOurAmt(h.stream, tls.record_header_len);
-                    // const content_type = rd.decode(tls.ContentType);
-                    // const protocol_version = rd.decode(tls.ProtocolVersion);
-                    // const record_len = rd.decode(u16);
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-
-                    // try rd.readAtLeast(h.stream, record_len);
-                    // var hd = try rd.sub(record_len); // header decoder
 
                     switch (rec.content_type) {
                         .alert => {
@@ -207,11 +199,9 @@ pub fn ClientT(comptime StreamType: type) type {
                     }
                     h.transcript.update(rec.payload);
 
-                    //try hd.ensure(4);
                     const handshake_type = try rec.decode(tls12.HandshakeType);
                     if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                     const length = try rec.decode(u24);
-                    //var hsd = try hd.sub(length); // handshake decoder
 
                     switch (handshake_type) {
                         .server_hello => { // server hello
@@ -313,7 +303,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 HmacSha256.create(h.key_material[96..], a4 ++ seed, &h.master_secret);
             }
 
-            fn clientKeyExchange(h: *Handshake, c: *Client) !void {
+            fn clientKeyExchange(h: *Handshake) !void {
                 const key_len = h.client_public_key.len;
                 const key_exchange =
                     tls12.handshakeHeader(.client_key_exchange, 1 + key_len) ++
@@ -323,7 +313,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.recordHeader(.change_cipher_spec, 1) ++
                     tls12.int1(1);
                 h.transcript.update(key_exchange[5..]);
-                try c.sendPlain(&key_exchange, &change_cipher_spec);
+                try h.cli.sendPlain(&key_exchange, &change_cipher_spec);
             }
 
             fn verifyData(h: *Handshake) [16]u8 {
@@ -335,9 +325,9 @@ pub fn ClientT(comptime StreamType: type) type {
                 return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
             }
 
-            fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
+            fn clientHandshakeFinished(h: *Handshake) !void {
                 const verify_data = h.verifyData();
-                try c.send(.handshake, &verify_data);
+                try h.cli.send(.handshake, &verify_data);
             }
 
             fn serverChangeCipherSpec(h: *Handshake) !void {
@@ -346,11 +336,11 @@ pub fn ClientT(comptime StreamType: type) type {
                 if (rec.content_type != .change_cipher_spec) return error.TlsUnexpectedMessage;
             }
 
-            fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
+            fn serverHandshakeFinished(h: *Handshake) !void {
                 const rec = (try h.cli.reader.next()) orelse return error.EndOfStream;
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
                 if (rec.content_type != .handshake) return error.TlsUnexpectedMessage;
-                _ = try c.decrypt(rec.payload, rec.content_type, rec.payload);
+                _ = try h.cli.decrypt(rec.payload, rec.content_type, rec.payload);
             }
         };
     };
@@ -369,7 +359,7 @@ test "Handshake.clientHello" {
     _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
 
     const host = "www.example.com";
-    try h.clientHello(host, &c);
+    try h.clientHello(host);
     const hello_buf = stream.output.getWritten();
     try testing.expectEqualSlices(u8, &example.client_hello, hello_buf);
     try testing.expectEqualStrings(host, hello_buf[hello_buf.len - host.len ..]);
@@ -434,8 +424,8 @@ test "Client.init" {
     }
     const host = "www.example.com";
 
-    { // h.run without generateClientKeys
-        try h.clientHello(host, &c);
+    { // handshake without generateClientKeys
+        try h.clientHello(host);
         try h.serverHello();
         { // setting keys instead of generating
             _ = try hexToBytes(h.client_private_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
@@ -447,11 +437,10 @@ test "Client.init" {
         test_rnd.idx = 0x20;
         c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd);
 
-        try h.clientKeyExchange(&c);
-        //try h.clientChangeCipherSpec();
-        try h.clientHandshakeFinished(&c);
+        try h.clientKeyExchange();
+        try h.clientHandshakeFinished();
         try h.serverChangeCipherSpec();
-        try h.serverHandshakeFinished(&c);
+        try h.serverHandshakeFinished();
     }
 
     { // test messages that client sent
