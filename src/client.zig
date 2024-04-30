@@ -283,20 +283,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 var pre_master_secret: []const u8 = undefined;
 
                 switch (h.named_group) {
-                    // .x25519_kyber768d00 => {
-                    //     h.x25519_kp = try X25519.KeyPair.create(null);
-
-                    //     const xksl = X25519.public_length;
-                    //     const hksl = xksl + crypto.kem.kyber_d00.Kyber768.ciphertext_length;
-                    //     if (h.server_public_key.len != hksl)
-                    //         return error.TlsIllegalParameter;
-                    //     const server_ks = h.server_public_key;
-
-                    //     pre_master_secret = &((try X25519.scalarmult(h.x25519_kp.secret_key, h.server_public_key[0..xksl].*)) ++
-                    //         (try kyber768_kp.secret_key.decaps(h.server_public_key[xksl..hksl])));
-                    // },
                     .x25519 => {
-                        //h.x25519_kp = try X25519.KeyPair.create(null);
                         if (h.server_public_key.len != X25519.public_length)
                             return error.TlsIllegalParameter;
                         pre_master_secret = &(try X25519.scalarmult(
@@ -305,7 +292,6 @@ pub fn ClientT(comptime StreamType: type) type {
                         ));
                     },
                     .secp256r1 => {
-                        //h.secp256r1_kp = try crypto.sign.ecdsa.EcdsaP256Sha256.KeyPair.create(null);
                         const pk = try crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(h.server_public_key);
                         const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
                         pre_master_secret = &mul.affineCoordinates().x.toBytes(.big);
@@ -349,43 +335,6 @@ pub fn ClientT(comptime StreamType: type) type {
                     HmacSha256.create(h.key_material[96..], a4 ++ seed, &h.master_secret);
                 }
             }
-
-            // fn generateMasterSecret(h: *Handshake) !void {
-            //     const pre_master_secret = try X25519.scalarmult(h.client_private_key, h.server_public_key);
-            //     const seed = "master secret" ++ h.client_random ++ h.server_random;
-
-            //     var a1: [32]u8 = undefined;
-            //     var a2: [32]u8 = undefined;
-            //     HmacSha256.create(&a1, seed, &pre_master_secret);
-            //     HmacSha256.create(&a2, &a1, &pre_master_secret);
-
-            //     var p1: [32]u8 = undefined;
-            //     var p2: [32]u8 = undefined;
-            //     HmacSha256.create(&p1, a1 ++ seed, &pre_master_secret);
-            //     HmacSha256.create(&p2, a2 ++ seed, &pre_master_secret);
-
-            //     h.master_secret[0..32].* = p1;
-            //     h.master_secret[32..].* = p2[0..16].*;
-            // }
-
-            // fn generateEncryptionKeys(h: *Handshake) !void {
-            //     const seed = "key expansion" ++ h.server_random ++ h.client_random;
-            //     const a0 = seed;
-
-            //     var a1: [32]u8 = undefined;
-            //     var a2: [32]u8 = undefined;
-            //     var a3: [32]u8 = undefined;
-            //     var a4: [32]u8 = undefined;
-            //     HmacSha256.create(&a1, a0, &h.master_secret);
-            //     HmacSha256.create(&a2, &a1, &h.master_secret);
-            //     HmacSha256.create(&a3, &a2, &h.master_secret);
-            //     HmacSha256.create(&a4, &a3, &h.master_secret);
-
-            //     HmacSha256.create(h.key_material[0..32], a1 ++ seed, &h.master_secret);
-            //     HmacSha256.create(h.key_material[32..64], a2 ++ seed, &h.master_secret);
-            //     HmacSha256.create(h.key_material[64..96], a3 ++ seed, &h.master_secret);
-            //     HmacSha256.create(h.key_material[96..], a4 ++ seed, &h.master_secret);
-            // }
 
             fn clientKeyExchange(h: *Handshake) !void {
                 const key: []const u8 = switch (h.named_group) {
