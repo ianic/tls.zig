@@ -45,16 +45,22 @@ pub inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
 }
 
 pub const CipherSuite = enum(u16) {
-    AES_128_CBC_SHA = 0xc013,
-    AES_128_GCM_SHA256 = 0xc02f,
-    //TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+
+    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
+
+    //TLS_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
     _,
 
     pub fn validate(cs: CipherSuite) !void {
         switch (cs) {
-            inline .AES_128_CBC_SHA,
-            .AES_128_GCM_SHA256,
-            //.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            inline .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+
+            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             => {},
             else => return error.TlsIllegalParameter,
         }

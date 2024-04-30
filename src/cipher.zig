@@ -2,16 +2,20 @@ const std = @import("std");
 const crypto = std.crypto;
 const tls12 = @import("tls12.zig");
 
-pub const AppCipherT = union(tls12.CipherSuite) {
+pub const AppCipherT = union(enum) {
     AES_128_CBC_SHA: CipherCbcT(@import("cbc.zig").CBCAes128, crypto.hash.Sha1),
     AES_128_GCM_SHA256: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
 
     pub fn init(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !AppCipherT {
         return switch (tag) {
-            .AES_128_CBC_SHA => .{
+            .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            => .{
                 .AES_128_CBC_SHA = CipherCbcT(@import("cbc.zig").CBCAes128, crypto.hash.Sha1).init(key_material, rnd),
             },
-            .AES_128_GCM_SHA256 => .{
+            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            => .{
                 .AES_128_GCM_SHA256 = CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm).init(key_material, rnd),
             },
             else => return error.TlsIllegalParameter,
