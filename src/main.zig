@@ -10,7 +10,6 @@ pub fn main() !void {
     if (args.len > 1) {
         const url = args[1];
         _ = try get(gpa, url);
-
         return;
     }
 }
@@ -32,6 +31,7 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     while (try cli.next()) |data| {
         std.debug.print("{s}", .{data});
     }
+    try cli.close();
 
     // while (true) {
     //     const n = try cli.read(&buf);

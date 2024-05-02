@@ -117,6 +117,13 @@ pub fn ClientT(comptime StreamType: type) type {
             return sequence_buf ++ tls12.recordHeader(content_type, cleartext_len);
         }
 
+        pub fn close(c: *Client) !void {
+            var buffer: [AppCipherT.max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
+            const payload = try c.encrypt(buffer[tls.record_header_len..], .alert, &tls12.close_notify_alert);
+            buffer[0..tls.record_header_len].* = tls12.recordHeader(.alert, payload.len);
+            try c.stream.writeAll(buffer[0 .. tls.record_header_len + payload.len]);
+        }
+
         const Handshake = struct {
             transcript: Sha256 = Sha256.init(.{}),
 

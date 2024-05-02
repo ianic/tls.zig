@@ -93,3 +93,8 @@ pub inline fn recordHeader(content_type: tls.ContentType, payload_len: usize) [5
 }
 
 pub const explicit_iv_len = 8;
+
+pub const close_notify_alert = [2]u8{
+    @intFromEnum(tls.AlertLevel.warning),
+    @intFromEnum(tls.AlertDescription.close_notify),
+};
