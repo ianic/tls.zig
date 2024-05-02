@@ -195,7 +195,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
                     payload;
 
-                h.transcript.update(record[5..]);
+                h.transcript.update(record[tls.record_header_len..]);
                 h.transcript.update(host);
 
                 var iovecs = [_]std.posix.iovec_const{
@@ -355,7 +355,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
                     tls12.int1(@intCast(key.len));
 
-                h.transcript.update(key_exchange[5..]);
+                h.transcript.update(key_exchange[tls.record_header_len..]);
                 h.transcript.update(key);
 
                 const change_cipher_spec =
@@ -561,12 +561,9 @@ test "Handshake.verifyData" {
     h.master_secret = example.master_secret;
 
     // add handshake messages to transcript
-    h.transcript.update(example.client_hello_for_transcript[5..]);
-    h.transcript.update(example.server_hello[5..]);
-    h.transcript.update(example.server_certificate[5..]);
-    h.transcript.update(example.server_key_exchange[5..]);
-    h.transcript.update(example.server_hello_done[5..]);
-    h.transcript.update(example.client_key_exchange_for_transcript[5..]);
+    for (example.handshake_messages) |msg| {
+        h.transcript.update(msg[tls.record_header_len..]);
+    }
 
     // expect verify data
     const verify_data = h.verifyData();

@@ -149,3 +149,12 @@ pub const client_handshake_finished = [_]u8{
     0xd0, 0xdf, 0x86, 0x3f, 0x7d, 0xe3, 0x98, 0xd3, 0x1a, 0xcc, 0x37, 0x6a, 0xe6, 0x7a, 0x00, 0x6d,
     0x8c, 0x08, 0xbc, 0x8a, 0x5a,
 };
+
+pub const transcript_messages = [_][]const u8{
+    &client_hello_for_transcript,
+    &server_hello,
+    &server_certificate,
+    &server_key_exchange,
+    &server_hello_done,
+    &client_key_exchange_for_transcript,
+};
