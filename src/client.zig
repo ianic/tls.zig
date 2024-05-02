@@ -49,11 +49,14 @@ pub fn ClientT(comptime StreamType: type) type {
         /// Cleartext can be part of the buffer but has to start at byte 16 or
         /// later.
         pub fn write(c: *Client, buffer: []u8, cleartext: []const u8) !void {
+            try c.write_(buffer, .application_data, cleartext);
+        }
+
+        //var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+        fn write_(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) !void {
             assert(cleartext.len <= tls.max_cipertext_inner_record_len);
             assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
-            //var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
-            const content_type: tls.ContentType = .application_data;
             const payload = try c.encrypt(buffer, content_type, cleartext);
             const header = tls12.recordHeader(content_type, payload.len);
 
@@ -353,7 +356,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.int1(1);
 
                 const handshake_finished = brk: {
-                    var buffer: [AppCipherT.max_overhead + 16]u8 = undefined;
+                    var buffer: [AppCipherT.max_overhead + 5 + 16]u8 = undefined;
                     const payload = try c.encrypt(buffer[5..], .handshake, &h.verifyData());
                     buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
                     break :brk buffer[0 .. tls.record_header_len + payload.len];
@@ -401,12 +404,11 @@ const hexToBytes = std.fmt.hexToBytes;
 test "Handshake.clientHello" {
     var output_buf: [1024]u8 = undefined;
     var stream = TestStream.init("", &output_buf);
-    var c = client(&stream);
-    var h = try c.initHandshake();
+    var h = try ClientT(TestStream).Handshake.init();
     _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
 
     const host = "www.example.com";
-    try h.clientHello(host);
+    try h.clientHello(host, &stream);
     const hello_buf = stream.output.getWritten();
     //bufPrint(hello_buf);
     try testing.expectEqualSlices(u8, &example.client_hello, hello_buf);
@@ -414,13 +416,13 @@ test "Handshake.clientHello" {
 }
 
 test "Handshake.serverHello" {
-    var stream = TestStream.init(&example.server_hello_responses, "");
-    var c = client(&stream);
-    var h = try c.initHandshake();
+    const stream = TestStream.init(&example.server_hello_responses, "");
+    var h = try ClientT(TestStream).Handshake.init();
+    var reader = recordReader(stream);
 
     // read server random and server public key from server hello, certificate
     // and key exchange messages
-    try h.serverHello();
+    try h.serverHello(&reader);
     try testing.expectEqualStrings(
         "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
         &bytesToHex(h.server_random, .lower),
@@ -433,9 +435,7 @@ test "Handshake.serverHello" {
 }
 
 test "Handshake.generateMasterSecret" {
-    var stream = TestStream.init("", "");
-    var c = client(&stream);
-    var h = try c.initHandshake();
+    var h = try ClientT(TestStream).Handshake.init();
 
     { // init with known keys
         _ = try hexToBytes(h.x25519_kp.secret_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
@@ -462,9 +462,10 @@ test "Client.init" {
     const rnd = std.Random.init(&test_rnd, TestRnd.fillFn);
 
     var output_buf: [1024]u8 = undefined;
-    var stream = TestStream.init(&example.server_responses, &output_buf);
-    var c = client(&stream);
-    var h = try c.initHandshake();
+    const stream = TestStream.init(&example.server_responses, &output_buf);
+    var c = client(stream);
+    var h = try ClientT(TestStream).Handshake.init();
+
     { // init with known keys
         _ = try hexToBytes(h.x25519_kp.secret_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
         _ = try hexToBytes(h.x25519_kp.public_key[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
@@ -481,17 +482,15 @@ test "Client.init" {
     const host = "www.example.com";
     test_rnd.idx = 0x20;
     {
-        try h.clientHello(host);
-        try h.serverHello();
-        h.generateClientKeys() catch return error.TlsDecryptFailure;
+        try h.clientHello(host, &c.stream);
+        try h.serverHello(&c.reader);
+        try h.generateClientKeys();
         c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd);
-        try h.clientKeyExchange();
-        try h.clientHandshakeFinished();
-        try h.serverChangeCipherSpec();
-        try h.serverHandshakeFinished();
+        try h.clientHandshakeFinished(&c);
+        try h.serverHandshakeFinished(&c);
     }
     { // test messages that client sent
-        const written = stream.output.getWritten();
+        const written = c.stream.output.getWritten();
         var pos: usize = 0;
 
         try testing.expectEqualSlices(u8, &example.client_hello, written[0..example.client_hello.len]);
@@ -516,11 +515,12 @@ test "Client.init" {
         pos += example.client_handshake_finished.len;
     }
 
-    stream.output.reset();
+    var buffer: [1024]u8 = undefined;
+    c.stream.output.reset();
     { // encrypt ping
         const cleartext = "ping";
         test_rnd.idx = 0;
-        try c.send(.application_data, cleartext);
+        try c.write(&buffer, cleartext);
 
         const expected = [_]u8{
             0x17, 0x03, 0x03, 0x00, 0x30, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
@@ -528,31 +528,29 @@ test "Client.init" {
             0x5d, 0x13, 0x3d, 0x0a, 0x09, 0xd0, 0x0f, 0xc7, 0xcb, 0x4e, 0x0f, 0x5d, 0x1c, 0xda, 0x59, 0xd1,
             0x47, 0xec, 0x79, 0x0c, 0x99,
         };
-        try testing.expectEqualSlices(u8, &expected, stream.output.getWritten());
+        try testing.expectEqualSlices(u8, &expected, c.stream.output.getWritten());
     }
 
-    stream.output.reset();
+    c.stream.output.reset();
     { // encrypt verify data from illustrated example
         const data = [_]u8{
             0x14, 0x00, 0x00, 0x0c, 0xcf, 0x91, 0x96, 0x26, 0xf1, 0x36, 0x0c, 0x53, 0x6a, 0xaa, 0xd7, 0x3a,
         };
         c.client_sequence = 0;
         test_rnd.idx = 0x40;
-        try c.send(.handshake, &data);
+        try c.write_(&buffer, .handshake, &data);
         const expected = [_]u8{
             0x22, 0x7b, 0xc9, 0xba, 0x81, 0xef, 0x30, 0xf2, 0xa8, 0xa7, 0x8f, 0xf1, 0xdf, 0x50, 0x84, 0x4d,
             0x58, 0x04, 0xb7, 0xee, 0xb2, 0xe2, 0x14, 0xc3, 0x2b, 0x68, 0x92, 0xac, 0xa3, 0xdb, 0x7b, 0x78,
             0x07, 0x7f, 0xdd, 0x90, 0x06, 0x7c, 0x51, 0x6b, 0xac, 0xb3, 0xba, 0x90, 0xde, 0xdf, 0x72, 0x0f,
         };
-        const actual = stream.output.getWritten()[5 + 16 ..]; // skip header and iv
+        const actual = c.stream.output.getWritten()[5 + 16 ..]; // skip header and iv
         try testing.expectEqualSlices(u8, &expected, actual);
     }
 }
 
 test "Handshake.verifyData" {
-    var stream = TestStream.init("", "");
-    var c = client(&stream);
-    var h = try c.initHandshake();
+    var h = try ClientT(TestStream).Handshake.init();
     h.master_secret = example.master_secret;
 
     // add handshake messages to transcript
