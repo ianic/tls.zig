@@ -21,6 +21,21 @@ pub const AppCipherT = union(enum) {
             else => return error.TlsIllegalParameter,
         };
     }
+
+    const Self = @This();
+
+    pub fn overhead(self: Self) usize {
+        return switch (self) {
+            .AES_128_CBC_SHA => 16 + 20 + 16, // iv (16 bytes), mac (20 bytes), padding (1-16 bytes)
+            .AES_128_GCM_SHA256 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
+        };
+    }
+
+    pub const max_overhead = 16 + 20 + 16;
+
+    pub fn minEncryptBufferLen(self: Self, cleartext_len: usize) usize {
+        return self.overhead() + cleartext_len;
+    }
 };
 
 fn CipherAeadT(comptime AeadType: type) type {
@@ -80,9 +95,9 @@ fn CipherAeadT(comptime AeadType: type) type {
 }
 
 fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
-    const mac_length = HashType.digest_length;
-    const key_length = CbcType.key_length;
-    const iv_length = CbcType.nonce_length;
+    const mac_length = HashType.digest_length; // 20 bytes for sha1
+    const key_length = CbcType.key_length; // 16 bytes for CBCAed128
+    const iv_length = CbcType.nonce_length; // 16 bytes for CBCAed128
 
     return struct {
         pub const CBC = CbcType;
@@ -110,6 +125,7 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             const cleartext_idx = @max(ad.len, iv_length);
 
             // unused | ad | cleartext | mac
+            //        | --mac input--  | --mac output--
             const mac_input_buf = buf[cleartext_idx - ad.len ..][0 .. ad.len + cleartext.len + mac_length];
             @memcpy(mac_input_buf[0..ad.len], ad);
             @memcpy(mac_input_buf[ad.len..][0..cleartext.len], cleartext);

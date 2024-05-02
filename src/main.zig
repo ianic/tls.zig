@@ -26,8 +26,8 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     try cli.handshake(host);
 
     var buf: [128]u8 = undefined;
-    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
-    _ = try cli.write(req);
+    const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    try cli.write(&buf, req);
 
     while (try cli.next()) |data| {
         std.debug.print("{s}", .{data});

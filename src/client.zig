@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const crypto = std.crypto;
 const posix = std.posix;
 
@@ -31,69 +32,49 @@ pub fn ClientT(comptime StreamType: type) type {
         const Client = @This();
 
         pub fn handshake(c: *Client, host: []const u8) !void {
-            var h = c.initHandshake() catch return error.TlsDecryptFailure;
-            try h.clientHello(host);
-            try h.serverHello();
-            h.generateClientKeys() catch return error.TlsDecryptFailure;
+            var h = try Handshake.init();
+            try h.clientHello(host, &c.stream);
+            try h.serverHello(&c.reader);
+            try h.generateClientKeys();
             c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
-            try h.clientKeyExchange();
-            try h.clientHandshakeFinished();
-            try h.serverChangeCipherSpec();
-            try h.serverHandshakeFinished();
+            try h.clientHandshakeFinished(c);
+            try h.serverHandshakeFinished(c);
         }
 
-        fn initHandshake(c: *Client) !Handshake {
-            var random_buffer: [96]u8 = undefined;
-            crypto.random.bytes(&random_buffer);
+        /// Low level write interface. Doesn't allocate but requires provided
+        /// buffer for encryption. Cleartext can't be greater than tls record
+        /// (16K). Buffer has to be bigger than cleartext for encryption
+        /// overhead (AppCipherT.max_overhead = 52 bytes).
+        ///
+        /// Cleartext can be part of the buffer but has to start at byte 16 or
+        /// later.
+        pub fn write(c: *Client, buffer: []u8, cleartext: []const u8) !void {
+            assert(cleartext.len <= tls.max_cipertext_inner_record_len);
+            assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
-            return .{
-                .cli = c,
-                .client_random = random_buffer[0..32].*,
-                .x25519_kp = try X25519.KeyPair.create(random_buffer[32..64].*),
-                .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..96].*),
-            };
-        }
-
-        pub fn write(c: *Client, buf: []const u8) !usize {
-            const len = @min(buf.len, tls.max_cipertext_inner_record_len);
-            try c.send(.application_data, buf[0..len]);
-            return len;
-        }
-
-        fn send(c: *Client, content_type: tls.ContentType, cleartext: []const u8) !void {
-            var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
-            const payload = try c.encrypt(&buffer, content_type, cleartext);
+            //var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+            const content_type: tls.ContentType = .application_data;
+            const payload = try c.encrypt(buffer, content_type, cleartext);
             const header = tls12.recordHeader(content_type, payload.len);
-            try c.sendPlain(&header, payload);
-        }
 
-        fn sendPlain(c: *Client, header: []const u8, payload: []const u8) !void {
             var iovecs = [_]std.posix.iovec_const{
-                .{
-                    .iov_base = header.ptr,
-                    .iov_len = header.len,
-                },
-                .{
-                    .iov_base = payload.ptr,
-                    .iov_len = payload.len,
-                },
+                .{ .iov_base = &header, .iov_len = header.len },
+                .{ .iov_base = payload.ptr, .iov_len = payload.len },
             };
             try c.stream.writevAll(&iovecs);
         }
 
-        fn sendvPlain(c: *Client, buffs: []const []const u8) !void {
-            var iovecs: [3]std.posix.iovec_const = undefined;
-            for (buffs, 0..) |buf, i| {
-                iovecs[i] = .{
-                    .iov_base = buf.ptr,
-                    .iov_len = buf.len,
-                };
-            }
-            try c.stream.writevAll(iovecs[0..buffs.len]);
+        /// Can be used in iterator like loop without memcpy to another buffer:
+        ///   while (try client.next()) |buf| { ... }
+        pub fn next(c: *Client) !?[]const u8 {
+            return c.next_(.application_data);
         }
 
-        pub fn next(c: *Client) !?[]const u8 {
+        fn next_(c: *Client, content_type: tls.ContentType) !?[]const u8 {
             const rec = (try c.reader.next()) orelse return null;
+            if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+            if (rec.content_type != content_type) return error.TlsUnexpectedMessage;
+
             const cleartext = try c.decrypt(rec.payload, rec.content_type, rec.payload);
             switch (rec.content_type) {
                 .handshake, .application_data => return cleartext,
@@ -109,19 +90,21 @@ pub fn ClientT(comptime StreamType: type) type {
             }
         }
 
-        fn encrypt(c: *Client, ciphertext_buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) ![]const u8 {
+        fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) ![]const u8 {
+            assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
+
             const ad = additonalData(c.client_sequence, content_type, cleartext.len);
             c.client_sequence += 1;
             return switch (c.app_cipher) {
-                inline else => |*p| p.encrypt(ciphertext_buffer, &ad, cleartext),
+                inline else => |*p| p.encrypt(buffer, &ad, cleartext),
             };
         }
 
-        fn decrypt(c: *Client, cleartext_buffer: []u8, content_type: tls.ContentType, payload: []const u8) ![]const u8 {
+        fn decrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, payload: []const u8) ![]const u8 {
             var ad = additonalData(c.server_sequence, content_type, 0);
             c.server_sequence += 1;
             return switch (c.app_cipher) {
-                inline else => |*p| p.decrypt(cleartext_buffer, &ad, payload),
+                inline else => |*p| p.decrypt(buffer, &ad, payload),
             };
         }
 
@@ -132,11 +115,8 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
-            cli: *Client,
-
             transcript: Sha256 = Sha256.init(.{}),
-            //            client_public_key: [32]u8 = undefined,
-            //            client_private_key: [32]u8 = undefined,
+
             client_random: [32]u8 = undefined,
             server_random: [32]u8 = undefined,
             server_public_key: []u8 = undefined,
@@ -149,8 +129,19 @@ pub fn ClientT(comptime StreamType: type) type {
             x25519_kp: X25519.KeyPair = undefined,
             secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
 
+            pub fn init() !Handshake {
+                var random_buffer: [96]u8 = undefined;
+                crypto.random.bytes(&random_buffer);
+
+                return .{
+                    .client_random = random_buffer[0..32].*,
+                    .x25519_kp = try X25519.KeyPair.create(random_buffer[32..64].*),
+                    .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..96].*),
+                };
+            }
+
             /// Send client hello message.
-            fn clientHello(h: *Handshake, host: []const u8) !void {
+            fn clientHello(h: *Handshake, host: []const u8, stream: *StreamType) !void {
                 const enum_array = tls.enum_array;
                 const host_len: u16 = @intCast(host.len);
 
@@ -194,17 +185,22 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
                     payload;
 
-                try h.cli.sendPlain(&record, host);
                 h.transcript.update(record[5..]);
                 h.transcript.update(host);
+
+                var iovecs = [_]std.posix.iovec_const{
+                    .{ .iov_base = &record, .iov_len = record.len },
+                    .{ .iov_base = host.ptr, .iov_len = host.len },
+                };
+                try stream.writevAll(&iovecs);
             }
 
             /// Read server hello, certificate, key_exchange and hello done messages.
             /// Extract server public key and server random.
-            fn serverHello(h: *Handshake) !void {
+            fn serverHello(h: *Handshake, reader: *RecordReaderType) !void {
                 var handshake_state = tls12.HandshakeType.server_hello;
                 while (true) {
-                    var rec = (try h.cli.reader.next()) orelse return error.TlsUnexpectedMessage;
+                    var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
                     switch (rec.content_type) {
@@ -336,7 +332,9 @@ pub fn ClientT(comptime StreamType: type) type {
                 }
             }
 
-            fn clientKeyExchange(h: *Handshake) !void {
+            /// Sends client key exchange, client chiper spec and client
+            /// handshake finished messages.
+            fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
                 const key: []const u8 = switch (h.named_group) {
                     .x25519 => &h.x25519_kp.public_key,
                     .secp256r1 => &h.secp256r1_kp.public_key.toUncompressedSec1(),
@@ -354,7 +352,20 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.recordHeader(.change_cipher_spec, 1) ++
                     tls12.int1(1);
 
-                try h.cli.sendvPlain(&[_][]const u8{ &key_exchange, key, &change_cipher_spec });
+                const handshake_finished = brk: {
+                    var buffer: [AppCipherT.max_overhead + 16]u8 = undefined;
+                    const payload = try c.encrypt(buffer[5..], .handshake, &h.verifyData());
+                    buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
+                    break :brk buffer[0 .. tls.record_header_len + payload.len];
+                };
+
+                var iovecs = [_]std.posix.iovec_const{
+                    .{ .iov_base = &key_exchange, .iov_len = key_exchange.len },
+                    .{ .iov_base = key.ptr, .iov_len = key.len },
+                    .{ .iov_base = &change_cipher_spec, .iov_len = change_cipher_spec.len },
+                    .{ .iov_base = handshake_finished.ptr, .iov_len = handshake_finished.len },
+                };
+                try c.stream.writevAll(&iovecs);
             }
 
             fn verifyData(h: *Handshake) [16]u8 {
@@ -366,22 +377,17 @@ pub fn ClientT(comptime StreamType: type) type {
                 return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
             }
 
-            fn clientHandshakeFinished(h: *Handshake) !void {
-                const verify_data = h.verifyData();
-                try h.cli.send(.handshake, &verify_data);
-            }
-
-            fn serverChangeCipherSpec(h: *Handshake) !void {
-                const rec = (try h.cli.reader.next()) orelse return error.EndOfStream;
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-                if (rec.content_type != .change_cipher_spec) return error.TlsUnexpectedMessage;
-            }
-
-            fn serverHandshakeFinished(h: *Handshake) !void {
-                const rec = (try h.cli.reader.next()) orelse return error.EndOfStream;
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-                if (rec.content_type != .handshake) return error.TlsUnexpectedMessage;
-                _ = try h.cli.decrypt(rec.payload, rec.content_type, rec.payload);
+            fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
+                _ = h;
+                { // read change ciperh spec message
+                    const rec = (try c.reader.next()) orelse return error.EndOfStream;
+                    if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                    if (rec.content_type != .change_cipher_spec) return error.TlsUnexpectedMessage;
+                }
+                { // read server handshake finished
+                    // TODO check content of the handshake finished message
+                    _ = try c.next_(.handshake);
+                }
             }
         };
     };
