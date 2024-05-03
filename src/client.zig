@@ -76,11 +76,13 @@ pub fn ClientT(comptime StreamType: type) type {
         fn next_(c: *Client, content_type: tls.ContentType) !?[]const u8 {
             const rec = (try c.reader.next()) orelse return null;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-            if (rec.content_type != content_type) return error.TlsUnexpectedMessage;
 
             const cleartext = try c.decrypt(rec.payload, rec.content_type, rec.payload);
             switch (rec.content_type) {
-                .handshake, .application_data => return cleartext,
+                .handshake, .application_data => {
+                    if (rec.content_type != content_type) return error.TlsUnexpectedMessage;
+                    return cleartext;
+                },
                 .alert => {
                     if (cleartext.len < 2) return error.TlsAlertUnknown;
                     const level: tls.AlertLevel = @enumFromInt(cleartext[0]);
@@ -688,7 +690,7 @@ fn RecordReader(comptime ReaderType: type) type {
             while (true) {
                 const buffer = c.buffer[c.start..c.end];
                 // If we have 5 bytes header.
-                if (buffer.len > tls.record_header_len) {
+                if (buffer.len >= tls.record_header_len) {
                     const record_header = buffer[0..tls.record_header_len];
                     const content_type: tls.ContentType = @enumFromInt(record_header[0]);
                     const protocol_version: tls.ProtocolVersion = @enumFromInt(std.mem.readInt(u16, record_header[1..3], .big));

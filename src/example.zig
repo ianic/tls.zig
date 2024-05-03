@@ -150,7 +150,7 @@ pub const client_handshake_finished = [_]u8{
     0x8c, 0x08, 0xbc, 0x8a, 0x5a,
 };
 
-pub const transcript_messages = [_][]const u8{
+pub const handshake_messages = [_][]const u8{
     &client_hello_for_transcript,
     &server_hello,
     &server_certificate,
