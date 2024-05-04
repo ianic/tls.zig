@@ -163,12 +163,14 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.extension.sct ++
                     tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
                     .ecdsa_secp256r1_sha256,
-                    .ecdsa_secp384r1_sha384,
+                    //.ecdsa_secp384r1_sha384,
                     .rsa_pss_rsae_sha256,
-                    .rsa_pss_rsae_sha384,
-                    .rsa_pss_rsae_sha512,
+                    //.rsa_pss_rsae_sha384,
+                    //.rsa_pss_rsae_sha512,
                     .ed25519,
-                    .rsa_pkcs1_sha1,
+                    // .rsa_pkcs1_sha1,
+                    // .rsa_pkcs1_sha256,
+                    // .rsa_pkcs1_sha384, // dailymotion.com somehow requires this one
                 })) ++
                     tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
                     .x25519,
@@ -179,9 +181,6 @@ pub fn ClientT(comptime StreamType: type) type {
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
                     .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
                     .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-
-                    .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                    .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
                 });
 
                 const payload =
@@ -232,6 +231,9 @@ pub fn ClientT(comptime StreamType: type) type {
                     if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                     const length = try rec.decode(u24);
 
+                    // TODO: handle this
+                    if (length + 4 != rec.payload.len) return error.MultipleHandshakeMessagesInOneRecord;
+
                     switch (handshake_type) {
                         .server_hello => { // server hello
                             if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
@@ -269,9 +271,9 @@ pub fn ClientT(comptime StreamType: type) type {
                             const key_len = try rec.decode(u8);
                             h.server_public_key = try rec.slice(key_len);
 
-                            const rsa_signature = try rec.decode(u16);
+                            const scheme = try rec.decode(tls.SignatureScheme);
                             const signature_len = try rec.decode(u16);
-                            _ = rsa_signature; // TODO what to expect here
+                            std.debug.print(" {} ", .{scheme});
 
                             // TODO: how to check signature
                             try rec.skip(signature_len);
