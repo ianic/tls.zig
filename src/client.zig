@@ -12,6 +12,8 @@ const HmacSha256 = crypto.auth.hmac.sha2.HmacSha256;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 
+const Certificate = std.crypto.Certificate;
+
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
     return .{
         .stream = stream,
@@ -31,11 +33,11 @@ pub fn ClientT(comptime StreamType: type) type {
 
         const Client = @This();
 
-        pub fn handshake(c: *Client, host: []const u8) !void {
+        pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
             try h.clientHello(host, &c.stream);
-            try h.serverHello(&c.reader);
-            try h.generateClientKeys();
+            try h.serverHello(&c.reader, ca_bundle);
+            //try h.generateClientKeys();
             c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
@@ -131,15 +133,15 @@ pub fn ClientT(comptime StreamType: type) type {
 
             client_random: [32]u8 = undefined,
             server_random: [32]u8 = undefined,
-            server_public_key: []u8 = undefined,
+            //server_public_key: []u8 = undefined,
             master_secret: [32 + 16]u8 = undefined,
             key_material: [32 * 4]u8 = undefined,
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
-
             named_group: tls.NamedGroup = undefined,
             x25519_kp: X25519.KeyPair = undefined,
             secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
+            now_sec: i64 = 0,
 
             pub fn init() !Handshake {
                 var random_buffer: [96]u8 = undefined;
@@ -149,11 +151,14 @@ pub fn ClientT(comptime StreamType: type) type {
                     .client_random = random_buffer[0..32].*,
                     .x25519_kp = try X25519.KeyPair.create(random_buffer[32..64].*),
                     .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..96].*),
+                    .now_sec = std.time.timestamp(),
                 };
             }
 
             /// Send client hello message.
             fn clientHello(h: *Handshake, host: []const u8, stream: *StreamType) !void {
+                try std.fs.cwd().writeFile("client_random", &h.client_random);
+
                 const enum_array = tls.enum_array;
                 const host_len: u16 = @intCast(host.len);
 
@@ -162,12 +167,12 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.extension.renegotiation_info ++
                     tls12.extension.sct ++
                     tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
-                    .ecdsa_secp256r1_sha256,
+                    //.ecdsa_secp256r1_sha256,
                     //.ecdsa_secp384r1_sha384,
                     .rsa_pss_rsae_sha256,
-                    //.rsa_pss_rsae_sha384,
-                    //.rsa_pss_rsae_sha512,
-                    .ed25519,
+                    // .rsa_pss_rsae_sha384,
+                    // .rsa_pss_rsae_sha512,
+                    // .ed25519,
                     // .rsa_pkcs1_sha1,
                     // .rsa_pkcs1_sha256,
                     // .rsa_pkcs1_sha384, // dailymotion.com somehow requires this one
@@ -179,8 +184,8 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.serverNameExtensionHeader(host_len);
 
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
-                    .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                    .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+                    .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                    .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
                 });
 
                 const payload =
@@ -208,8 +213,12 @@ pub fn ClientT(comptime StreamType: type) type {
 
             /// Read server hello, certificate, key_exchange and hello done messages.
             /// Extract server public key and server random.
-            fn serverHello(h: *Handshake, reader: *RecordReaderType) !void {
+            fn serverHello(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle) !void {
                 var handshake_state = tls12.HandshakeType.server_hello;
+
+                var cert_pub_key_buf: [600]u8 = undefined;
+                var cert_pub_key: []const u8 = undefined;
+
                 while (true) {
                     var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
@@ -236,8 +245,11 @@ pub fn ClientT(comptime StreamType: type) type {
 
                     switch (handshake_type) {
                         .server_hello => { // server hello
+                            try std.fs.cwd().writeFile("server_hello", reader.buffer[0..reader.end]);
+
                             if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
                             h.server_random = (try rec.array(32)).*;
+
                             const session_id_len = try rec.decode(u8);
                             if (session_id_len > 32) return error.TlsIllegalParameter;
                             try rec.skip(session_id_len);
@@ -253,30 +265,62 @@ pub fn ClientT(comptime StreamType: type) type {
                             handshake_state = .certificate;
                         },
                         .certificate => {
+                            var trust_chain_established = false;
                             const certs_len = try rec.decode(u24);
                             var l: usize = 0;
                             while (l < certs_len) {
                                 const cert_len = try rec.decode(u24);
-                                const cert = try rec.slice(cert_len);
-                                _ = cert; // TODO: check certificate
+                                const subject_cert: Certificate = .{ .buffer = try rec.slice(cert_len), .index = 0 };
+                                const subject = try subject_cert.parse();
+                                if (l == 0) { // first certificate
+                                    const pub_key = subject.pubKey();
+                                    if (pub_key.len > cert_pub_key_buf.len)
+                                        return error.CertificatePublicKeyInvalid;
+                                    @memcpy(cert_pub_key_buf[0..pub_key.len], pub_key);
+                                    cert_pub_key = cert_pub_key_buf[0..pub_key.len];
+                                }
                                 l += cert_len + 3;
+                                if (ca_bundle) |cb| {
+                                    if (cb.verify(subject, h.now_sec)) |_| {
+                                        trust_chain_established = true;
+                                        break;
+                                    } else |err| switch (err) {
+                                        error.CertificateIssuerNotFound => {},
+                                        else => |e| return e,
+                                    }
+                                }
+                            }
+                            if (ca_bundle != null and !trust_chain_established) {
+                                return error.CertificateIssuerNotFound;
                             }
                             handshake_state = .server_key_exchange;
                         },
                         .server_key_exchange => {
+                            const idx_start = rec.idx;
                             const named_curve = try rec.decode(u8);
                             if (named_curve != 0x03) return error.TlsIllegalParameter;
                             h.named_group = try rec.decode(tls.NamedGroup);
+                            const server_pub_key_len = try rec.decode(u8);
+                            const server_pub_key = try rec.slice(server_pub_key_len);
+                            const idx_end = rec.idx;
 
-                            const key_len = try rec.decode(u8);
-                            h.server_public_key = try rec.slice(key_len);
-
-                            const scheme = try rec.decode(tls.SignatureScheme);
+                            const signature_scheme = try rec.decode(tls.SignatureScheme);
                             const signature_len = try rec.decode(u16);
-                            std.debug.print(" {} ", .{scheme});
-
-                            // TODO: how to check signature
-                            try rec.skip(signature_len);
+                            const signature = try rec.slice(signature_len);
+                            const verify_msg = brk: {
+                                // public key len
+                                // x25519 = 32
+                                // secp256r1 = 65
+                                // secp256r1 = 97
+                                const max_public_key_len = 65;
+                                var verify_msg_buffer: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
+                                verify_msg_buffer[0..64].* = h.client_random ++ h.server_random;
+                                const payload_part = rec.payload[idx_start..idx_end];
+                                @memcpy(verify_msg_buffer[64..][0..payload_part.len], payload_part);
+                                break :brk verify_msg_buffer[0 .. 64 + payload_part.len];
+                            };
+                            try verifySignature(signature_scheme, cert_pub_key, signature, verify_msg);
+                            try h.generateKeyMaterial(server_pub_key);
 
                             handshake_state = .server_hello_done;
                         },
@@ -289,20 +333,39 @@ pub fn ClientT(comptime StreamType: type) type {
                 }
             }
 
-            fn generateClientKeys(h: *Handshake) !void {
+            fn verifySignature(
+                signature_scheme: tls.SignatureScheme,
+                certificate_public_key: []const u8,
+                signature: []const u8,
+                verify_msg: []const u8,
+            ) !void {
+                switch (signature_scheme) {
+                    .rsa_pss_rsae_sha256 => {
+                        const modulus_len = 256;
+                        const rsa = Certificate.rsa;
+                        const comp = try rsa.PublicKey.parseDer(certificate_public_key);
+                        const key = try rsa.PublicKey.fromBytes(comp.exponent, comp.modulus);
+                        const sig = rsa.PSSSignature.fromBytes(modulus_len, signature);
+                        try rsa.PSSSignature.verify(modulus_len, sig, verify_msg, key, Sha256);
+                    },
+                    else => return error.TlsUnknownSignatureScheme,
+                }
+            }
+
+            fn generateKeyMaterial(h: *Handshake, server_pub_key: []const u8) !void {
                 var pre_master_secret: []const u8 = undefined;
 
                 switch (h.named_group) {
                     .x25519 => {
-                        if (h.server_public_key.len != X25519.public_length)
+                        if (server_pub_key.len != X25519.public_length)
                             return error.TlsIllegalParameter;
                         pre_master_secret = &(try X25519.scalarmult(
                             h.x25519_kp.secret_key,
-                            h.server_public_key[0..X25519.public_length].*,
+                            server_pub_key[0..X25519.public_length].*,
                         ));
                     },
                     .secp256r1 => {
-                        const pk = try crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(h.server_public_key);
+                        const pk = try crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
                         const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
                         pre_master_secret = &mul.affineCoordinates().x.toBytes(.big);
                     },
@@ -433,7 +496,7 @@ test "Handshake.serverHello" {
 
     // read server random and server public key from server hello, certificate
     // and key exchange messages
-    try h.serverHello(&reader);
+    try h.serverHello(&reader, null);
     try testing.expectEqualStrings(
         "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
         &bytesToHex(h.server_random, .lower),
@@ -494,7 +557,7 @@ test "Client.init" {
     test_rnd.idx = 0x20;
     {
         try h.clientHello(host, &c.stream);
-        try h.serverHello(&c.reader);
+        try h.serverHello(&c.reader, null);
         try h.generateClientKeys();
         c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd);
         try h.clientHandshakeFinished(&c);
@@ -679,10 +742,6 @@ fn RecordReader(comptime ReaderType: type) type {
         inner_reader: ReaderType,
 
         buffer: [tls.max_ciphertext_record_len]u8 = undefined,
-        // // Part of the read buffer with decrypted application data.
-        // cleartext_start: usize = 0,
-        // cleartext_end: usize = 0,
-        // Filled from stream but unencrypted part of the buffer.
         start: usize = 0,
         end: usize = 0,
 
@@ -784,12 +843,29 @@ test "Record decoder" {
     try testing.expect(rec.eof());
 }
 
-fn bufPrint(buf: []const u8) void {
-    std.debug.print("\n", .{});
+fn bufPrint(var_name: []const u8, buf: []const u8) void {
+    std.debug.print("const {s} = [_]u8{{", .{var_name});
     for (buf, 1..) |b, i| {
         std.debug.print("0x{x:0>2}, ", .{b});
         if (i % 16 == 0)
             std.debug.print("\n", .{});
     }
-    std.debug.print("\n", .{});
+    std.debug.print("}},\n", .{});
+}
+
+test "verify google.com certificate" {
+    const stream = TestStream.init(@embedFile("testdata/google.com/server_hello"), "");
+    var h = try ClientT(TestStream).Handshake.init();
+    h.now_sec = 1714846451;
+    h.client_random = @embedFile("testdata/google.com/client_random").*;
+
+    var rdr = recordReader(stream);
+
+    var ca_bundle: Certificate.Bundle = .{};
+    try ca_bundle.rescan(testing.allocator);
+    defer ca_bundle.deinit(testing.allocator);
+
+    try h.serverHello(&rdr, ca_bundle);
+}
+
 }

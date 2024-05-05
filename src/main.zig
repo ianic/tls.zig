@@ -1,5 +1,6 @@
 const std = @import("std");
 const tls = @import("client.zig");
+const Certificate = std.crypto.Certificate;
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -24,8 +25,12 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
 
+    var ca_bundle: Certificate.Bundle = .{};
+    try ca_bundle.rescan(gpa);
+    defer ca_bundle.deinit(gpa);
+
     var cli = tls.client(tcp);
-    try cli.handshake(host);
+    try cli.handshake(host, ca_bundle);
 
     var buf: [128]u8 = undefined;
     const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
@@ -60,7 +65,7 @@ pub fn get2(gpa: std.mem.Allocator, url: []const u8) !usize {
     defer tcp.close();
 
     var cli = tls.client(tcp);
-    try cli.handshake(host);
+    try cli.handshake(host, null);
 
     var buf: [128]u8 = undefined;
     const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
