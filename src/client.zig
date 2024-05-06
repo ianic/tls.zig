@@ -139,18 +139,22 @@ pub fn ClientT(comptime StreamType: type) type {
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
             named_group: tls.NamedGroup = undefined,
+            signature_scheme: tls.SignatureScheme = undefined,
+
             x25519_kp: X25519.KeyPair = undefined,
             secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
+            secp384r1_kp: EcdsaP256Sha384.KeyPair = undefined,
             now_sec: i64 = 0,
 
             pub fn init() !Handshake {
-                var random_buffer: [96]u8 = undefined;
+                var random_buffer: [144]u8 = undefined;
                 crypto.random.bytes(&random_buffer);
 
                 return .{
                     .client_random = random_buffer[0..32].*,
-                    .x25519_kp = try X25519.KeyPair.create(random_buffer[32..64].*),
-                    .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..96].*),
+                    .x25519_kp = try X25519.KeyPair.create(random_buffer[32..][0..32].*),
+                    .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..][0..32].*),
+                    .secp384r1_kp = try EcdsaP256Sha384.KeyPair.create(random_buffer[96..][0..48].*),
                     .now_sec = std.time.timestamp(),
                 };
             }
@@ -167,23 +171,29 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.extension.renegotiation_info ++
                     tls12.extension.sct ++
                     tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
-                    //.ecdsa_secp256r1_sha256,
-                    //.ecdsa_secp384r1_sha384,
+                    .ecdsa_secp256r1_sha256,
+                    .ecdsa_secp384r1_sha384,
+
                     .rsa_pss_rsae_sha256,
-                    // .rsa_pss_rsae_sha384,
-                    // .rsa_pss_rsae_sha512,
+                    .rsa_pss_rsae_sha384,
+                    .rsa_pss_rsae_sha512,
+                    //.rsa_pss_pss_sha256,
+                    //
                     // .ed25519,
-                    // .rsa_pkcs1_sha1,
-                    // .rsa_pkcs1_sha256,
-                    // .rsa_pkcs1_sha384, // dailymotion.com somehow requires this one
+                    .rsa_pkcs1_sha1, // en.wikipedia.org sends alert if this one is not enabled and then choses rsa_pss_rsae_sha256 !?
+                    .rsa_pkcs1_sha256,
+                    .rsa_pkcs1_sha384, // dailymotion.com somehow requires this one
                 })) ++
                     tls.extension(.supported_groups, enum_array(tls.NamedGroup, &.{
                     .x25519,
                     .secp256r1,
+                    .secp384r1,
                 })) ++
                     tls12.serverNameExtensionHeader(host_len);
 
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
+                    .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+
                     .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
                     .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
                 });
@@ -218,6 +228,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
                 var cert_pub_key_buf: [600]u8 = undefined;
                 var cert_pub_key: []const u8 = undefined;
+                var cert_pub_key_algo: Certificate.AlgorithmCategory = undefined;
 
                 while (true) {
                     var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
@@ -278,6 +289,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                         return error.CertificatePublicKeyInvalid;
                                     @memcpy(cert_pub_key_buf[0..pub_key.len], pub_key);
                                     cert_pub_key = cert_pub_key_buf[0..pub_key.len];
+                                    cert_pub_key_algo = subject.pub_key_algo;
                                 }
                                 l += cert_len + 3;
                                 if (ca_bundle) |cb| {
@@ -304,22 +316,22 @@ pub fn ClientT(comptime StreamType: type) type {
                             const server_pub_key = try rec.slice(server_pub_key_len);
                             const idx_end = rec.idx;
 
-                            const signature_scheme = try rec.decode(tls.SignatureScheme);
+                            h.signature_scheme = try rec.decode(tls.SignatureScheme);
                             const signature_len = try rec.decode(u16);
                             const signature = try rec.slice(signature_len);
-                            const verify_msg = brk: {
+                            const verify_bytes = brk: {
                                 // public key len
                                 // x25519 = 32
                                 // secp256r1 = 65
-                                // secp256r1 = 97
-                                const max_public_key_len = 65;
-                                var verify_msg_buffer: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
-                                verify_msg_buffer[0..64].* = h.client_random ++ h.server_random;
+                                // secp384r1 = 97
+                                const max_public_key_len = 97;
+                                var verify_buf: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
+                                verify_buf[0..64].* = h.client_random ++ h.server_random;
                                 const payload_part = rec.payload[idx_start..idx_end];
-                                @memcpy(verify_msg_buffer[64..][0..payload_part.len], payload_part);
-                                break :brk verify_msg_buffer[0 .. 64 + payload_part.len];
+                                @memcpy(verify_buf[64..][0..payload_part.len], payload_part);
+                                break :brk verify_buf[0 .. 64 + payload_part.len];
                             };
-                            try verifySignature(signature_scheme, cert_pub_key, signature, verify_msg);
+                            try verifySignature(h.signature_scheme, cert_pub_key, cert_pub_key_algo, signature, verify_bytes);
                             try h.generateKeyMaterial(server_pub_key);
 
                             handshake_state = .server_hello_done;
@@ -335,21 +347,72 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn verifySignature(
                 signature_scheme: tls.SignatureScheme,
-                certificate_public_key: []const u8,
+                cert_pub_key: []const u8,
+                cert_pub_key_algo: Certificate.AlgorithmCategory,
                 signature: []const u8,
-                verify_msg: []const u8,
+                verify_bytes: []const u8,
             ) !void {
                 switch (signature_scheme) {
-                    .rsa_pss_rsae_sha256 => {
-                        const modulus_len = 256;
-                        const rsa = Certificate.rsa;
-                        const comp = try rsa.PublicKey.parseDer(certificate_public_key);
-                        const key = try rsa.PublicKey.fromBytes(comp.exponent, comp.modulus);
-                        const sig = rsa.PSSSignature.fromBytes(modulus_len, signature);
-                        try rsa.PSSSignature.verify(modulus_len, sig, verify_msg, key, Sha256);
+                    inline .ecdsa_secp256r1_sha256,
+                    .ecdsa_secp384r1_sha384,
+                    => |comptime_scheme| {
+                        if (cert_pub_key_algo != .X9_62_id_ecPublicKey)
+                            return error.TlsBadSignatureScheme;
+                        const Ecdsa = SchemeEcdsa(comptime_scheme);
+                        const sig = try Ecdsa.Signature.fromDer(signature);
+                        const key = try Ecdsa.PublicKey.fromSec1(cert_pub_key);
+                        try sig.verify(verify_bytes, key);
                     },
-                    else => return error.TlsUnknownSignatureScheme,
+
+                    inline .rsa_pss_rsae_sha256,
+                    .rsa_pss_rsae_sha384,
+                    .rsa_pss_rsae_sha512,
+                    => |comptime_scheme| {
+                        if (cert_pub_key_algo != .rsaEncryption)
+                            return error.TlsBadSignatureScheme;
+
+                        const Hash = SchemeHash(comptime_scheme);
+                        const rsa = Certificate.rsa;
+                        const components = try rsa.PublicKey.parseDer(cert_pub_key);
+                        const exponent = components.exponent;
+                        const modulus = components.modulus;
+                        switch (modulus.len) {
+                            inline 128, 256, 512 => |modulus_len| {
+                                const key = try rsa.PublicKey.fromBytes(exponent, modulus);
+                                const sig = rsa.PSSSignature.fromBytes(modulus_len, signature);
+                                try rsa.PSSSignature.verify(modulus_len, sig, verify_bytes, key, Hash);
+                            },
+                            else => {
+                                return error.TlsBadRsaSignatureBitCount;
+                            },
+                        }
+                    },
+                    .rsa_pkcs1_sha1,
+                    .rsa_pkcs1_sha256,
+                    .rsa_pkcs1_sha384,
+                    => return error.MissingRsaPkcs1SignatureImplementation,
+                    else => {
+                        std.debug.print(" unknown signature scheme: {} ", .{signature_scheme});
+                        return error.TlsUnknownSignatureScheme;
+                    },
                 }
+            }
+
+            fn SchemeEcdsa(comptime scheme: tls.SignatureScheme) type {
+                return switch (scheme) {
+                    .ecdsa_secp256r1_sha256 => crypto.sign.ecdsa.EcdsaP256Sha256,
+                    .ecdsa_secp384r1_sha384 => crypto.sign.ecdsa.EcdsaP384Sha384,
+                    else => @compileError("bad scheme"),
+                };
+            }
+
+            fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
+                return switch (scheme) {
+                    .rsa_pss_rsae_sha256 => crypto.hash.sha2.Sha256,
+                    .rsa_pss_rsae_sha384 => crypto.hash.sha2.Sha384,
+                    .rsa_pss_rsae_sha512 => crypto.hash.sha2.Sha512,
+                    else => @compileError("bad scheme"),
+                };
             }
 
             fn generateKeyMaterial(h: *Handshake, server_pub_key: []const u8) !void {
@@ -367,6 +430,11 @@ pub fn ClientT(comptime StreamType: type) type {
                     .secp256r1 => {
                         const pk = try crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
                         const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
+                        pre_master_secret = &mul.affineCoordinates().x.toBytes(.big);
+                    },
+                    .secp384r1 => {
+                        const pk = try crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
+                        const mul = try pk.p.mulPublic(h.secp384r1_kp.secret_key.bytes, .big);
                         pre_master_secret = &mul.affineCoordinates().x.toBytes(.big);
                     },
                     else => {
@@ -415,6 +483,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 const key: []const u8 = switch (h.named_group) {
                     .x25519 => &h.x25519_kp.public_key,
                     .secp256r1 => &h.secp256r1_kp.public_key.toUncompressedSec1(),
+                    .secp384r1 => &h.secp384r1_kp.public_key.toUncompressedSec1(),
                     else => unreachable,
                 };
 
@@ -866,6 +935,4 @@ test "verify google.com certificate" {
     defer ca_bundle.deinit(testing.allocator);
 
     try h.serverHello(&rdr, ca_bundle);
-}
-
 }
