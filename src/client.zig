@@ -628,15 +628,13 @@ test "Handshake.generateMasterSecret" {
         _ = try hexToBytes(h.x25519_kp.secret_key[0..], "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
         _ = try hexToBytes(h.server_random[0..], "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
         _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
-        var public_key_buf: [32]u8 = undefined;
-        _ = try hexToBytes(&public_key_buf, "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615");
-        h.server_public_key = &public_key_buf;
         h.cipher_suite_tag = .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA;
         h.named_group = .x25519;
     }
-
-    { // generate encryption keys
-        try h.generateClientKeys();
+    var server_pub_key: [32]u8 = undefined;
+    _ = try hexToBytes(&server_pub_key, "9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615");
+    { // generate encryptionserver_pub_key
+        try h.generateKeyMaterial(&server_pub_key);
         try testing.expectEqualStrings(
             "1b7d117c7d5f690bc263cae8ef60af0f1878acc22ad8bdd8c601a617126f63540eb20906f781fad2f656d037b173ef3e11169f27231a84b6752a18e7a9fcb7cbcdd8f98dd8f769eba0d2550c9238eebfef5c32251abb67d6434528db4937d540d393135e06a11bb80e45eaebe32cac72757438fbb3df645cbda4067cdfa0f848",
             &bytesToHex(h.key_material, .lower),
