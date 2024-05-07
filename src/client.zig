@@ -560,9 +560,19 @@ pub fn ClientT(comptime StreamType: type) type {
             fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
                 _ = h;
                 { // read change ciperh spec message
-                    const rec = (try c.reader.next()) orelse return error.EndOfStream;
+                    var rec = (try c.reader.next()) orelse return error.EndOfStream;
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-                    if (rec.content_type != .change_cipher_spec) return error.TlsUnexpectedMessage;
+                    switch (rec.content_type) {
+                        .alert => {
+                            const level = try rec.decode(tls.AlertLevel);
+                            const desc = try rec.decode(tls.AlertDescription);
+                            _ = level;
+                            try desc.toError();
+                            return error.TlsServerSideClosure;
+                        },
+                        else => return error.TlsUnexpectedMessage,
+                        .change_cipher_spec => {}, // continue
+                    }
                 }
                 { // read server handshake finished
                     // TODO check content of the handshake finished message
