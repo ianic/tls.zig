@@ -254,104 +254,114 @@ pub fn ClientT(comptime StreamType: type) type {
                     }
                     h.transcript.update(rec.payload);
 
-                    const handshake_type = try rec.decode(tls12.HandshakeType);
-                    if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
-                    const length = try rec.decode(u24);
+                    // Multiple handshake messages can be packend in single tls record.
+                    while (!rec.eof()) {
+                        const handshake_type = try rec.decode(tls12.HandshakeType);
+                        if (handshake_state != handshake_type) {
+                            std.debug.print(" expected: {}, actual: {}\n", .{ handshake_state, handshake_type });
+                            return error.TlsUnexpectedMessage;
+                        }
+                        const length = try rec.decode(u24);
+                        if (length > tls.max_cipertext_inner_record_len)
+                            return error.TlsUnsupportedFragmentedHandshakeMessage;
 
-                    // TODO: handle this
-                    if (length + 4 != rec.payload.len) return error.MultipleHandshakeMessagesInOneRecord;
+                        switch (handshake_type) {
+                            .server_hello => { // server hello, ref: https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.3
+                                // try std.fs.cwd().writeFile("server_hello", reader.buffer[0..reader.end]);
 
-                    switch (handshake_type) {
-                        .server_hello => { // server hello
-                            try std.fs.cwd().writeFile("server_hello", reader.buffer[0..reader.end]);
+                                if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
+                                    return error.TlsBadVersion;
+                                h.server_random = (try rec.array(32)).*;
 
-                            if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2) return error.TlsBadVersion;
-                            h.server_random = (try rec.array(32)).*;
+                                const session_id_len = try rec.decode(u8);
+                                if (session_id_len > 32) return error.TlsIllegalParameter;
+                                try rec.skip(session_id_len);
 
-                            const session_id_len = try rec.decode(u8);
-                            if (session_id_len > 32) return error.TlsIllegalParameter;
-                            try rec.skip(session_id_len);
+                                h.cipher_suite_tag = try rec.decode(tls12.CipherSuite);
+                                try h.cipher_suite_tag.validate();
+                                try rec.skip(1); // skip compression method
 
-                            h.cipher_suite_tag = try rec.decode(tls12.CipherSuite);
-                            try h.cipher_suite_tag.validate();
-                            try rec.skip(1); // skip compression method
-
-                            if (!rec.eof()) { // TODO is this because we didn't send any extension
-                                const extensions_size = try rec.decode(u16);
-                                try rec.skip(extensions_size);
-                            }
-                            handshake_state = .certificate;
-                        },
-                        .certificate => {
-                            var trust_chain_established = false;
-                            const certs_len = try rec.decode(u24);
-
-                            var l: usize = 0;
-                            while (l < certs_len) {
-                                const cert_len = try rec.decode(u24);
-
-                                const subject_cert: Certificate = .{ .buffer = try rec.slice(cert_len), .index = 0 };
-
-                                const subject = try subject_cert.parse();
-                                if (l == 0) { // first certificate
-
-                                    const pub_key = subject.pubKey();
-                                    if (pub_key.len > cert_pub_key_buf.len)
-                                        return error.CertificatePublicKeyInvalid;
-                                    @memcpy(cert_pub_key_buf[0..pub_key.len], pub_key);
-                                    cert_pub_key = cert_pub_key_buf[0..pub_key.len];
-                                    cert_pub_key_algo = subject.pub_key_algo;
+                                const extensions_present = length > 2 + 32 + session_id_len + 2 + 1;
+                                if (extensions_present) {
+                                    const extensions_size = try rec.decode(u16);
+                                    try rec.skip(extensions_size);
                                 }
-                                l += cert_len + 3;
-                                if (ca_bundle) |cb| {
-                                    if (cb.verify(subject, h.now_sec)) |_| {
-                                        trust_chain_established = true;
-                                        break;
-                                    } else |err| switch (err) {
-                                        error.CertificateIssuerNotFound => {},
-                                        else => |e| return e,
+                                handshake_state = .certificate;
+                            },
+                            .certificate => {
+                                var trust_chain_established = false;
+                                const certs_len = try rec.decode(u24);
+
+                                var l: usize = 0;
+                                while (l < certs_len) {
+                                    const cert_len = try rec.decode(u24);
+                                    defer l += cert_len + 3;
+
+                                    if (trust_chain_established) {
+                                        try rec.skip(cert_len);
+                                        continue;
+                                    }
+                                    const cert = try rec.slice(cert_len);
+                                    const subject_cert: Certificate = .{ .buffer = cert, .index = 0 };
+
+                                    const subject = try subject_cert.parse();
+                                    if (l == 0) { // first certificate
+                                        const pub_key = subject.pubKey();
+                                        if (pub_key.len > cert_pub_key_buf.len)
+                                            return error.CertificatePublicKeyInvalid;
+                                        @memcpy(cert_pub_key_buf[0..pub_key.len], pub_key);
+                                        cert_pub_key = cert_pub_key_buf[0..pub_key.len];
+                                        cert_pub_key_algo = subject.pub_key_algo;
+                                    }
+                                    if (ca_bundle) |cb| {
+                                        if (cb.verify(subject, h.now_sec)) |_| {
+                                            trust_chain_established = true;
+                                        } else |err| switch (err) {
+                                            error.CertificateIssuerNotFound => {},
+                                            else => |e| return e,
+                                        }
                                     }
                                 }
-                            }
-                            if (ca_bundle != null and !trust_chain_established) {
-                                return error.CertificateIssuerNotFound;
-                            }
-                            handshake_state = .server_key_exchange;
-                        },
-                        .server_key_exchange => {
-                            const idx_start = rec.idx;
-                            const named_curve = try rec.decode(u8);
-                            if (named_curve != 0x03) return error.TlsIllegalParameter;
-                            h.named_group = try rec.decode(tls.NamedGroup);
-                            const server_pub_key_len = try rec.decode(u8);
-                            const server_pub_key = try rec.slice(server_pub_key_len);
-                            const idx_end = rec.idx;
+                                if (ca_bundle != null and !trust_chain_established) {
+                                    return error.CertificateIssuerNotFound;
+                                }
+                                handshake_state = .server_key_exchange;
+                            },
+                            .server_key_exchange => {
+                                const idx_start = rec.idx;
+                                const named_curve = try rec.decode(u8);
+                                if (named_curve != 0x03) return error.TlsIllegalParameter;
+                                h.named_group = try rec.decode(tls.NamedGroup);
+                                const server_pub_key_len = try rec.decode(u8);
+                                const server_pub_key = try rec.slice(server_pub_key_len);
+                                const idx_end = rec.idx;
 
-                            h.signature_scheme = try rec.decode(tls.SignatureScheme);
-                            const signature_len = try rec.decode(u16);
-                            const signature = try rec.slice(signature_len);
-                            const verify_bytes = brk: {
-                                // public key len
-                                // x25519 = 32
-                                // secp256r1 = 65
-                                // secp384r1 = 97
-                                const max_public_key_len = 97;
-                                var verify_buf: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
-                                verify_buf[0..64].* = h.client_random ++ h.server_random;
-                                const payload_part = rec.payload[idx_start..idx_end];
-                                @memcpy(verify_buf[64..][0..payload_part.len], payload_part);
-                                break :brk verify_buf[0 .. 64 + payload_part.len];
-                            };
-                            try verifySignature(h.signature_scheme, cert_pub_key, cert_pub_key_algo, signature, verify_bytes);
-                            try h.generateKeyMaterial(server_pub_key);
+                                h.signature_scheme = try rec.decode(tls.SignatureScheme);
+                                const signature_len = try rec.decode(u16);
+                                const signature = try rec.slice(signature_len);
+                                const verify_bytes = brk: {
+                                    // public key len
+                                    // x25519 = 32
+                                    // secp256r1 = 65
+                                    // secp384r1 = 97
+                                    const max_public_key_len = 97;
+                                    var verify_buf: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
+                                    verify_buf[0..64].* = h.client_random ++ h.server_random;
+                                    const payload_part = rec.payload[idx_start..idx_end];
+                                    @memcpy(verify_buf[64..][0..payload_part.len], payload_part);
+                                    break :brk verify_buf[0 .. 64 + payload_part.len];
+                                };
+                                try verifySignature(h.signature_scheme, cert_pub_key, cert_pub_key_algo, signature, verify_bytes);
+                                try h.generateKeyMaterial(server_pub_key);
 
-                            handshake_state = .server_hello_done;
-                        },
-                        .server_hello_done => {
-                            if (length != 0) return error.TlsIllegalParameter;
-                            return;
-                        },
-                        else => return error.TlsUnexpectedMessage,
+                                handshake_state = .server_hello_done;
+                            },
+                            .server_hello_done => {
+                                if (length != 0) return error.TlsIllegalParameter;
+                                return;
+                            },
+                            else => return error.TlsUnexpectedMessage,
+                        }
                     }
                 }
             }
