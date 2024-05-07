@@ -6,11 +6,13 @@ const posix = std.posix;
 const tls = crypto.tls;
 const tls12 = @import("tls12.zig");
 const AppCipherT = @import("cipher.zig").AppCipherT;
+const pkcs1 = @import("pkcs1-1_5.zig");
 
 const Sha256 = crypto.hash.sha2.Sha256;
 const HmacSha256 = crypto.auth.hmac.sha2.HmacSha256;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
+const EcdsaP256Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 
 const Certificate = std.crypto.Certificate;
 
@@ -41,6 +43,11 @@ pub fn ClientT(comptime StreamType: type) type {
             c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
+
+            std.debug.print(
+                " chipher: {}, namded_group: {}, signature scheme: {} ",
+                .{ h.cipher_suite_tag, h.named_group, h.signature_scheme },
+            );
         }
 
         /// Low level write interface. Doesn't allocate but requires provided
@@ -278,12 +285,16 @@ pub fn ClientT(comptime StreamType: type) type {
                         .certificate => {
                             var trust_chain_established = false;
                             const certs_len = try rec.decode(u24);
+
                             var l: usize = 0;
                             while (l < certs_len) {
                                 const cert_len = try rec.decode(u24);
+
                                 const subject_cert: Certificate = .{ .buffer = try rec.slice(cert_len), .index = 0 };
+
                                 const subject = try subject_cert.parse();
                                 if (l == 0) { // first certificate
+
                                     const pub_key = subject.pubKey();
                                     if (pub_key.len > cert_pub_key_buf.len)
                                         return error.CertificatePublicKeyInvalid;
@@ -352,6 +363,8 @@ pub fn ClientT(comptime StreamType: type) type {
                 signature: []const u8,
                 verify_bytes: []const u8,
             ) !void {
+                const rsa = Certificate.rsa;
+
                 switch (signature_scheme) {
                     inline .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
@@ -370,15 +383,11 @@ pub fn ClientT(comptime StreamType: type) type {
                     => |comptime_scheme| {
                         if (cert_pub_key_algo != .rsaEncryption)
                             return error.TlsBadSignatureScheme;
-
                         const Hash = SchemeHash(comptime_scheme);
-                        const rsa = Certificate.rsa;
-                        const components = try rsa.PublicKey.parseDer(cert_pub_key);
-                        const exponent = components.exponent;
-                        const modulus = components.modulus;
-                        switch (modulus.len) {
+                        const pk = try rsa.PublicKey.parseDer(cert_pub_key);
+                        switch (pk.modulus.len) {
                             inline 128, 256, 512 => |modulus_len| {
-                                const key = try rsa.PublicKey.fromBytes(exponent, modulus);
+                                const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
                                 const sig = rsa.PSSSignature.fromBytes(modulus_len, signature);
                                 try rsa.PSSSignature.verify(modulus_len, sig, verify_bytes, key, Hash);
                             },
@@ -390,7 +399,22 @@ pub fn ClientT(comptime StreamType: type) type {
                     .rsa_pkcs1_sha1,
                     .rsa_pkcs1_sha256,
                     .rsa_pkcs1_sha384,
-                    => return error.MissingRsaPkcs1SignatureImplementation,
+                    .rsa_pkcs1_sha512,
+                    => {
+                        if (cert_pub_key_algo != .rsaEncryption)
+                            return error.TlsBadSignatureScheme;
+                        std.debug.print(" cert_pub_key.len {} ", .{cert_pub_key.len});
+                        const pk = try rsa.PublicKey.parseDer(cert_pub_key);
+                        try pkcs1.verifyFixed(signature_scheme, signature, verify_bytes, pk.modulus, pk.exponent);
+                    },
+                    // .rsa_pkcs1_sha1 => {
+                    //     std.debug.print("signature_scheme: {}\n", .{signature_scheme});
+                    //     bufPrint("cert_pub_key", cert_pub_key);
+                    //     bufPrint("signature", signature);
+                    //     bufPrint("verify_bytes", verify_bytes);
+
+                    //     return error.MissingRsaPkcs1SignatureImplementation;
+                    // },
                     else => {
                         std.debug.print(" unknown signature scheme: {} ", .{signature_scheme});
                         return error.TlsUnknownSignatureScheme;
@@ -408,9 +432,9 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
                 return switch (scheme) {
-                    .rsa_pss_rsae_sha256 => crypto.hash.sha2.Sha256,
-                    .rsa_pss_rsae_sha384 => crypto.hash.sha2.Sha384,
-                    .rsa_pss_rsae_sha512 => crypto.hash.sha2.Sha512,
+                    .rsa_pss_rsae_sha256, .rsa_pkcs1_sha256 => crypto.hash.sha2.Sha256,
+                    .rsa_pss_rsae_sha384, .rsa_pkcs1_sha384 => crypto.hash.sha2.Sha384,
+                    .rsa_pss_rsae_sha512, .rsa_pkcs1_sha512 => crypto.hash.sha2.Sha512,
                     else => @compileError("bad scheme"),
                 };
             }
@@ -919,7 +943,7 @@ fn bufPrint(var_name: []const u8, buf: []const u8) void {
         if (i % 16 == 0)
             std.debug.print("\n", .{});
     }
-    std.debug.print("}},\n", .{});
+    std.debug.print("}};\n", .{});
 }
 
 test "verify google.com certificate" {

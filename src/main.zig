@@ -57,7 +57,7 @@ pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
     // }
 }
 
-pub fn get2(gpa: std.mem.Allocator, url: []const u8) !usize {
+pub fn get2(gpa: std.mem.Allocator, url: []const u8, ca_bundle: Certificate.Bundle) !usize {
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
 
@@ -65,7 +65,7 @@ pub fn get2(gpa: std.mem.Allocator, url: []const u8) !usize {
     defer tcp.close();
 
     var cli = tls.client(tcp);
-    try cli.handshake(host, null);
+    try cli.handshake(host, ca_bundle);
 
     var buf: [128]u8 = undefined;
     const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
@@ -101,6 +101,10 @@ pub fn main__() !void {
 pub fn getTopSites() !void {
     const gpa = std.heap.page_allocator;
 
+    var ca_bundle: Certificate.Bundle = .{};
+    try ca_bundle.rescan(gpa);
+    defer ca_bundle.deinit(gpa);
+
     const top_sites_parsed = try readSites(gpa);
     defer top_sites_parsed.deinit();
     const top_sites = top_sites_parsed.value;
@@ -111,6 +115,8 @@ pub fn getTopSites() !void {
     }{};
 
     for (top_sites) |site| {
+        if (filtered(site.rank)) continue;
+
         std.debug.print("{d}: {s} ", .{ site.rank, site.rootDomain });
         if (site.rank == 194 or
             site.rank == 195 or
@@ -123,7 +129,7 @@ pub fn getTopSites() !void {
 
         var buf: [128]u8 = undefined;
         const url = try std.fmt.bufPrint(&buf, "https://{s}", .{site.rootDomain});
-        const size = get2(gpa, url) catch |err| {
+        const size = get2(gpa, url, ca_bundle) catch |err| {
             std.debug.print("ERROR {} \n", .{err});
             stat.fail += 1;
             continue;
@@ -163,3 +169,145 @@ const Site = struct {
 // curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://www.supersport.hr
 // curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://github.com
 //
+
+pub fn filtered(site_rank: usize) bool {
+    const include = pcks1;
+    for (include) |i| {
+        if (i == site_rank) return false;
+    }
+    return true;
+}
+
+const missing_pkdc1 = [_]usize{
+    178,
+    199,
+    253,
+    264,
+    297,
+    342,
+    349,
+    364,
+    381,
+    388,
+    401,
+    402,
+    411,
+    412,
+    422,
+    432,
+    438,
+    456,
+    464,
+    484,
+};
+
+const alert_illegal_parameter = [_]usize{
+    //    85,
+    92,
+    101,
+    110,
+    //    202,
+    267,
+    272,
+    365,
+    383,
+    419,
+    468,
+    488,
+};
+
+const handshake_failure = [_]usize{
+    // 35,
+    // 48,
+    // 55,
+    // 96,
+    // 107,
+    108,
+    // 166,
+    // 192,
+    // 229,
+    // 262,
+    //280,
+    // 282,
+    // 300,
+    // 310,
+    // 317,
+    341,
+    // 382,
+    // 393,
+    397,
+    416,
+    // 453,
+    // 462,
+    // 470,
+    // 493,
+};
+
+const pcks1 = [_]usize{
+    23,
+    29,
+    53,
+    // 92,
+    // 101,
+    // 110,
+    // 111,
+    112,
+    // 114,
+    // 130,
+    // 141,
+    // 158,
+    // 178,
+    // 181,
+    // 199,
+    207,
+    // 211,
+    // 222,
+    // 246,
+    // 253,
+    // 261,
+    // 264,
+    266,
+    // 267,
+    // 272,
+    // 277,
+    // 287,
+    // 297,
+    // 312,
+    // 319,
+    // 342,
+    // 349,
+    // 356,
+    // 364,
+    // 365,
+    // 381,
+    // 383,
+    // 388,
+    // 395,
+    // 401,
+    // 402,
+    // 405,
+    407,
+    // 411,
+    // 412,
+    // 419,
+    // 422,
+    // 423,
+    428,
+    //    432,
+    433,
+    // 438,
+    // 448,
+    // 456,
+    // 461,
+    // 464,
+    469,
+    //    472,
+    476,
+    // 478,
+    // 480,
+    // 484,
+    // 485,
+    // 488,
+    // 495,
+    // 500,
+};

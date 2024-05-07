@@ -1,4 +1,4 @@
-// This file is taken from: https://github.com/jedisct1/zig-cbc/tree/master
+// This was originally copied from: https://github.com/jedisct1/zig-cbc
 const std = @import("std");
 const aes = std.crypto.core.aes;
 const mem = std.mem;
