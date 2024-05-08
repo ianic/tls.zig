@@ -51,7 +51,12 @@ pub const CipherSuite = enum(u16) {
     TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
     TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
 
-    //TLS_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
+    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
+    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
+
+    // TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
+
+    // TLS_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
     _,
 
     pub fn validate(cs: CipherSuite) !void {
@@ -61,6 +66,8 @@ pub const CipherSuite = enum(u16) {
 
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
             .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             => {},
             else => return error.TlsIllegalParameter,
         }

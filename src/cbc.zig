@@ -4,7 +4,7 @@ const aes = std.crypto.core.aes;
 const mem = std.mem;
 const debug = std.debug;
 
-pub const CBCAes128 = CBC(aes.Aes128);
+pub const Aes128Cbc = CBC(aes.Aes128);
 
 /// CBC mode with PKCS#7 padding.
 ///

@@ -115,7 +115,7 @@ pub fn getTopSites() !void {
     }{};
 
     for (top_sites) |site| {
-        if (filtered(site.rank)) continue;
+        //if (filtered(site.rank)) continue;
 
         std.debug.print("{d}: {s} ", .{ site.rank, site.rootDomain });
         if (site.rank == 194 or

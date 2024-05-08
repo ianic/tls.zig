@@ -6,14 +6,14 @@ const posix = std.posix;
 const tls = crypto.tls;
 const tls12 = @import("tls12.zig");
 const AppCipherT = @import("cipher.zig").AppCipherT;
+const HandshakeCipher = @import("cipher.zig").HandshakeCipher;
 const pkcs1 = @import("pkcs1-1_5.zig");
 
 const Sha256 = crypto.hash.sha2.Sha256;
-const HmacSha256 = crypto.auth.hmac.sha2.HmacSha256;
+const Sha384 = crypto.hash.sha2.Sha384;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
-const EcdsaP256Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-
+const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 const Certificate = std.crypto.Certificate;
 
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
@@ -39,7 +39,6 @@ pub fn ClientT(comptime StreamType: type) type {
             var h = try Handshake.init();
             try h.clientHello(host, &c.stream);
             try h.serverHello(&c.reader, ca_bundle);
-            //try h.generateClientKeys();
             c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
@@ -136,12 +135,13 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
-            transcript: Sha256 = Sha256.init(.{}),
+            cipher: ?HandshakeCipher = null,
+            transcript384: Sha384 = Sha384.init(.{}),
+            transcript256: Sha256 = Sha256.init(.{}),
 
             client_random: [32]u8 = undefined,
             server_random: [32]u8 = undefined,
-            //server_public_key: []u8 = undefined,
-            master_secret: [32 + 16]u8 = undefined,
+            master_secret: [48]u8 = undefined,
             key_material: [32 * 4]u8 = undefined,
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
@@ -150,8 +150,28 @@ pub fn ClientT(comptime StreamType: type) type {
 
             x25519_kp: X25519.KeyPair = undefined,
             secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
-            secp384r1_kp: EcdsaP256Sha384.KeyPair = undefined,
+            secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
             now_sec: i64 = 0,
+
+            fn updateTranscript(h: *Handshake, data: []const u8) void {
+                // calculate both until we get server hello
+                if (h.cipher == null) {
+                    h.transcript256.update(data);
+                    h.transcript384.update(data);
+                    return;
+                }
+                switch (h.cipher.?) {
+                    inline else => |*i| i.transcript.update(data),
+                }
+            }
+
+            fn initCipher(h: *Handshake) void {
+                h.cipher = HandshakeCipher.init(
+                    h.cipher_suite_tag,
+                    h.transcript256,
+                    h.transcript384,
+                );
+            }
 
             pub fn init() !Handshake {
                 var random_buffer: [144]u8 = undefined;
@@ -161,7 +181,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     .client_random = random_buffer[0..32].*,
                     .x25519_kp = try X25519.KeyPair.create(random_buffer[32..][0..32].*),
                     .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..][0..32].*),
-                    .secp384r1_kp = try EcdsaP256Sha384.KeyPair.create(random_buffer[96..][0..48].*),
+                    .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(random_buffer[96..][0..48].*),
                     .now_sec = std.time.timestamp(),
                 };
             }
@@ -199,10 +219,14 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.serverNameExtensionHeader(host_len);
 
                 const cipher_suites = enum_array(tls12.CipherSuite, &.{
-                    .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-
                     .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
                     .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+
+                    .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                    .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+
+                    .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                    .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
                 });
 
                 const payload =
@@ -218,8 +242,8 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
                     payload;
 
-                h.transcript.update(record[tls.record_header_len..]);
-                h.transcript.update(host);
+                h.updateTranscript(record[tls.record_header_len..]);
+                h.updateTranscript(host);
 
                 var iovecs = [_]std.posix.iovec_const{
                     .{ .iov_base = &record, .iov_len = record.len },
@@ -252,7 +276,7 @@ pub fn ClientT(comptime StreamType: type) type {
                         else => return error.TlsUnexpectedMessage,
                         .handshake => {}, // continue
                     }
-                    h.transcript.update(rec.payload);
+                    h.updateTranscript(rec.payload);
 
                     // Multiple handshake messages can be packend in single tls record.
                     while (!rec.eof()) {
@@ -287,6 +311,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                     try rec.skip(extensions_size);
                                 }
                                 handshake_state = .certificate;
+                                h.initCipher();
                             },
                             .certificate => {
                                 var trust_chain_established = false;
@@ -413,19 +438,11 @@ pub fn ClientT(comptime StreamType: type) type {
                     => {
                         if (cert_pub_key_algo != .rsaEncryption)
                             return error.TlsBadSignatureScheme;
-                        std.debug.print(" cert_pub_key.len {} ", .{cert_pub_key.len});
                         const pk = try rsa.PublicKey.parseDer(cert_pub_key);
                         try pkcs1.verifyFixed(signature_scheme, signature, verify_bytes, pk.modulus, pk.exponent);
                     },
-                    // .rsa_pkcs1_sha1 => {
-                    //     std.debug.print("signature_scheme: {}\n", .{signature_scheme});
-                    //     bufPrint("cert_pub_key", cert_pub_key);
-                    //     bufPrint("signature", signature);
-                    //     bufPrint("verify_bytes", verify_bytes);
-
-                    //     return error.MissingRsaPkcs1SignatureImplementation;
-                    // },
                     else => {
+                        // TODO remove debug
                         std.debug.print(" unknown signature scheme: {} ", .{signature_scheme});
                         return error.TlsUnknownSignatureScheme;
                     },
@@ -434,8 +451,8 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn SchemeEcdsa(comptime scheme: tls.SignatureScheme) type {
                 return switch (scheme) {
-                    .ecdsa_secp256r1_sha256 => crypto.sign.ecdsa.EcdsaP256Sha256,
-                    .ecdsa_secp384r1_sha384 => crypto.sign.ecdsa.EcdsaP384Sha384,
+                    .ecdsa_secp256r1_sha256 => EcdsaP256Sha256,
+                    .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
                     else => @compileError("bad scheme"),
                 };
             }
@@ -450,65 +467,40 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             fn generateKeyMaterial(h: *Handshake, server_pub_key: []const u8) !void {
-                var pre_master_secret: []const u8 = undefined;
-
-                switch (h.named_group) {
-                    .x25519 => {
+                const pre_master_secret = switch (h.named_group) {
+                    .x25519 => brk: {
                         if (server_pub_key.len != X25519.public_length)
                             return error.TlsIllegalParameter;
-                        pre_master_secret = &(try X25519.scalarmult(
+                        break :brk &(try X25519.scalarmult(
                             h.x25519_kp.secret_key,
                             server_pub_key[0..X25519.public_length].*,
                         ));
                     },
-                    .secp256r1 => {
-                        const pk = try crypto.sign.ecdsa.EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
+                    .secp256r1 => brk: {
+                        const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
                         const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
-                        pre_master_secret = &mul.affineCoordinates().x.toBytes(.big);
+                        break :brk &mul.affineCoordinates().x.toBytes(.big);
                     },
-                    .secp384r1 => {
-                        const pk = try crypto.sign.ecdsa.EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
+                    .secp384r1 => brk: {
+                        const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
                         const mul = try pk.p.mulPublic(h.secp384r1_kp.secret_key.bytes, .big);
-                        pre_master_secret = &mul.affineCoordinates().x.toBytes(.big);
+                        break :brk &mul.affineCoordinates().x.toBytes(.big);
                     },
-                    else => {
-                        return error.TlsIllegalParameter;
-                    },
-                }
-                {
-                    const seed = "master secret" ++ h.client_random ++ h.server_random;
+                    else => return error.TlsIllegalParameter,
+                };
 
-                    var a1: [32]u8 = undefined;
-                    var a2: [32]u8 = undefined;
-                    HmacSha256.create(&a1, seed, pre_master_secret);
-                    HmacSha256.create(&a2, &a1, pre_master_secret);
+                h.master_secret = switch (h.cipher.?) {
+                    inline else => |i| @TypeOf(i).masterSecret(pre_master_secret, h.client_random, h.server_random)[0..h.master_secret.len].*,
+                };
+                h.key_material = switch (h.cipher.?) {
+                    inline else => |i| @TypeOf(i).keyExpansion(&h.master_secret, h.client_random, h.server_random)[0..h.key_material.len].*,
+                };
+            }
 
-                    var p1: [32]u8 = undefined;
-                    var p2: [32]u8 = undefined;
-                    HmacSha256.create(&p1, a1 ++ seed, pre_master_secret);
-                    HmacSha256.create(&p2, a2 ++ seed, pre_master_secret);
-
-                    h.master_secret[0..32].* = p1;
-                    h.master_secret[32..].* = p2[0..16].*;
-                }
-                {
-                    const seed = "key expansion" ++ h.server_random ++ h.client_random;
-                    const a0 = seed;
-
-                    var a1: [32]u8 = undefined;
-                    var a2: [32]u8 = undefined;
-                    var a3: [32]u8 = undefined;
-                    var a4: [32]u8 = undefined;
-                    HmacSha256.create(&a1, a0, &h.master_secret);
-                    HmacSha256.create(&a2, &a1, &h.master_secret);
-                    HmacSha256.create(&a3, &a2, &h.master_secret);
-                    HmacSha256.create(&a4, &a3, &h.master_secret);
-
-                    HmacSha256.create(h.key_material[0..32], a1 ++ seed, &h.master_secret);
-                    HmacSha256.create(h.key_material[32..64], a2 ++ seed, &h.master_secret);
-                    HmacSha256.create(h.key_material[64..96], a3 ++ seed, &h.master_secret);
-                    HmacSha256.create(h.key_material[96..], a4 ++ seed, &h.master_secret);
-                }
+            fn verifyData(h: *Handshake) [16]u8 {
+                return switch (h.cipher.?) {
+                    inline else => |*i| i.verifyData(&h.master_secret),
+                };
             }
 
             /// Sends client key exchange, client chiper spec and client
@@ -525,8 +517,8 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
                     tls12.int1(@intCast(key.len));
 
-                h.transcript.update(key_exchange[tls.record_header_len..]);
-                h.transcript.update(key);
+                h.updateTranscript(key_exchange[tls.record_header_len..]);
+                h.updateTranscript(key);
 
                 const change_cipher_spec =
                     tls12.recordHeader(.change_cipher_spec, 1) ++
@@ -546,15 +538,6 @@ pub fn ClientT(comptime StreamType: type) type {
                     .{ .iov_base = handshake_finished.ptr, .iov_len = handshake_finished.len },
                 };
                 try c.stream.writevAll(&iovecs);
-            }
-
-            fn verifyData(h: *Handshake) [16]u8 {
-                const seed = "client finished" ++ h.transcript.finalResult();
-                var a1: [32]u8 = undefined;
-                var p1: [32]u8 = undefined;
-                HmacSha256.create(&a1, seed, &h.master_secret);
-                HmacSha256.create(&p1, a1 ++ seed, &h.master_secret);
-                return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
             }
 
             fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
@@ -736,11 +719,13 @@ test "Client.init" {
 
 test "Handshake.verifyData" {
     var h = try ClientT(TestStream).Handshake.init();
+    h.cipher_suite_tag = .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
+    h.initCipher();
     h.master_secret = example.master_secret;
 
     // add handshake messages to transcript
     for (example.handshake_messages) |msg| {
-        h.transcript.update(msg[tls.record_header_len..]);
+        h.updateTranscript(msg[tls.record_header_len..]);
     }
 
     // expect verify data

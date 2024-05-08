@@ -1,22 +1,113 @@
 const std = @import("std");
 const crypto = std.crypto;
 const tls12 = @import("tls12.zig");
+const Aes128Cbc = @import("cbc.zig").Aes128Cbc;
+
+const Sha256 = crypto.hash.sha2.Sha256;
+const Sha384 = crypto.hash.sha2.Sha384;
+
+pub const HandshakeCipher = union(enum) {
+    sha256: HandshakeCipherT(Sha256),
+    sha384: HandshakeCipherT(Sha384),
+
+    pub fn init(tag: tls12.CipherSuite, transcript256: Sha256, transcript384: Sha384) HandshakeCipher {
+        return switch (tag) {
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            => .{ .sha384 = HandshakeCipherT(Sha384).init(transcript384) },
+            else => .{ .sha256 = HandshakeCipherT(Sha256).init(transcript256) },
+        };
+    }
+};
+
+pub fn HandshakeCipherT(comptime HashType: type) type {
+    return struct {
+        pub const Hash = HashType;
+        pub const Hmac = crypto.auth.hmac.Hmac(Hash);
+        const mac_length = Hmac.mac_length;
+
+        transcript: Hash,
+
+        const Cipher = @This();
+
+        fn init(transcript: Hash) Cipher {
+            return .{ .transcript = transcript };
+        }
+
+        pub fn masterSecret(
+            pre_master_secret: []const u8,
+            client_random: [32]u8,
+            server_random: [32]u8,
+        ) [mac_length * 2]u8 {
+            const seed = "master secret" ++ client_random ++ server_random;
+
+            var a1: [mac_length]u8 = undefined;
+            var a2: [mac_length]u8 = undefined;
+            Hmac.create(&a1, seed, pre_master_secret);
+            Hmac.create(&a2, &a1, pre_master_secret);
+
+            var p1: [mac_length]u8 = undefined;
+            var p2: [mac_length]u8 = undefined;
+            Hmac.create(&p1, a1 ++ seed, pre_master_secret);
+            Hmac.create(&p2, a2 ++ seed, pre_master_secret);
+
+            return p1 ++ p2;
+        }
+
+        pub fn keyExpansion(
+            master_secret: []const u8,
+            client_random: [32]u8,
+            server_random: [32]u8,
+        ) [mac_length * 4]u8 {
+            const seed = "key expansion" ++ server_random ++ client_random;
+
+            const a0 = seed;
+            var a1: [mac_length]u8 = undefined;
+            var a2: [mac_length]u8 = undefined;
+            var a3: [mac_length]u8 = undefined;
+            var a4: [mac_length]u8 = undefined;
+            Hmac.create(&a1, a0, master_secret);
+            Hmac.create(&a2, &a1, master_secret);
+            Hmac.create(&a3, &a2, master_secret);
+            Hmac.create(&a4, &a3, master_secret);
+
+            var key_material: [mac_length * 4]u8 = undefined;
+            Hmac.create(key_material[0..mac_length], a1 ++ seed, master_secret);
+            Hmac.create(key_material[mac_length .. mac_length * 2], a2 ++ seed, master_secret);
+            Hmac.create(key_material[mac_length * 2 .. mac_length * 3], a3 ++ seed, master_secret);
+            Hmac.create(key_material[mac_length * 3 ..], a4 ++ seed, master_secret);
+            return key_material;
+        }
+
+        pub fn verifyData(c: *Cipher, master_secret: []const u8) [16]u8 {
+            const seed = "client finished" ++ c.transcript.finalResult();
+            var a1: [mac_length]u8 = undefined;
+            var p1: [mac_length]u8 = undefined;
+            Hmac.create(&a1, seed, master_secret);
+            Hmac.create(&p1, a1 ++ seed, master_secret);
+            return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
+        }
+    };
+}
 
 pub const AppCipherT = union(enum) {
-    AES_128_CBC_SHA: CipherCbcT(@import("cbc.zig").CBCAes128, crypto.hash.Sha1),
+    AES_128_CBC_SHA: CipherCbcT(Aes128Cbc, crypto.hash.Sha1),
     AES_128_GCM_SHA256: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
+    AES_256_GCM_SHA384: CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm),
 
     pub fn init(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !AppCipherT {
         return switch (tag) {
             .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
             => .{
-                .AES_128_CBC_SHA = CipherCbcT(@import("cbc.zig").CBCAes128, crypto.hash.Sha1).init(key_material, rnd),
+                .AES_128_CBC_SHA = CipherCbcT(Aes128Cbc, crypto.hash.Sha1).init(key_material, rnd),
             },
             .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
             .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             => .{
                 .AES_128_GCM_SHA256 = CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm).init(key_material, rnd),
+            },
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 => .{
+                .AES_256_GCM_SHA384 = CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm).init(key_material, rnd),
             },
             else => return error.TlsIllegalParameter,
         };
@@ -28,6 +119,7 @@ pub const AppCipherT = union(enum) {
         return switch (self) {
             .AES_128_CBC_SHA => 16 + 20 + 16, // iv (16 bytes), mac (20 bytes), padding (1-16 bytes)
             .AES_128_GCM_SHA256 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
+            .AES_256_GCM_SHA384 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
         };
     }
 
