@@ -18,51 +18,53 @@ pub fn main() !void {
     }
 }
 
-pub fn get(gpa: std.mem.Allocator, url: []const u8) !void {
-    const uri = try std.Uri.parse(url);
-    const host = uri.host.?.percent_encoded;
+pub fn get(gpa: std.mem.Allocator, domain: []const u8) !void {
+    // var url_buf: [128]u8 = undefined;
+    // const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
 
-    var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
-    defer tcp.close();
+    // const uri = try std.Uri.parse(url);
+    // const host = uri.host.?.percent_encoded;
+
+    // var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
+    // defer tcp.close();
 
     var ca_bundle: Certificate.Bundle = .{};
     try ca_bundle.rescan(gpa);
     defer ca_bundle.deinit(gpa);
 
-    var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle);
+    try get2(gpa, domain, ca_bundle, true);
 
-    var buf: [128]u8 = undefined;
-    const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
-    try cli.write(&buf, req);
+    // var cli = tls.client(tcp);
+    // try cli.handshake(host, ca_bundle);
 
-    while (try cli.next()) |data| {
-        std.debug.print("{s}", .{data});
-    }
-    try cli.close();
+    // var buf: [128]u8 = undefined;
+    // const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    // try cli.write(&buf, req);
 
-    // while (true) {
-    //     const n = try cli.read(&buf);
-    //     std.debug.print("{s}", .{buf[0..n]});
-    //     if (n == 0) break;
+    // while (try cli.next()) |data| {
+    //     std.debug.print("{s}", .{data});
+    //     if (std.mem.endsWith(u8, data, "</html>\n")) break;
     // }
-    // var file = try std.fs.cwd().createFile("server_hello", .{});
-    // defer file.close();
-    // var buf: [4096]u8 = undefined;
-    // while (true) {
-    //     const n = try tcp.readAll(&buf);
-    //     //std.debug.print("{x}\n", .{buf});
-    //     try file.writer().writeAll(buf[0..n]);
-    //     if (n < buf.len) break;
-    // }
+    // try cli.close();
 }
 
-pub fn get2(gpa: std.mem.Allocator, url: []const u8, ca_bundle: Certificate.Bundle) !usize {
+pub fn get2(
+    gpa: std.mem.Allocator,
+    domain: []const u8,
+    ca_bundle: Certificate.Bundle,
+    show_response: bool,
+) !void {
+    var url_buf: [128]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
+
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
 
     var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
+
+    const read_timeout: std.posix.timeval = .{ .tv_sec = 5, .tv_usec = 0 };
+    try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     var cli = tls.client(tcp);
     try cli.handshake(host, ca_bundle);
@@ -74,28 +76,28 @@ pub fn get2(gpa: std.mem.Allocator, url: []const u8, ca_bundle: Certificate.Bund
     var n: usize = 0;
     while (try cli.next()) |data| {
         n += data.len;
+        if (show_response)
+            std.debug.print("{s}", .{data});
+        if (std.mem.endsWith(u8, data, "</html>\n")) break;
     }
     try cli.close();
-    return n;
+
+    //std.debug.print("OK {} bytes\n", .{n});
 }
 
-pub fn main__() !void {
-    const gpa = std.heap.page_allocator;
-    //var arena_instance = std.heap.ArenaAllocator.init(gpa);
-    //const arena = arena_instance.allocator();
-
-    const url = "https://localhost";
-    const uri = try std.Uri.parse(url);
-    const host = uri.host.?.percent_encoded;
-
-    var tcp = try std.net.tcpConnectToHost(gpa, host, 8443);
-    defer tcp.close();
-
-    //try tcp.writeAll(&client_hello);
-
-    var cli = tls(tcp);
-    try cli.handshake("example.ulfheim.net");
-    std.debug.print("handshake finished\n", .{});
+pub fn get3(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
+    while (true) {
+        get2(gpa, domain, ca_bundle, false) catch |err| switch (err) {
+            error.TemporaryNameServerFailure => {
+                continue;
+            },
+            else => {
+                std.debug.print("{s} ERROR {} \n", .{ domain, err });
+                break;
+            },
+        };
+        break;
+    }
 }
 
 pub fn getTopSites() !void {
@@ -114,29 +116,58 @@ pub fn getTopSites() !void {
         fail: usize = 0,
     }{};
 
+    var threads: [16]std.Thread = undefined;
+    var i: usize = 0;
     for (top_sites) |site| {
         //if (filtered(site.rank)) continue;
 
-        std.debug.print("{d}: {s} ", .{ site.rank, site.rootDomain });
-        if (site.rank == 194 or
-            site.rank == 195 or
+        // std.debug.print("{d}: {s} ", .{ site.rank, site.rootDomain });
+        if (site.rank == 135 or
+            site.rank == 244 or
+            site.rank == 298 or
+            site.rank == 301 or
+            site.rank == 307 or
+            site.rank == 387 or
+            site.rank == 487 or
+            site.rank == 112 or
+            site.rank == 231 or
+            site.rank == 258 or
+            site.rank == 276 or
+            site.rank == 465 or
+
+            // not responding
+            site.rank == 194 or
             site.rank == 293)
         {
             stat.skipped += 1;
-            std.debug.print("SKIP\n", .{});
+            // std.debug.print("SKIP\n", .{});
             continue;
         }
 
-        var buf: [128]u8 = undefined;
-        const url = try std.fmt.bufPrint(&buf, "https://{s}", .{site.rootDomain});
-        const size = get2(gpa, url, ca_bundle) catch |err| {
-            std.debug.print("ERROR {} \n", .{err});
-            stat.fail += 1;
-            continue;
-        };
-        std.debug.print("OK {} bytes\n", .{size});
+        threads[i] = try std.Thread.spawn(.{}, get3, .{ gpa, site.rootDomain, ca_bundle });
+        if (i == threads.len - 1) {
+            for (threads) |t| t.join();
+            i = 0;
+        } else {
+            i += 1;
+        }
+
+        // get2(gpa, site.rootDomain, ca_bundle) catch |err| {
+        //     std.debug.print("ERROR {} \n", .{err});
+        //     stat.fail += 1;
+        //     continue;
+        // };
+
         stat.ok += 1;
     }
+    if (i > 0) {
+        while (true) {
+            i -= 1;
+            threads[i].join();
+            if (i == 0) break;
+        }
+    }
+
     std.debug.print("{}\n", .{stat});
 }
 
