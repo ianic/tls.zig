@@ -19,33 +19,10 @@ pub fn main() !void {
 }
 
 pub fn get(gpa: std.mem.Allocator, domain: []const u8) !void {
-    // var url_buf: [128]u8 = undefined;
-    // const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
-
-    // const uri = try std.Uri.parse(url);
-    // const host = uri.host.?.percent_encoded;
-
-    // var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
-    // defer tcp.close();
-
     var ca_bundle: Certificate.Bundle = .{};
     try ca_bundle.rescan(gpa);
     defer ca_bundle.deinit(gpa);
-
     try get2(gpa, domain, ca_bundle, true);
-
-    // var cli = tls.client(tcp);
-    // try cli.handshake(host, ca_bundle);
-
-    // var buf: [128]u8 = undefined;
-    // const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
-    // try cli.write(&buf, req);
-
-    // while (try cli.next()) |data| {
-    //     std.debug.print("{s}", .{data});
-    //     if (std.mem.endsWith(u8, data, "</html>\n")) break;
-    // }
-    // try cli.close();
 }
 
 pub fn get2(
@@ -110,37 +87,16 @@ pub fn getTopSites() !void {
     const top_sites_parsed = try readSites(gpa);
     defer top_sites_parsed.deinit();
     const top_sites = top_sites_parsed.value;
-    var stat = struct {
-        skipped: usize = 0,
-        ok: usize = 0,
-        fail: usize = 0,
-    }{};
 
     var threads: [16]std.Thread = undefined;
     var i: usize = 0;
     for (top_sites) |site| {
-        //if (filtered(site.rank)) continue;
-
-        // std.debug.print("{d}: {s} ", .{ site.rank, site.rootDomain });
-        if (site.rank == 135 or
-            site.rank == 244 or
-            site.rank == 298 or
-            site.rank == 301 or
-            site.rank == 307 or
-            site.rank == 387 or
-            site.rank == 487 or
-            site.rank == 112 or
-            site.rank == 231 or
-            site.rank == 258 or
-            site.rank == 276 or
-            site.rank == 465 or
-
-            // not responding
-            site.rank == 194 or
-            site.rank == 293)
-        {
-            stat.skipped += 1;
-            // std.debug.print("SKIP\n", .{});
+        if (filtered(site.rank)) {
+            // to check with the curl why it is skipped:
+            // std.debug.print(
+            //     "{d}, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w \"%{{url}} %{{http_code}} %{{errormsg}}\\n\" https://{s}\n",
+            //     .{ site.rank, site.rootDomain },
+            // );
             continue;
         }
 
@@ -151,14 +107,6 @@ pub fn getTopSites() !void {
         } else {
             i += 1;
         }
-
-        // get2(gpa, site.rootDomain, ca_bundle) catch |err| {
-        //     std.debug.print("ERROR {} \n", .{err});
-        //     stat.fail += 1;
-        //     continue;
-        // };
-
-        stat.ok += 1;
     }
     if (i > 0) {
         while (true) {
@@ -167,8 +115,6 @@ pub fn getTopSites() !void {
             if (i == 0) break;
         }
     }
-
-    std.debug.print("{}\n", .{stat});
 }
 
 fn readSites(gpa: std.mem.Allocator) !std.json.Parsed([]Site) {
@@ -202,143 +148,56 @@ const Site = struct {
 //
 
 pub fn filtered(site_rank: usize) bool {
-    const include = pcks1;
+    const include = skipped;
     for (include) |i| {
         if (i == site_rank) return false;
     }
     return true;
 }
-
-const missing_pkdc1 = [_]usize{
-    178,
-    199,
-    253,
-    264,
-    297,
-    342,
-    349,
-    364,
-    381,
-    388,
-    401,
-    402,
-    411,
-    412,
-    422,
-    432,
-    438,
-    456,
-    464,
-    484,
+const skipped = [_]usize{
+    112, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://planalto.gov.br
+    135, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ytimg.com
+    194, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://usnews.com
+    231, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://clickbank.net
+    244, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ssl-images-amazon.com
+    258, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://doubleclick.net
+    276, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://addthis.com
+    293, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://alicdn.com
+    298, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://example.com
+    301, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://akamaihd.net
+    307, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://rapidshare.com
+    387, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ggpht.com
+    465, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://sedoparking.com
+    487, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://twimg.com
 };
 
-const alert_illegal_parameter = [_]usize{
-    //    85,
-    92,
-    101,
-    110,
-    //    202,
-    267,
-    272,
-    365,
-    383,
-    419,
-    468,
-    488,
-};
-
-const handshake_failure = [_]usize{
-    // 35,
-    // 48,
-    // 55,
-    // 96,
-    // 107,
-    108,
-    // 166,
-    // 192,
-    // 229,
-    // 262,
-    //280,
-    // 282,
-    // 300,
-    // 310,
-    // 317,
-    341,
-    // 382,
-    // 393,
-    397,
-    416,
-    // 453,
-    // 462,
-    // 470,
-    // 493,
-};
-
-const pcks1 = [_]usize{
-    23,
-    29,
-    53,
-    // 92,
-    // 101,
-    // 110,
-    // 111,
-    112,
-    // 114,
-    // 130,
-    // 141,
-    // 158,
-    // 178,
-    // 181,
-    // 199,
-    207,
-    // 211,
-    // 222,
-    // 246,
-    // 253,
-    // 261,
-    // 264,
-    266,
-    // 267,
-    // 272,
-    // 277,
-    // 287,
-    // 297,
-    // 312,
-    // 319,
-    // 342,
-    // 349,
-    // 356,
-    // 364,
-    // 365,
-    // 381,
-    // 383,
-    // 388,
-    // 395,
-    // 401,
-    // 402,
-    // 405,
-    407,
-    // 411,
-    // 412,
-    // 419,
-    // 422,
-    // 423,
-    428,
-    //    432,
-    433,
-    // 438,
-    // 448,
-    // 456,
-    // 461,
-    // 464,
-    469,
-    //    472,
-    476,
-    // 478,
-    // 480,
-    // 484,
-    // 485,
-    // 488,
-    // 495,
-    // 500,
-};
+// skipped reasons:
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://planalto.gov.br
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ytimg.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://usnews.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://clickbank.net
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ssl-images-amazon.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://doubleclick.net
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://addthis.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://alicdn.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://example.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://akamaihd.net
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://rapidshare.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ggpht.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://sedoparking.com
+// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://twimg.com
+//
+// https://planalto.gov.br 000 Operation timed out after 10000 milliseconds with 0 bytes received
+// https://ytimg.com 000 Could not resolve host: ytimg.com
+// https://usnews.com 000 Operation timed out after 10001 milliseconds with 0 bytes received
+// https://clickbank.net 000 Failed to connect to clickbank.net port 443 after 2 ms: Couldn't connect to server
+// https://ssl-images-amazon.com 000 Could not resolve host: ssl-images-amazon.com
+// https://doubleclick.net 000 Failed to connect to doubleclick.net port 443 after 2 ms: Couldn't connect to server
+// https://addthis.com 000 Failed to connect to addthis.com port 443 after 1 ms: Couldn't connect to server
+// https://alicdn.com 000 Connection timed out after 10002 milliseconds
+// https://example.com 000 Could not resolve host: example.com
+// https://akamaihd.net 000 Could not resolve host: akamaihd.net
+// https://rapidshare.com 000 Could not resolve host: rapidshare.com
+// https://ggpht.com 000 Could not resolve host: ggpht.com
+// https://sedoparking.com 000 Failed to connect to sedoparking.com port 443 after 1 ms: Couldn't connect to server
+// https://twimg.com 000 Could not resolve host: twimg.com

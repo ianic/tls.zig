@@ -43,11 +43,11 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
 
-            // TODO remove debug
-            std.debug.print(
-                " chipher: {}, namded_group: {}, signature scheme: {} ",
-                .{ h.cipher_suite_tag, h.named_group, h.signature_scheme },
-            );
+            // // TODO remove debug
+            // std.debug.print(
+            //     " chipher: {}, namded_group: {}, signature scheme: {} ",
+            //     .{ h.cipher_suite_tag, h.named_group, h.signature_scheme },
+            // );
         }
 
         /// Low level write interface. Doesn't allocate but requires provided
