@@ -261,6 +261,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 var cert_pub_key_buf: [600]u8 = undefined;
                 var cert_pub_key: []const u8 = undefined;
                 var cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined;
+                var prev_cert: Certificate.Parsed = undefined;
 
                 while (true) {
                     var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
@@ -272,7 +273,7 @@ pub fn ClientT(comptime StreamType: type) type {
                             const desc = try rec.decode(tls.AlertDescription);
                             _ = level;
                             try desc.toError();
-                            return error.TlsServerSideClosure; // TODO
+                            return error.TlsServerSideClosure;
                         },
                         else => return error.TlsUnexpectedMessage,
                         .handshake => {}, // continue
@@ -333,15 +334,23 @@ pub fn ClientT(comptime StreamType: type) type {
                                         @memcpy(cert_pub_key_buf[0..pub_key.len], pub_key);
                                         cert_pub_key = cert_pub_key_buf[0..pub_key.len];
                                         cert_pub_key_algo = subject.pub_key_algo;
+                                        prev_cert = subject;
+                                    } else {
+                                        if (prev_cert.verify(subject, h.now_sec)) {
+                                            prev_cert = subject;
+                                        } else |_| {
+                                            // skip certificate which is not part of the chain
+                                        }
                                     }
                                     if (ca_bundle) |cb| {
-                                        if (cb.verify(subject, h.now_sec)) |_| {
+                                        if (cb.verify(prev_cert, h.now_sec)) |_| {
                                             trust_chain_established = true;
                                         } else |err| switch (err) {
                                             error.CertificateIssuerNotFound => {},
                                             else => |e| return e,
                                         }
                                     }
+                                    prev_cert = subject;
                                 }
                                 if (ca_bundle != null and !trust_chain_established) {
                                     return error.CertificateIssuerNotFound;
