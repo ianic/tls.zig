@@ -43,6 +43,7 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
 
+            // TODO remove debug
             std.debug.print(
                 " chipher: {}, namded_group: {}, signature scheme: {} ",
                 .{ h.cipher_suite_tag, h.named_group, h.signature_scheme },
@@ -278,13 +279,11 @@ pub fn ClientT(comptime StreamType: type) type {
                     }
                     h.updateTranscript(rec.payload);
 
-                    // Multiple handshake messages can be packend in single tls record.
+                    // Multiple handshake messages can be packed in single tls record.
                     while (!rec.eof()) {
                         const handshake_type = try rec.decode(tls12.HandshakeType);
-                        if (handshake_state != handshake_type) {
-                            std.debug.print(" expected: {}, actual: {}\n", .{ handshake_state, handshake_type });
-                            return error.TlsUnexpectedMessage;
-                        }
+                        if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
+
                         const length = try rec.decode(u24);
                         if (length > tls.max_cipertext_inner_record_len)
                             return error.TlsUnsupportedFragmentedHandshakeMessage;
@@ -413,11 +412,6 @@ pub fn ClientT(comptime StreamType: type) type {
                                 try sig.verify(verify_bytes, key);
                             },
                         }
-
-                        std.debug.print(
-                            "signature scheme: {} signature len: {} cert pub key len: {} verify bytes {} cert_named_curve {}\n",
-                            .{ signature_scheme, signature.len, cert_pub_key.len, verify_bytes.len, cert_named_curve },
-                        );
                     },
 
                     inline .rsa_pss_rsae_sha256,
@@ -449,11 +443,7 @@ pub fn ClientT(comptime StreamType: type) type {
                         const pk = try rsa.PublicKey.parseDer(cert_pub_key);
                         try pkcs1.verifyFixed(signature_scheme, signature, verify_bytes, pk.modulus, pk.exponent);
                     },
-                    else => {
-                        // TODO remove debug
-                        std.debug.print(" unknown signature scheme: {} ", .{signature_scheme});
-                        return error.TlsUnknownSignatureScheme;
-                    },
+                    else => return error.TlsUnknownSignatureScheme,
                 }
             }
 
