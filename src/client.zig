@@ -259,7 +259,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
                 var cert_pub_key_buf: [600]u8 = undefined;
                 var cert_pub_key: []const u8 = undefined;
-                var cert_pub_key_algo: Certificate.AlgorithmCategory = undefined;
+                var cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined;
 
                 while (true) {
                     var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
@@ -322,14 +322,11 @@ pub fn ClientT(comptime StreamType: type) type {
                                     const cert_len = try rec.decode(u24);
                                     defer l += cert_len + 3;
 
-                                    if (trust_chain_established) {
-                                        try rec.skip(cert_len);
-                                        continue;
-                                    }
                                     const cert = try rec.slice(cert_len);
+                                    if (trust_chain_established) continue;
                                     const subject_cert: Certificate = .{ .buffer = cert, .index = 0 };
-
                                     const subject = try subject_cert.parse();
+
                                     if (l == 0) { // first certificate
                                         const pub_key = subject.pubKey();
                                         if (pub_key.len > cert_pub_key_buf.len)
@@ -394,7 +391,7 @@ pub fn ClientT(comptime StreamType: type) type {
             fn verifySignature(
                 signature_scheme: tls.SignatureScheme,
                 cert_pub_key: []const u8,
-                cert_pub_key_algo: Certificate.AlgorithmCategory,
+                cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
                 signature: []const u8,
                 verify_bytes: []const u8,
             ) !void {
@@ -406,10 +403,21 @@ pub fn ClientT(comptime StreamType: type) type {
                     => |comptime_scheme| {
                         if (cert_pub_key_algo != .X9_62_id_ecPublicKey)
                             return error.TlsBadSignatureScheme;
-                        const Ecdsa = SchemeEcdsa(comptime_scheme);
-                        const sig = try Ecdsa.Signature.fromDer(signature);
-                        const key = try Ecdsa.PublicKey.fromSec1(cert_pub_key);
-                        try sig.verify(verify_bytes, key);
+
+                        const cert_named_curve = cert_pub_key_algo.X9_62_id_ecPublicKey;
+                        switch (cert_named_curve) {
+                            inline else => |comptime_cert_named_curve| {
+                                const Ecdsa = SchemeEcdsa(comptime_scheme, comptime_cert_named_curve);
+                                const key = try Ecdsa.PublicKey.fromSec1(cert_pub_key);
+                                const sig = try Ecdsa.Signature.fromDer(signature);
+                                try sig.verify(verify_bytes, key);
+                            },
+                        }
+
+                        std.debug.print(
+                            "signature scheme: {} signature len: {} cert pub key len: {} verify bytes {} cert_named_curve {}\n",
+                            .{ signature_scheme, signature.len, cert_pub_key.len, verify_bytes.len, cert_named_curve },
+                        );
                     },
 
                     inline .rsa_pss_rsae_sha256,
@@ -449,9 +457,12 @@ pub fn ClientT(comptime StreamType: type) type {
                 }
             }
 
-            fn SchemeEcdsa(comptime scheme: tls.SignatureScheme) type {
+            fn SchemeEcdsa(comptime scheme: tls.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
                 return switch (scheme) {
-                    .ecdsa_secp256r1_sha256 => EcdsaP256Sha256,
+                    .ecdsa_secp256r1_sha256 => switch (cert_named_curve) {
+                        .secp384r1 => crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256),
+                        else => EcdsaP256Sha256,
+                    },
                     .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
                     else => @compileError("bad scheme"),
                 };
