@@ -91,7 +91,7 @@ pub fn getTopSites() !void {
     var threads: [16]std.Thread = undefined;
     var i: usize = 0;
     for (top_sites) |site| {
-        if (filtered(site.rank)) {
+        if (skip(site.rank)) {
             // to check with the curl why it is skipped:
             // std.debug.print(
             //     "{d}, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w \"%{{url}} %{{http_code}} %{{errormsg}}\\n\" https://{s}\n",
@@ -147,12 +147,12 @@ const Site = struct {
 // curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://github.com
 //
 
-pub fn filtered(site_rank: usize) bool {
+pub fn skip(site_rank: usize) bool {
     const include = skipped;
     for (include) |i| {
-        if (i == site_rank) return false;
+        if (i == site_rank) return true;
     }
-    return true;
+    return false;
 }
 const skipped = [_]usize{
     112, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://planalto.gov.br
