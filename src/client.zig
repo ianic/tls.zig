@@ -5,8 +5,8 @@ const posix = std.posix;
 
 const tls = crypto.tls;
 const tls12 = @import("tls12.zig");
-const AppCipherT = @import("cipher.zig").AppCipherT;
-const HandshakeCipher = @import("cipher.zig").HandshakeCipher;
+const AppCipherT = @import("cipher.zig").AppCipher;
+const Transcript = @import("cipher.zig").Transcript;
 const pkcs1 = @import("pkcs1-1_5.zig");
 
 const Sha256 = crypto.hash.sha2.Sha256;
@@ -136,14 +136,15 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
-            cipher: ?HandshakeCipher = null,
-            transcript384: Sha384 = Sha384.init(.{}),
-            transcript256: Sha256 = Sha256.init(.{}),
+            const master_secret_len = 48;
+            const key_material_len = 32 * 4;
+
+            transcript: Transcript = .{},
 
             client_random: [32]u8 = undefined,
             server_random: [32]u8 = undefined,
-            master_secret: [48]u8 = undefined,
-            key_material: [32 * 4]u8 = undefined,
+            master_secret: [master_secret_len]u8 = undefined,
+            key_material: [key_material_len]u8 = undefined,
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
             named_group: ?tls.NamedGroup = null,
@@ -152,32 +153,12 @@ pub fn ClientT(comptime StreamType: type) type {
             x25519_kp: X25519.KeyPair = undefined,
             secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
             secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
-            rsa_pre_master_secret: [48]u8 = undefined,
+            rsa_pre_master_secret: [master_secret_len]u8 = undefined,
             now_sec: i64 = 0,
 
             cert_pub_key_buf: [600]u8 = undefined,
             cert_pub_key: []const u8 = undefined,
             cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
-
-            fn updateTranscript(h: *Handshake, data: []const u8) void {
-                // calculate both until we get server hello
-                if (h.cipher == null) {
-                    h.transcript256.update(data);
-                    h.transcript384.update(data);
-                    return;
-                }
-                switch (h.cipher.?) {
-                    inline else => |*i| i.transcript.update(data),
-                }
-            }
-
-            fn initCipher(h: *Handshake) void {
-                h.cipher = HandshakeCipher.init(
-                    h.cipher_suite_tag,
-                    h.transcript256,
-                    h.transcript384,
-                );
-            }
 
             pub fn init() !Handshake {
                 var random_buffer: [32 * 3 + 48 * 2]u8 = undefined;
@@ -225,24 +206,11 @@ pub fn ClientT(comptime StreamType: type) type {
                 })) ++
                     tls12.serverNameExtensionHeader(host_len);
 
-                const cipher_suites = enum_array(tls12.CipherSuite, &.{
-                    .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                    .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-
-                    .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                    .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-
-                    .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-                    .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-
-                    .TLS_RSA_WITH_AES_128_CBC_SHA256,
-                });
-
                 const payload =
                     tls12.hello.protocol_version ++
                     h.client_random ++
                     tls12.hello.no_session_id ++
-                    cipher_suites ++
+                    enum_array(tls12.CipherSuite, &tls12.CipherSuite.supported) ++
                     tls12.hello.no_compression ++
                     tls.int2(@intCast(extensions_payload.len + host_len)) ++
                     extensions_payload;
@@ -251,8 +219,8 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
                     payload;
 
-                h.updateTranscript(record[tls.record_header_len..]);
-                h.updateTranscript(host);
+                h.transcript.update(record[tls.record_header_len..]);
+                h.transcript.update(host);
 
                 var iovecs = [_]std.posix.iovec_const{
                     .{ .iov_base = &record, .iov_len = record.len },
@@ -283,7 +251,7 @@ pub fn ClientT(comptime StreamType: type) type {
                         else => return error.TlsUnexpectedMessage,
                         .handshake => {}, // continue
                     }
-                    h.updateTranscript(rec.payload);
+                    h.transcript.update(rec.payload);
 
                     // Multiple handshake messages can be packed in single tls record.
                     while (!rec.eof()) {
@@ -316,7 +284,6 @@ pub fn ClientT(comptime StreamType: type) type {
                                     try rec.skip(extensions_size);
                                 }
 
-                                h.initCipher();
                                 if (h.cipher_suite_tag.rsaKeyExchange())
                                     try h.generateKeyMaterial("");
                                 handshake_state = .certificate;
@@ -513,18 +480,20 @@ pub fn ClientT(comptime StreamType: type) type {
                 else
                     &h.rsa_pre_master_secret;
 
-                h.master_secret = switch (h.cipher.?) {
-                    inline else => |i| @TypeOf(i).masterSecret(pre_master_secret, h.client_random, h.server_random)[0..h.master_secret.len].*,
-                };
-                h.key_material = switch (h.cipher.?) {
-                    inline else => |i| @TypeOf(i).keyExpansion(&h.master_secret, h.client_random, h.server_random)[0..h.key_material.len].*,
-                };
-            }
-
-            fn verifyData(h: *Handshake) [16]u8 {
-                return switch (h.cipher.?) {
-                    inline else => |*i| i.verifyData(&h.master_secret),
-                };
+                h.master_secret = Transcript.masterSecret(
+                    master_secret_len,
+                    h.cipher_suite_tag,
+                    pre_master_secret,
+                    h.client_random,
+                    h.server_random,
+                );
+                h.key_material = Transcript.keyMaterial(
+                    key_material_len,
+                    h.cipher_suite_tag,
+                    &h.master_secret,
+                    h.client_random,
+                    h.server_random,
+                );
             }
 
             /// Sends client key exchange, client chiper spec and client
@@ -570,8 +539,8 @@ pub fn ClientT(comptime StreamType: type) type {
                     &tls12.handshakeHeader(.client_key_exchange, 2 + key.len) ++
                         tls12.int2(@intCast(key.len));
 
-                h.updateTranscript(key_exchange[tls.record_header_len..]);
-                h.updateTranscript(key);
+                h.transcript.update(key_exchange[tls.record_header_len..]);
+                h.transcript.update(key);
 
                 const change_cipher_spec =
                     tls12.recordHeader(.change_cipher_spec, 1) ++
@@ -579,7 +548,8 @@ pub fn ClientT(comptime StreamType: type) type {
 
                 const handshake_finished = brk: {
                     var buffer: [AppCipherT.max_overhead + 5 + 16]u8 = undefined;
-                    const payload = try c.encrypt(buffer[5..], .handshake, &h.verifyData());
+                    const verify_data = h.transcript.verifyData(h.cipher_suite_tag, &h.master_secret);
+                    const payload = try c.encrypt(buffer[5..], .handshake, &verify_data);
                     buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
                     break :brk buffer[0 .. tls.record_header_len + payload.len];
                 };
@@ -779,7 +749,7 @@ test "Handshake.verifyData" {
 
     // add handshake messages to transcript
     for (example.handshake_messages) |msg| {
-        h.updateTranscript(msg[tls.record_header_len..]);
+        h.transcript.update(msg[tls.record_header_len..]);
     }
 
     // expect verify data

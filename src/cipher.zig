@@ -6,21 +6,53 @@ const Aes128Cbc = @import("cbc.zig").Aes128Cbc;
 const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 
-pub const HandshakeCipher = union(enum) {
-    sha256: HandshakeCipherT(Sha256),
-    sha384: HandshakeCipherT(Sha384),
+pub const Transcript = struct {
+    const Transcript256 = TranscriptT(Sha256);
+    const Transcript384 = TranscriptT(Sha384);
 
-    pub fn init(tag: tls12.CipherSuite, transcript256: Sha256, transcript384: Sha384) HandshakeCipher {
-        return switch (tag) {
-            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            => .{ .sha384 = HandshakeCipherT(Sha384).init(transcript384) },
-            else => .{ .sha256 = HandshakeCipherT(Sha256).init(transcript256) },
+    sha256: Transcript256 = .{ .transcript = Sha256.init(.{}) },
+    sha384: Transcript384 = .{ .transcript = Sha384.init(.{}) },
+
+    pub fn update(t: *Transcript, buf: []const u8) void {
+        t.sha256.transcript.update(buf);
+        t.sha384.transcript.update(buf);
+    }
+
+    pub fn masterSecret(
+        comptime len: usize,
+        cs: tls12.CipherSuite,
+        pre_master_secret: []const u8,
+        client_random: [32]u8,
+        server_random: [32]u8,
+    ) [len]u8 {
+        return switch (cs.hasher()) {
+            .sha256 => Transcript256.masterSecret(pre_master_secret, client_random, server_random)[0..len].*,
+            .sha384 => Transcript384.masterSecret(pre_master_secret, client_random, server_random)[0..len].*,
+        };
+    }
+
+    pub fn keyMaterial(
+        comptime len: usize,
+        cs: tls12.CipherSuite,
+        master_secret: []const u8,
+        client_random: [32]u8,
+        server_random: [32]u8,
+    ) [len]u8 {
+        return switch (cs.hasher()) {
+            .sha256 => Transcript256.keyExpansion(master_secret, client_random, server_random)[0..len].*,
+            .sha384 => Transcript384.keyExpansion(master_secret, client_random, server_random)[0..len].*,
+        };
+    }
+
+    pub fn verifyData(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
+        return switch (cs.hasher()) {
+            .sha256 => self.sha256.verifyData(master_secret),
+            .sha384 => self.sha384.verifyData(master_secret),
         };
     }
 };
 
-pub fn HandshakeCipherT(comptime HashType: type) type {
+pub fn TranscriptT(comptime HashType: type) type {
     return struct {
         pub const Hash = HashType;
         pub const Hmac = crypto.auth.hmac.Hmac(Hash);
@@ -90,32 +122,18 @@ pub fn HandshakeCipherT(comptime HashType: type) type {
     };
 }
 
-pub const AppCipherT = union(enum) {
-    AES_128_CBC_SHA: CipherCbcT(Aes128Cbc, crypto.hash.Sha1),
-    AES_128_CBC_SHA256: CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256),
-    AES_128_GCM_SHA256: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
-    AES_256_GCM_SHA384: CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm),
+pub const AppCipher = union(tls12.CipherSuite.Crypter) {
+    aes_128_cbc_sha: CipherCbcT(Aes128Cbc, crypto.hash.Sha1),
+    aes_128_cbc_sha256: CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256),
+    aes_128_gcm: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
+    aes_256_gcm: CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm),
 
-    pub fn init(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !AppCipherT {
-        return switch (tag) {
-            .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-            => .{
-                .AES_128_CBC_SHA = CipherCbcT(Aes128Cbc, crypto.hash.Sha1).init(key_material, rnd),
-            },
-            .TLS_RSA_WITH_AES_128_CBC_SHA256,
-            => .{
-                .AES_128_CBC_SHA256 = CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256).init(key_material, rnd),
-            },
-            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            => .{
-                .AES_128_GCM_SHA256 = CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm).init(key_material, rnd),
-            },
-            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 => .{
-                .AES_256_GCM_SHA384 = CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm).init(key_material, rnd),
-            },
-            else => return error.TlsIllegalParameter,
+    pub fn init(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !AppCipher {
+        return switch (try tag.crypter()) {
+            .aes_128_cbc_sha => .{ .aes_128_cbc_sha = CipherCbcT(Aes128Cbc, crypto.hash.Sha1).init(key_material, rnd) },
+            .aes_128_cbc_sha256 => .{ .aes_128_cbc_sha256 = CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256).init(key_material, rnd) },
+            .aes_128_gcm => .{ .aes_128_gcm = CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm).init(key_material, rnd) },
+            .aes_256_gcm => .{ .aes_256_gcm = CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm).init(key_material, rnd) },
         };
     }
 
@@ -123,10 +141,10 @@ pub const AppCipherT = union(enum) {
 
     pub fn overhead(self: Self) usize {
         return switch (self) {
-            .AES_128_CBC_SHA => 16 + 20 + 16, // iv (16 bytes), mac (20 bytes), padding (1-16 bytes)
-            .AES_128_CBC_SHA256 => 16 + 32 + 16, // iv (16 bytes), mac (32 bytes), padding (1-16 bytes)
-            .AES_128_GCM_SHA256 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
-            .AES_256_GCM_SHA384 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
+            .aes_128_cbc_sha => 16 + 20 + 16, // iv (16 bytes), mac (20 bytes), padding (1-16 bytes)
+            .aes_128_cbc_sha256 => 16 + 32 + 16, // iv (16 bytes), mac (32 bytes), padding (1-16 bytes)
+            .aes_128_gcm => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
+            .aes_256_gcm => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
         };
     }
 

@@ -61,15 +61,15 @@ pub const CipherSuite = enum(u16) {
     // TLS_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
     _,
 
+    // in the order of preference
     pub const supported = [_]CipherSuite{
-        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 
         .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-
+        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
         .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 
         .TLS_RSA_WITH_AES_128_CBC_SHA256,
     };
@@ -90,6 +90,43 @@ pub const CipherSuite = enum(u16) {
             .TLS_RSA_WITH_AES_256_CBC_SHA256,
             => true,
             else => false,
+        };
+    }
+
+    pub const Crypter = enum {
+        aes_128_cbc_sha,
+        aes_128_cbc_sha256,
+        aes_128_gcm,
+        aes_256_gcm,
+    };
+
+    pub fn crypter(cs: CipherSuite) !Crypter {
+        return switch (cs) {
+            .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            => .aes_128_cbc_sha,
+            .TLS_RSA_WITH_AES_128_CBC_SHA256,
+            => .aes_128_cbc_sha256,
+            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            => .aes_128_gcm,
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            => .aes_256_gcm,
+            else => return error.TlsIllegalParameter,
+        };
+    }
+
+    pub const Hasher = enum {
+        sha256,
+        sha384,
+    };
+
+    pub fn hasher(cs: CipherSuite) Hasher {
+        return switch (cs) {
+            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            => .sha384,
+            else => .sha256,
         };
     }
 };
