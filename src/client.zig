@@ -136,15 +136,16 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
+            const client_random_len = 32;
             const master_secret_len = 48;
             const key_material_len = 32 * 4;
 
-            transcript: Transcript = .{},
-
-            client_random: [32]u8 = undefined,
-            server_random: [32]u8 = undefined,
+            client_random: [client_random_len]u8 = undefined,
+            server_random: [client_random_len]u8 = undefined,
             master_secret: [master_secret_len]u8 = undefined,
             key_material: [key_material_len]u8 = undefined,
+
+            transcript: Transcript = .{},
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
             named_group: ?tls.NamedGroup = null,
@@ -239,18 +240,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 while (true) {
                     var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-
-                    switch (rec.content_type) {
-                        .alert => {
-                            const level = try rec.decode(tls.AlertLevel);
-                            const desc = try rec.decode(tls.AlertDescription);
-                            _ = level;
-                            try desc.toError();
-                            return error.TlsServerSideClosure;
-                        },
-                        else => return error.TlsUnexpectedMessage,
-                        .handshake => {}, // continue
-                    }
+                    try rec.expectContentType(.handshake);
                     h.transcript.update(rec.payload);
 
                     // Multiple handshake messages can be packed in single tls record.
@@ -387,8 +377,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     inline .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
                     => |comptime_scheme| {
-                        if (cert_pub_key_algo != .X9_62_id_ecPublicKey)
-                            return error.TlsBadSignatureScheme;
+                        if (cert_pub_key_algo != .X9_62_id_ecPublicKey) return error.TlsBadSignatureScheme;
 
                         const cert_named_curve = cert_pub_key_algo.X9_62_id_ecPublicKey;
                         switch (cert_named_curve) {
@@ -405,8 +394,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     .rsa_pss_rsae_sha384,
                     .rsa_pss_rsae_sha512,
                     => |comptime_scheme| {
-                        if (cert_pub_key_algo != .rsaEncryption)
-                            return error.TlsBadSignatureScheme;
+                        if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
                         const Hash = SchemeHash(comptime_scheme);
                         const pk = try rsa.PublicKey.parseDer(cert_pub_key);
                         switch (pk.modulus.len) {
@@ -420,15 +408,15 @@ pub fn ClientT(comptime StreamType: type) type {
                             },
                         }
                     },
-                    .rsa_pkcs1_sha1,
+                    inline .rsa_pkcs1_sha1,
                     .rsa_pkcs1_sha256,
                     .rsa_pkcs1_sha384,
                     .rsa_pkcs1_sha512,
-                    => {
-                        if (cert_pub_key_algo != .rsaEncryption)
-                            return error.TlsBadSignatureScheme;
-                        const pk = try rsa.PublicKey.parseDer(cert_pub_key);
-                        try pkcs1.verifyFixed(signature_scheme, signature, verify_bytes, pk.modulus, pk.exponent);
+                    => |comptime_scheme| {
+                        if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
+                        const Hash = SchemeHash(comptime_scheme);
+                        // TODO: calling private method
+                        try Certificate.verifyRsa(Hash, verify_bytes, signature, cert_pub_key_algo, cert_pub_key);
                     },
                     else => return error.TlsUnknownSignatureScheme,
                 }
@@ -447,6 +435,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
                 return switch (scheme) {
+                    .rsa_pkcs1_sha1 => crypto.hash.Sha1,
                     .rsa_pss_rsae_sha256, .rsa_pkcs1_sha256 => crypto.hash.sha2.Sha256,
                     .rsa_pss_rsae_sha384, .rsa_pkcs1_sha384 => crypto.hash.sha2.Sha384,
                     .rsa_pss_rsae_sha512, .rsa_pkcs1_sha512 => crypto.hash.sha2.Sha512,
@@ -568,17 +557,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 { // read change ciperh spec message
                     var rec = (try c.reader.next()) orelse return error.EndOfStream;
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-                    switch (rec.content_type) {
-                        .alert => {
-                            const level = try rec.decode(tls.AlertLevel);
-                            const desc = try rec.decode(tls.AlertDescription);
-                            _ = level;
-                            try desc.toError();
-                            return error.TlsServerSideClosure;
-                        },
-                        else => return error.TlsUnexpectedMessage,
-                        .change_cipher_spec => {}, // continue
-                    }
+                    try rec.expectContentType(.change_cipher_spec);
                 }
                 { // read server handshake finished
                     // TODO check content of the handshake finished message
@@ -854,6 +833,21 @@ const Record = struct {
 
     pub fn eof(r: Record) bool {
         return r.idx == r.payload.len;
+    }
+
+    pub fn expectContentType(rec: *Record, content_type: tls.ContentType) !void {
+        if (rec.content_type == content_type) return;
+
+        switch (rec.content_type) {
+            .alert => {
+                const level = try rec.decode(tls.AlertLevel);
+                const desc = try rec.decode(tls.AlertDescription);
+                _ = level;
+                try desc.toError();
+                return error.TlsServerSideClosure;
+            },
+            else => return error.TlsUnexpectedMessage,
+        }
     }
 };
 
