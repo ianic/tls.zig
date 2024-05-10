@@ -12,6 +12,7 @@ pub const HandshakeCipher = union(enum) {
 
     pub fn init(tag: tls12.CipherSuite, transcript256: Sha256, transcript384: Sha384) HandshakeCipher {
         return switch (tag) {
+            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             => .{ .sha384 = HandshakeCipherT(Sha384).init(transcript384) },
             else => .{ .sha256 = HandshakeCipherT(Sha256).init(transcript256) },
@@ -91,6 +92,7 @@ pub fn HandshakeCipherT(comptime HashType: type) type {
 
 pub const AppCipherT = union(enum) {
     AES_128_CBC_SHA: CipherCbcT(Aes128Cbc, crypto.hash.Sha1),
+    AES_128_CBC_SHA256: CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256),
     AES_128_GCM_SHA256: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
     AES_256_GCM_SHA384: CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm),
 
@@ -100,6 +102,10 @@ pub const AppCipherT = union(enum) {
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
             => .{
                 .AES_128_CBC_SHA = CipherCbcT(Aes128Cbc, crypto.hash.Sha1).init(key_material, rnd),
+            },
+            .TLS_RSA_WITH_AES_128_CBC_SHA256,
+            => .{
+                .AES_128_CBC_SHA256 = CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256).init(key_material, rnd),
             },
             .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
             .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
@@ -118,12 +124,13 @@ pub const AppCipherT = union(enum) {
     pub fn overhead(self: Self) usize {
         return switch (self) {
             .AES_128_CBC_SHA => 16 + 20 + 16, // iv (16 bytes), mac (20 bytes), padding (1-16 bytes)
+            .AES_128_CBC_SHA256 => 16 + 32 + 16, // iv (16 bytes), mac (32 bytes), padding (1-16 bytes)
             .AES_128_GCM_SHA256 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
             .AES_256_GCM_SHA384 => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
         };
     }
 
-    pub const max_overhead = 16 + 20 + 16;
+    pub const max_overhead = 16 + 32 + 16;
 
     pub fn minEncryptBufferLen(self: Self, cleartext_len: usize) usize {
         return self.overhead() + cleartext_len;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const crypto = std.crypto;
 const tls = crypto.tls;
-const int2 = tls.int2;
+pub const int2 = tls.int2;
 const int3 = tls.int3;
 
 // tls.HandshakeType is missing server_key_exchange, server_hello_done
@@ -54,23 +54,43 @@ pub const CipherSuite = enum(u16) {
     TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
     TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
 
-    // TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
+    TLS_RSA_WITH_AES_128_CBC_SHA = 0x002F,
+    TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
+    TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
 
     // TLS_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
     _,
 
+    pub const supported = [_]CipherSuite{
+        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+
+        .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+
+        .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+
+        .TLS_RSA_WITH_AES_128_CBC_SHA256,
+    };
+
     pub fn validate(cs: CipherSuite) !void {
-        switch (cs) {
-            .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-
-            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-
-            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            => {},
-            else => return error.TlsIllegalParameter,
+        for (supported) |s| {
+            if (cs == s) return;
         }
+        return error.TlsIllegalParameter;
+    }
+
+    // Random premaster secret, encrypted with publich key from certificate.
+    // No server key exchange message.
+    pub fn rsaKeyExchange(s: CipherSuite) bool {
+        return switch (s) {
+            .TLS_RSA_WITH_AES_128_CBC_SHA,
+            .TLS_RSA_WITH_AES_128_CBC_SHA256,
+            .TLS_RSA_WITH_AES_256_CBC_SHA256,
+            => true,
+            else => false,
+        };
     }
 };
 

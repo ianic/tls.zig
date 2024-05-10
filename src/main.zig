@@ -47,7 +47,7 @@ pub fn get2(
     try cli.handshake(host, ca_bundle);
 
     var buf: [128]u8 = undefined;
-    const req = try std.fmt.bufPrint(buf[16..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    const req = try std.fmt.bufPrint(buf[64..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
     try cli.write(&buf, req);
 
     var n: usize = 0;

@@ -146,13 +146,18 @@ pub fn ClientT(comptime StreamType: type) type {
             key_material: [32 * 4]u8 = undefined,
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
-            named_group: tls.NamedGroup = undefined,
+            named_group: ?tls.NamedGroup = null,
             signature_scheme: tls.SignatureScheme = undefined,
 
             x25519_kp: X25519.KeyPair = undefined,
             secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
             secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
+            rsa_pre_master_secret: [48]u8 = undefined,
             now_sec: i64 = 0,
+
+            cert_pub_key_buf: [600]u8 = undefined,
+            cert_pub_key: []const u8 = undefined,
+            cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
 
             fn updateTranscript(h: *Handshake, data: []const u8) void {
                 // calculate both until we get server hello
@@ -175,7 +180,7 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             pub fn init() !Handshake {
-                var random_buffer: [144]u8 = undefined;
+                var random_buffer: [32 * 3 + 48 * 2]u8 = undefined;
                 crypto.random.bytes(&random_buffer);
 
                 return .{
@@ -183,13 +188,14 @@ pub fn ClientT(comptime StreamType: type) type {
                     .x25519_kp = try X25519.KeyPair.create(random_buffer[32..][0..32].*),
                     .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..][0..32].*),
                     .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(random_buffer[96..][0..48].*),
+                    .rsa_pre_master_secret = tls12.hello.protocol_version ++ random_buffer[144..][0..46].*,
                     .now_sec = std.time.timestamp(),
                 };
             }
 
             /// Send client hello message.
             fn clientHello(h: *Handshake, host: []const u8, stream: *StreamType) !void {
-                try std.fs.cwd().writeFile("client_random", &h.client_random);
+                //try std.fs.cwd().writeFile("client_random", &h.client_random);
 
                 const enum_array = tls.enum_array;
                 const host_len: u16 = @intCast(host.len);
@@ -228,6 +234,8 @@ pub fn ClientT(comptime StreamType: type) type {
 
                     .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
                     .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+
+                    .TLS_RSA_WITH_AES_128_CBC_SHA256,
                 });
 
                 const payload =
@@ -258,9 +266,6 @@ pub fn ClientT(comptime StreamType: type) type {
             fn serverHello(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle) !void {
                 var handshake_state = tls12.HandshakeType.server_hello;
 
-                var cert_pub_key_buf: [600]u8 = undefined;
-                var cert_pub_key: []const u8 = undefined;
-                var cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined;
                 var prev_cert: Certificate.Parsed = undefined;
 
                 while (true) {
@@ -310,8 +315,11 @@ pub fn ClientT(comptime StreamType: type) type {
                                     const extensions_size = try rec.decode(u16);
                                     try rec.skip(extensions_size);
                                 }
-                                handshake_state = .certificate;
+
                                 h.initCipher();
+                                if (h.cipher_suite_tag.rsaKeyExchange())
+                                    try h.generateKeyMaterial("");
+                                handshake_state = .certificate;
                             },
                             .certificate => {
                                 var trust_chain_established = false;
@@ -329,11 +337,11 @@ pub fn ClientT(comptime StreamType: type) type {
 
                                     if (l == 0) { // first certificate
                                         const pub_key = subject.pubKey();
-                                        if (pub_key.len > cert_pub_key_buf.len)
+                                        if (pub_key.len > h.cert_pub_key_buf.len)
                                             return error.CertificatePublicKeyInvalid;
-                                        @memcpy(cert_pub_key_buf[0..pub_key.len], pub_key);
-                                        cert_pub_key = cert_pub_key_buf[0..pub_key.len];
-                                        cert_pub_key_algo = subject.pub_key_algo;
+                                        @memcpy(h.cert_pub_key_buf[0..pub_key.len], pub_key);
+                                        h.cert_pub_key = h.cert_pub_key_buf[0..pub_key.len];
+                                        h.cert_pub_key_algo = subject.pub_key_algo;
                                         prev_cert = subject;
                                     } else {
                                         if (prev_cert.verify(subject, h.now_sec)) {
@@ -355,7 +363,10 @@ pub fn ClientT(comptime StreamType: type) type {
                                 if (ca_bundle != null and !trust_chain_established) {
                                     return error.CertificateIssuerNotFound;
                                 }
-                                handshake_state = .server_key_exchange;
+                                handshake_state = if (h.cipher_suite_tag.rsaKeyExchange())
+                                    .server_hello_done
+                                else
+                                    .server_key_exchange;
                             },
                             .server_key_exchange => {
                                 const idx_start = rec.idx;
@@ -381,7 +392,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                     @memcpy(verify_buf[64..][0..payload_part.len], payload_part);
                                     break :brk verify_buf[0 .. 64 + payload_part.len];
                                 };
-                                try verifySignature(h.signature_scheme, cert_pub_key, cert_pub_key_algo, signature, verify_bytes);
+                                try verifySignature(h.signature_scheme, h.cert_pub_key, h.cert_pub_key_algo, signature, verify_bytes);
                                 try h.generateKeyMaterial(server_pub_key);
 
                                 handshake_state = .server_hello_done;
@@ -477,27 +488,30 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             fn generateKeyMaterial(h: *Handshake, server_pub_key: []const u8) !void {
-                const pre_master_secret = switch (h.named_group) {
-                    .x25519 => brk: {
-                        if (server_pub_key.len != X25519.public_length)
-                            return error.TlsIllegalParameter;
-                        break :brk &(try X25519.scalarmult(
-                            h.x25519_kp.secret_key,
-                            server_pub_key[0..X25519.public_length].*,
-                        ));
-                    },
-                    .secp256r1 => brk: {
-                        const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
-                        const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
-                        break :brk &mul.affineCoordinates().x.toBytes(.big);
-                    },
-                    .secp384r1 => brk: {
-                        const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
-                        const mul = try pk.p.mulPublic(h.secp384r1_kp.secret_key.bytes, .big);
-                        break :brk &mul.affineCoordinates().x.toBytes(.big);
-                    },
-                    else => return error.TlsIllegalParameter,
-                };
+                const pre_master_secret = if (h.named_group) |named_group|
+                    switch (named_group) {
+                        .x25519 => brk: {
+                            if (server_pub_key.len != X25519.public_length)
+                                return error.TlsIllegalParameter;
+                            break :brk &(try X25519.scalarmult(
+                                h.x25519_kp.secret_key,
+                                server_pub_key[0..X25519.public_length].*,
+                            ));
+                        },
+                        .secp256r1 => brk: {
+                            const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
+                            const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
+                            break :brk &mul.affineCoordinates().x.toBytes(.big);
+                        },
+                        .secp384r1 => brk: {
+                            const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
+                            const mul = try pk.p.mulPublic(h.secp384r1_kp.secret_key.bytes, .big);
+                            break :brk &mul.affineCoordinates().x.toBytes(.big);
+                        },
+                        else => return error.TlsIllegalParameter,
+                    }
+                else
+                    &h.rsa_pre_master_secret;
 
                 h.master_secret = switch (h.cipher.?) {
                     inline else => |i| @TypeOf(i).masterSecret(pre_master_secret, h.client_random, h.server_random)[0..h.master_secret.len].*,
@@ -516,16 +530,45 @@ pub fn ClientT(comptime StreamType: type) type {
             /// Sends client key exchange, client chiper spec and client
             /// handshake finished messages.
             fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
-                const key: []const u8 = switch (h.named_group) {
-                    .x25519 => &h.x25519_kp.public_key,
-                    .secp256r1 => &h.secp256r1_kp.public_key.toUncompressedSec1(),
-                    .secp384r1 => &h.secp384r1_kp.public_key.toUncompressedSec1(),
-                    else => unreachable,
+                const key: []const u8 = if (h.named_group) |named_group|
+                    switch (named_group) {
+                        .x25519 => &h.x25519_kp.public_key,
+                        .secp256r1 => &h.secp256r1_kp.public_key.toUncompressedSec1(),
+                        .secp384r1 => &h.secp384r1_kp.public_key.toUncompressedSec1(),
+                        else => unreachable,
+                    }
+                else brk: {
+                    if (h.cert_pub_key_algo != .rsaEncryption)
+                        return error.TlsBadSignatureScheme;
+
+                    const rsa = Certificate.rsa;
+                    const pk = try rsa.PublicKey.parseDer(h.cert_pub_key);
+                    switch (pk.modulus.len) {
+                        inline 128, 256, 512 => |modulus_len| {
+                            const msg_len = h.rsa_pre_master_secret.len;
+                            const pad_len = modulus_len - msg_len - 3;
+                            const padded_msg: [modulus_len]u8 =
+                                [2]u8{ 0, 2 } ++
+                                ([1]u8{0xff} ** pad_len) ++
+                                [1]u8{0} ++
+                                h.rsa_pre_master_secret;
+
+                            const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
+                            // TODO calling private method here
+                            break :brk &(try rsa.encrypt(modulus_len, padded_msg, key));
+                        },
+                        else => {
+                            return error.TlsBadRsaSignatureBitCount;
+                        },
+                    }
                 };
 
-                const key_exchange =
-                    tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
-                    tls12.int1(@intCast(key.len));
+                const key_exchange = if (h.named_group != null)
+                    &tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
+                        tls12.int1(@intCast(key.len))
+                else
+                    &tls12.handshakeHeader(.client_key_exchange, 2 + key.len) ++
+                        tls12.int2(@intCast(key.len));
 
                 h.updateTranscript(key_exchange[tls.record_header_len..]);
                 h.updateTranscript(key);
@@ -542,7 +585,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 };
 
                 var iovecs = [_]std.posix.iovec_const{
-                    .{ .iov_base = &key_exchange, .iov_len = key_exchange.len },
+                    .{ .iov_base = key_exchange.ptr, .iov_len = key_exchange.len },
                     .{ .iov_base = key.ptr, .iov_len = key.len },
                     .{ .iov_base = &change_cipher_spec, .iov_len = change_cipher_spec.len },
                     .{ .iov_base = handshake_finished.ptr, .iov_len = handshake_finished.len },
@@ -585,6 +628,7 @@ test "Handshake.clientHello" {
     var output_buf: [1024]u8 = undefined;
     var stream = TestStream.init("", &output_buf);
     var h = try ClientT(TestStream).Handshake.init();
+    _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
     _ = try hexToBytes(h.client_random[0..], "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
 
     const host = "www.example.com";
@@ -972,4 +1016,33 @@ test "verify google.com certificate" {
     defer ca_bundle.deinit(testing.allocator);
 
     try h.serverHello(&rdr, ca_bundle);
+}
+
+test "rsa encrypt" {
+    var buf: [48 + 270]u8 = undefined;
+    //var pre_master_secret: [48]u8 = undefined;
+    const pre_master_secret = try hexToBytes(
+        &buf,
+        "0303e2fd42b5710669646ef67f297985b8e431f2291f8fc4d3a77b08fb173dfefe33bcc4008f54cf601ab987cb0cd913",
+    );
+    const cert_pub_key = try hexToBytes(
+        buf[48..],
+        "3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001",
+    );
+
+    var data: [256]u8 = undefined;
+    data[0] = 0x00;
+    data[1] = 0x02;
+    for (2..256 - 48 - 1) |i| {
+        data[i] = 256 - 48 - 1 - 2; //0xff; //@intCast(i);
+    }
+    data[256 - 48 - 1] = 0x00;
+    data[256 - 48 ..].* = pre_master_secret[0..48].*;
+
+    const rsa = Certificate.rsa;
+    const pk = try rsa.PublicKey.parseDer(cert_pub_key);
+    const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
+    const v1 = try rsa.encrypt(256, data, key);
+
+    bufPrint("v1", &v1);
 }
