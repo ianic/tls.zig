@@ -38,7 +38,7 @@ pub fn ClientT(comptime StreamType: type) type {
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
             try h.clientHello(host, &c.stream);
-            try h.serverHello(&c.reader, ca_bundle);
+            try h.serverHello(&c.reader, ca_bundle, host);
             c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
@@ -232,7 +232,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             /// Read server hello, certificate, key_exchange and hello done messages.
             /// Extract server public key and server random.
-            fn serverHello(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle) !void {
+            fn serverHello(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
                 var handshake_state = tls12.HandshakeType.server_hello;
 
                 var prev_cert: Certificate.Parsed = undefined;
@@ -293,6 +293,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                     const subject = try subject_cert.parse();
 
                                     if (l == 0) { // first certificate
+                                        try subject.verifyHostName(host);
                                         const pub_key = subject.pubKey();
                                         if (pub_key.len > h.cert_pub_key_buf.len)
                                             return error.CertificatePublicKeyInvalid;
