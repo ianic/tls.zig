@@ -5,16 +5,13 @@ const posix = std.posix;
 
 const tls = crypto.tls;
 const tls12 = @import("tls12.zig");
-const AppCipherT = @import("cipher.zig").AppCipher;
+const AppCipher = @import("cipher.zig").AppCipher;
 const Transcript = @import("cipher.zig").Transcript;
-const pkcs1 = @import("pkcs1-1_5.zig");
 
-const Sha256 = crypto.hash.sha2.Sha256;
-const Sha384 = crypto.hash.sha2.Sha384;
+const Certificate = crypto.Certificate;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-const Certificate = std.crypto.Certificate;
 
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
     return .{
@@ -29,7 +26,7 @@ pub fn ClientT(comptime StreamType: type) type {
         stream: StreamType,
         reader: RecordReaderType,
 
-        app_cipher: AppCipherT = undefined,
+        app_cipher: AppCipher = undefined,
         client_sequence: usize = 0,
         server_sequence: usize = 0,
 
@@ -39,7 +36,7 @@ pub fn ClientT(comptime StreamType: type) type {
             var h = try Handshake.init();
             try h.clientHello(host, &c.stream);
             try h.serverHello(&c.reader, ca_bundle, host);
-            c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, crypto.random);
+            c.app_cipher = try AppCipher.init(h.cipher_suite_tag, &h.key_material, crypto.random);
             try h.clientHandshakeFinished(c);
             try h.serverHandshakeFinished(c);
 
@@ -69,7 +66,7 @@ pub fn ClientT(comptime StreamType: type) type {
             const payload = try c.encrypt(buffer, content_type, cleartext);
             const header = tls12.recordHeader(content_type, payload.len);
 
-            var iovecs = [_]std.posix.iovec_const{
+            var iovecs = [_]posix.iovec_const{
                 .{ .iov_base = &header, .iov_len = header.len },
                 .{ .iov_base = payload.ptr, .iov_len = payload.len },
             };
@@ -129,7 +126,7 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         pub fn close(c: *Client) !void {
-            var buffer: [AppCipherT.max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
+            var buffer: [AppCipher.max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
             const payload = try c.encrypt(buffer[tls.record_header_len..], .alert, &tls12.close_notify_alert);
             buffer[0..tls.record_header_len].* = tls12.recordHeader(.alert, payload.len);
             try c.stream.writeAll(buffer[0 .. tls.record_header_len + payload.len]);
@@ -223,7 +220,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 h.transcript.update(record[tls.record_header_len..]);
                 h.transcript.update(host);
 
-                var iovecs = [_]std.posix.iovec_const{
+                var iovecs = [_]posix.iovec_const{
                     .{ .iov_base = &record, .iov_len = record.len },
                     .{ .iov_base = host.ptr, .iov_len = host.len },
                 };
@@ -537,14 +534,14 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.int1(1);
 
                 const handshake_finished = brk: {
-                    var buffer: [AppCipherT.max_overhead + 5 + 16]u8 = undefined;
+                    var buffer: [AppCipher.max_overhead + 5 + 16]u8 = undefined;
                     const verify_data = h.transcript.verifyData(h.cipher_suite_tag, &h.master_secret);
                     const payload = try c.encrypt(buffer[5..], .handshake, &verify_data);
                     buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
                     break :brk buffer[0 .. tls.record_header_len + payload.len];
                 };
 
-                var iovecs = [_]std.posix.iovec_const{
+                var iovecs = [_]posix.iovec_const{
                     .{ .iov_base = key_exchange.ptr, .iov_len = key_exchange.len },
                     .{ .iov_base = key.ptr, .iov_len = key.len },
                     .{ .iov_base = &change_cipher_spec, .iov_len = change_cipher_spec.len },
@@ -657,7 +654,7 @@ test "Client.init" {
         try h.clientHello(host, &c.stream);
         try h.serverHello(&c.reader, null);
         try h.generateClientKeys();
-        c.app_cipher = try AppCipherT.init(h.cipher_suite_tag, &h.key_material, rnd);
+        c.app_cipher = try AppCipher.init(h.cipher_suite_tag, &h.key_material, rnd);
         try h.clientHandshakeFinished(&c);
         try h.serverHandshakeFinished(&c);
     }
