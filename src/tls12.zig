@@ -131,6 +131,11 @@ pub const CipherSuite = enum(u16) {
     }
 };
 
+pub const CurveType = enum(u8) {
+    named_curve = 0x03,
+    _,
+};
+
 pub const extension = struct {
     pub const status_request = [_]u8{ 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00 };
     pub const ec_point_formats = [_]u8{ 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00 };

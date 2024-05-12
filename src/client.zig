@@ -325,16 +325,17 @@ pub fn ClientT(comptime StreamType: type) type {
                             },
                             .server_key_exchange => {
                                 const idx_start = rec.idx;
-                                const named_curve = try rec.decode(u8);
-                                if (named_curve != 0x03) return error.TlsIllegalParameter;
+                                const curve_type = try rec.decode(tls12.CurveType);
                                 h.named_group = try rec.decode(tls.NamedGroup);
-                                const server_pub_key_len = try rec.decode(u8);
-                                const server_pub_key = try rec.slice(server_pub_key_len);
-                                const idx_end = rec.idx;
+                                const server_pub_key = try rec.slice(try rec.decode(u8));
+                                const payload_verify_buf = rec.payload[idx_start..rec.idx];
 
                                 h.signature_scheme = try rec.decode(tls.SignatureScheme);
-                                const signature_len = try rec.decode(u16);
-                                const signature = try rec.slice(signature_len);
+                                const signature = try rec.slice(try rec.decode(u16));
+
+                                if (curve_type != .named_curve)
+                                    return error.TlsIllegalParameter;
+
                                 const verify_bytes = brk: {
                                     // public key len
                                     // x25519 = 32
@@ -343,9 +344,8 @@ pub fn ClientT(comptime StreamType: type) type {
                                     const max_public_key_len = 97;
                                     var verify_buf: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
                                     verify_buf[0..64].* = h.client_random ++ h.server_random;
-                                    const payload_part = rec.payload[idx_start..idx_end];
-                                    @memcpy(verify_buf[64..][0..payload_part.len], payload_part);
-                                    break :brk verify_buf[0 .. 64 + payload_part.len];
+                                    @memcpy(verify_buf[64..][0..payload_verify_buf.len], payload_verify_buf);
+                                    break :brk verify_buf[0 .. 64 + payload_verify_buf.len];
                                 };
                                 try verifySignature(h.signature_scheme, h.cert_pub_key, h.cert_pub_key_algo, signature, verify_bytes);
                                 try h.generateKeyMaterial(server_pub_key);
