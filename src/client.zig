@@ -136,7 +136,7 @@ pub fn ClientT(comptime StreamType: type) type {
             const master_secret_len = 48;
             const key_material_len = 32 * 4;
 
-            client_random: [32]u8 = undefined,
+            client_random: [32]u8,
             server_random: [32]u8 = undefined,
             master_secret: [master_secret_len]u8 = undefined,
             key_material: [key_material_len]u8 = undefined,
@@ -152,11 +152,8 @@ pub fn ClientT(comptime StreamType: type) type {
             now_sec: i64 = 0,
 
             cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
+            cert_pub_key_buf: [600]u8 = undefined,
             cert_pub_key: []const u8 = undefined,
-            // 600 bytes for cert_pub_key,
-            // 165 bytes for verify_bytes in verifySignature (32 + 32 + 1 + 2 + 1 + 97 (max_public_key_len))
-            // 512 max for key exchange key 32, 65, 97 (for curve), 128, 256, 512 for rsa encrypted pre master secret
-            shared_buf: SharedBuffer(2048) = .{},
 
             pub fn init() !Handshake {
                 var rand_buf: [32 + 48 + 46]u8 = undefined;
@@ -289,7 +286,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
                                     if (l == 0) { // first certificate
                                         try subject.verifyHostName(host);
-                                        h.cert_pub_key = try h.shared_buf.dupe(subject.pubKey());
+                                        h.cert_pub_key = try dupe(&h.cert_pub_key_buf, subject.pubKey());
                                         h.cert_pub_key_algo = subject.pub_key_algo;
                                         prev_cert = subject;
                                     } else {
@@ -346,14 +343,16 @@ pub fn ClientT(comptime StreamType: type) type {
                     // x25519 = 32
                     // secp256r1 = 65
                     // secp384r1 = 97
-                    // used shared_buf: 32 + 32 + 1 + 2 + 1 + 97
-                    try h.shared_buf.push(&h.client_random);
-                    try h.shared_buf.push(&h.server_random);
-                    try h.shared_buf.pushEnum(tls12.CurveType.named_curve);
-                    try h.shared_buf.pushEnum(h.named_group.?);
-                    try h.shared_buf.pushInt(@as(u8, @intCast(server_pub_key.len)));
-                    try h.shared_buf.push(server_pub_key);
-                    break :brk h.shared_buf.pop();
+                    var buf: [32 + 32 + 1 + 2 + 1 + 97]u8 = undefined;
+
+                    var w = BufWriter{ .buf = &buf };
+                    try w.write(&h.client_random);
+                    try w.write(&h.server_random);
+                    try w.writeEnum(tls12.CurveType.named_curve);
+                    try w.writeEnum(h.named_group.?);
+                    try w.writeInt(@as(u8, @intCast(server_pub_key.len)));
+                    try w.write(server_pub_key);
+                    break :brk w.getWritten();
                 };
 
                 const rsa = Certificate.rsa;
@@ -957,77 +956,48 @@ test "rsa encrypt" {
     bufPrint("v1", &v1);
 }
 
-fn SharedBuffer(size: usize) type {
-    return struct {
-        buf: [size]u8 = undefined,
-        pos: usize = 0,
-        push_start_pos: ?usize = null,
-
-        const Self = @This();
-
-        pub fn alloc(self: *Self, len: usize) ![]u8 {
-            self.pos += len;
-            if (self.pos > self.buf.len) return error.BufferOverflow;
-            return self.buf[self.pos - len .. self.pos];
-        }
-
-        pub fn dupe(self: *Self, buf: []const u8) ![]u8 {
-            const cpy = try self.alloc(buf.len);
-            @memcpy(cpy, buf);
-            return cpy;
-        }
-
-        pub fn free(self: *Self) []u8 {
-            return self.buf[self.pos..];
-        }
-
-        pub fn push(self: *Self, buf: []const u8) !void {
-            if (self.push_start_pos == null)
-                self.push_start_pos = self.pos;
-            _ = try self.dupe(buf);
-        }
-
-        pub fn pushEnum(self: *Self, value: anytype) !void {
-            try self.pushInt(@intFromEnum(value));
-        }
-
-        pub fn pushInt(self: *Self, value: anytype) !void {
-            if (self.push_start_pos == null)
-                self.push_start_pos = self.pos;
-            const IntT = @TypeOf(value);
-            const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
-            const buf = try self.alloc(bytes);
-            std.mem.writeInt(IntT, buf[0..bytes], value, .big);
-        }
-
-        pub fn pop(self: *Self) []const u8 {
-            if (self.push_start_pos) |start_pos| {
-                defer self.push_start_pos = null;
-                return self.buf[start_pos..self.pos];
-            }
-            return "";
-        }
-    };
+fn dupe(buf: []u8, data: []const u8) ![]u8 {
+    if (data.len > buf.len) return error.BufferOverflow;
+    @memcpy(buf[0..data.len], data);
+    return buf[0..data.len];
 }
 
-test "treba mi neki buffer" {
-    var sb: SharedBuffer(16) = .{};
-    var buf = try sb.alloc(4);
-    try testing.expectEqual(4, buf.len);
-    try testing.expectEqual(4, sb.pos);
-    buf = try sb.dupe(&[_]u8{ 1, 2, 3 });
-    try testing.expectEqual(3, buf.len);
-    try testing.expectEqual(7, sb.pos);
+const BufWriter = struct {
+    buf: []u8,
+    pos: usize = 0,
 
-    try sb.push("ab");
-    try sb.push("cd");
-    try testing.expectEqualStrings("abcd", sb.pop());
-    try testing.expectEqualStrings("", sb.pop());
+    pub fn write(self: *BufWriter, data: []const u8) !void {
+        defer self.pos += data.len;
+        _ = try dupe(self.buf[self.pos..], data);
+    }
 
-    try sb.pushEnum(tls12.CurveType.named_curve);
-    try sb.pushEnum(tls.NamedGroup.x25519);
-    try sb.pushInt(@as(u16, 0x1234));
-    try testing.expectEqualSlices(u8, &[_]u8{ 0x03, 0x00, 0x1d, 0x12, 0x34 }, sb.pop());
+    pub fn writeEnum(self: *BufWriter, value: anytype) !void {
+        try self.writeInt(@intFromEnum(value));
+    }
+
+    pub fn writeInt(self: *BufWriter, value: anytype) !void {
+        const IntT = @TypeOf(value);
+        const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
+        const free = self.buf[self.pos..];
+        if (free.len < bytes) return error.BufferOverflow;
+        std.mem.writeInt(IntT, free[0..bytes], value, .big);
+        self.pos += bytes;
+    }
+
+    pub fn getWritten(self: *BufWriter) []const u8 {
+        return self.buf[0..self.pos];
+    }
+};
+
+test "BufWriter" {
+    var buf: [16]u8 = undefined;
+    var w = BufWriter{ .buf = &buf };
+
+    try w.write("ab");
+    try w.writeEnum(tls12.CurveType.named_curve);
+    try w.writeEnum(tls.NamedGroup.x25519);
+    try w.writeInt(@as(u16, 0x1234));
+    try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
 }
 
 const DhKeyPair = struct {
