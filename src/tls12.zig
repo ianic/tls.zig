@@ -81,15 +81,20 @@ pub const CipherSuite = enum(u16) {
         return error.TlsIllegalParameter;
     }
 
+    pub const KeyExchangeType = enum {
+        ecdhe,
+        rsa,
+    };
+
     // Random premaster secret, encrypted with publich key from certificate.
     // No server key exchange message.
-    pub fn rsaKeyExchange(s: CipherSuite) bool {
+    pub fn keyExchangeType(s: CipherSuite) KeyExchangeType {
         return switch (s) {
             .TLS_RSA_WITH_AES_128_CBC_SHA,
             .TLS_RSA_WITH_AES_128_CBC_SHA256,
             .TLS_RSA_WITH_AES_256_CBC_SHA256,
-            => true,
-            else => false,
+            => .rsa,
+            else => .ecdhe,
         };
     }
 

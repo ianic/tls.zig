@@ -133,12 +133,11 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
-            const client_random_len = 32;
             const master_secret_len = 48;
             const key_material_len = 32 * 4;
 
-            client_random: [client_random_len]u8 = undefined,
-            server_random: [client_random_len]u8 = undefined,
+            client_random: [32]u8 = undefined,
+            server_random: [32]u8 = undefined,
             master_secret: [master_secret_len]u8 = undefined,
             key_material: [key_material_len]u8 = undefined,
 
@@ -146,28 +145,27 @@ pub fn ClientT(comptime StreamType: type) type {
 
             cipher_suite_tag: tls12.CipherSuite = undefined,
             named_group: ?tls.NamedGroup = null,
+            dh_kp: DhKeyPair,
+            rsa_kp: RsaKeyPair,
             signature_scheme: tls.SignatureScheme = undefined,
 
-            x25519_kp: X25519.KeyPair = undefined,
-            secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
-            secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
-            rsa_pre_master_secret: [master_secret_len]u8 = undefined,
             now_sec: i64 = 0,
 
-            cert_pub_key_buf: [600]u8 = undefined,
-            cert_pub_key: []const u8 = undefined,
             cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
+            cert_pub_key: []const u8 = undefined,
+            // 600 bytes for cert_pub_key,
+            // 165 bytes for verify_bytes in verifySignature (32 + 32 + 1 + 2 + 1 + 97 (max_public_key_len))
+            // 512 max for key exchange key 32, 65, 97 (for curve), 128, 256, 512 for rsa encrypted pre master secret
+            shared_buf: SharedBuffer(2048) = .{},
 
             pub fn init() !Handshake {
-                var random_buffer: [32 * 3 + 48 * 2]u8 = undefined;
-                crypto.random.bytes(&random_buffer);
+                var rand_buf: [32 + 48 + 46]u8 = undefined;
+                crypto.random.bytes(&rand_buf);
 
                 return .{
-                    .client_random = random_buffer[0..32].*,
-                    .x25519_kp = try X25519.KeyPair.create(random_buffer[32..][0..32].*),
-                    .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(random_buffer[64..][0..32].*),
-                    .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(random_buffer[96..][0..48].*),
-                    .rsa_pre_master_secret = tls12.hello.protocol_version ++ random_buffer[144..][0..46].*,
+                    .client_random = rand_buf[0..32].*,
+                    .dh_kp = try DhKeyPair.init(rand_buf[32..][0..48].*),
+                    .rsa_kp = RsaKeyPair.init(rand_buf[32 + 48 ..][0..46].*),
                     .now_sec = std.time.timestamp(),
                 };
             }
@@ -271,7 +269,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                     try rec.skip(extensions_size);
                                 }
 
-                                if (h.cipher_suite_tag.rsaKeyExchange())
+                                if (h.cipher_suite_tag.keyExchangeType() == .rsa)
                                     try h.generateKeyMaterial("");
                                 handshake_state = .certificate;
                             },
@@ -291,11 +289,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
                                     if (l == 0) { // first certificate
                                         try subject.verifyHostName(host);
-                                        const pub_key = subject.pubKey();
-                                        if (pub_key.len > h.cert_pub_key_buf.len)
-                                            return error.CertificatePublicKeyInvalid;
-                                        @memcpy(h.cert_pub_key_buf[0..pub_key.len], pub_key);
-                                        h.cert_pub_key = h.cert_pub_key_buf[0..pub_key.len];
+                                        h.cert_pub_key = try h.shared_buf.dupe(subject.pubKey());
                                         h.cert_pub_key_algo = subject.pub_key_algo;
                                         prev_cert = subject;
                                     } else {
@@ -318,36 +312,20 @@ pub fn ClientT(comptime StreamType: type) type {
                                 if (ca_bundle != null and !trust_chain_established) {
                                     return error.CertificateIssuerNotFound;
                                 }
-                                handshake_state = if (h.cipher_suite_tag.rsaKeyExchange())
+                                handshake_state = if (h.cipher_suite_tag.keyExchangeType() == .rsa)
                                     .server_hello_done
                                 else
                                     .server_key_exchange;
                             },
                             .server_key_exchange => {
-                                const idx_start = rec.idx;
                                 const curve_type = try rec.decode(tls12.CurveType);
                                 h.named_group = try rec.decode(tls.NamedGroup);
                                 const server_pub_key = try rec.slice(try rec.decode(u8));
-                                const payload_verify_buf = rec.payload[idx_start..rec.idx];
-
                                 h.signature_scheme = try rec.decode(tls.SignatureScheme);
                                 const signature = try rec.slice(try rec.decode(u16));
 
-                                if (curve_type != .named_curve)
-                                    return error.TlsIllegalParameter;
-
-                                const verify_bytes = brk: {
-                                    // public key len
-                                    // x25519 = 32
-                                    // secp256r1 = 65
-                                    // secp384r1 = 97
-                                    const max_public_key_len = 97;
-                                    var verify_buf: [64 + 3 + 1 + max_public_key_len]u8 = undefined;
-                                    verify_buf[0..64].* = h.client_random ++ h.server_random;
-                                    @memcpy(verify_buf[64..][0..payload_verify_buf.len], payload_verify_buf);
-                                    break :brk verify_buf[0 .. 64 + payload_verify_buf.len];
-                                };
-                                try verifySignature(h.signature_scheme, h.cert_pub_key, h.cert_pub_key_algo, signature, verify_bytes);
+                                if (curve_type != .named_curve) return error.TlsIllegalParameter;
+                                try h.verifySignature(server_pub_key, signature);
                                 try h.generateKeyMaterial(server_pub_key);
 
                                 handshake_state = .server_hello_done;
@@ -362,26 +340,35 @@ pub fn ClientT(comptime StreamType: type) type {
                 }
             }
 
-            fn verifySignature(
-                signature_scheme: tls.SignatureScheme,
-                cert_pub_key: []const u8,
-                cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
-                signature: []const u8,
-                verify_bytes: []const u8,
-            ) !void {
+            fn verifySignature(h: *Handshake, server_pub_key: []const u8, signature: []const u8) !void {
+                const verify_bytes = brk: {
+                    // public key len:
+                    // x25519 = 32
+                    // secp256r1 = 65
+                    // secp384r1 = 97
+                    // used shared_buf: 32 + 32 + 1 + 2 + 1 + 97
+                    try h.shared_buf.push(&h.client_random);
+                    try h.shared_buf.push(&h.server_random);
+                    try h.shared_buf.pushEnum(tls12.CurveType.named_curve);
+                    try h.shared_buf.pushEnum(h.named_group.?);
+                    try h.shared_buf.pushInt(@as(u8, @intCast(server_pub_key.len)));
+                    try h.shared_buf.push(server_pub_key);
+                    break :brk h.shared_buf.pop();
+                };
+
                 const rsa = Certificate.rsa;
 
-                switch (signature_scheme) {
+                switch (h.signature_scheme) {
                     inline .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
                     => |comptime_scheme| {
-                        if (cert_pub_key_algo != .X9_62_id_ecPublicKey) return error.TlsBadSignatureScheme;
+                        if (h.cert_pub_key_algo != .X9_62_id_ecPublicKey) return error.TlsBadSignatureScheme;
 
-                        const cert_named_curve = cert_pub_key_algo.X9_62_id_ecPublicKey;
+                        const cert_named_curve = h.cert_pub_key_algo.X9_62_id_ecPublicKey;
                         switch (cert_named_curve) {
                             inline else => |comptime_cert_named_curve| {
                                 const Ecdsa = SchemeEcdsa(comptime_scheme, comptime_cert_named_curve);
-                                const key = try Ecdsa.PublicKey.fromSec1(cert_pub_key);
+                                const key = try Ecdsa.PublicKey.fromSec1(h.cert_pub_key);
                                 const sig = try Ecdsa.Signature.fromDer(signature);
                                 try sig.verify(verify_bytes, key);
                             },
@@ -392,9 +379,9 @@ pub fn ClientT(comptime StreamType: type) type {
                     .rsa_pss_rsae_sha384,
                     .rsa_pss_rsae_sha512,
                     => |comptime_scheme| {
-                        if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
+                        if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
                         const Hash = SchemeHash(comptime_scheme);
-                        const pk = try rsa.PublicKey.parseDer(cert_pub_key);
+                        const pk = try rsa.PublicKey.parseDer(h.cert_pub_key);
                         switch (pk.modulus.len) {
                             inline 128, 256, 512 => |modulus_len| {
                                 const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
@@ -411,10 +398,10 @@ pub fn ClientT(comptime StreamType: type) type {
                     .rsa_pkcs1_sha384,
                     .rsa_pkcs1_sha512,
                     => |comptime_scheme| {
-                        if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
+                        if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
                         const Hash = SchemeHash(comptime_scheme);
                         // TODO: calling private method
-                        try Certificate.verifyRsa(Hash, verify_bytes, signature, cert_pub_key_algo, cert_pub_key);
+                        try Certificate.verifyRsa(Hash, verify_bytes, signature, h.cert_pub_key_algo, h.cert_pub_key);
                     },
                     else => return error.TlsUnknownSignatureScheme,
                 }
@@ -443,29 +430,9 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn generateKeyMaterial(h: *Handshake, server_pub_key: []const u8) !void {
                 const pre_master_secret = if (h.named_group) |named_group|
-                    switch (named_group) {
-                        .x25519 => brk: {
-                            if (server_pub_key.len != X25519.public_length)
-                                return error.TlsIllegalParameter;
-                            break :brk &(try X25519.scalarmult(
-                                h.x25519_kp.secret_key,
-                                server_pub_key[0..X25519.public_length].*,
-                            ));
-                        },
-                        .secp256r1 => brk: {
-                            const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
-                            const mul = try pk.p.mulPublic(h.secp256r1_kp.secret_key.bytes, .big);
-                            break :brk &mul.affineCoordinates().x.toBytes(.big);
-                        },
-                        .secp384r1 => brk: {
-                            const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
-                            const mul = try pk.p.mulPublic(h.secp384r1_kp.secret_key.bytes, .big);
-                            break :brk &mul.affineCoordinates().x.toBytes(.big);
-                        },
-                        else => return error.TlsIllegalParameter,
-                    }
+                    try h.dh_kp.preMasterSecret(&h.shared_buf, named_group, server_pub_key)
                 else
-                    &h.rsa_pre_master_secret;
+                    &h.rsa_kp.pre_master_secret;
 
                 h.master_secret = Transcript.masterSecret(
                     master_secret_len,
@@ -487,37 +454,9 @@ pub fn ClientT(comptime StreamType: type) type {
             /// handshake finished messages.
             fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
                 const key: []const u8 = if (h.named_group) |named_group|
-                    switch (named_group) {
-                        .x25519 => &h.x25519_kp.public_key,
-                        .secp256r1 => &h.secp256r1_kp.public_key.toUncompressedSec1(),
-                        .secp384r1 => &h.secp384r1_kp.public_key.toUncompressedSec1(),
-                        else => unreachable,
-                    }
-                else brk: {
-                    if (h.cert_pub_key_algo != .rsaEncryption)
-                        return error.TlsBadSignatureScheme;
-
-                    const rsa = Certificate.rsa;
-                    const pk = try rsa.PublicKey.parseDer(h.cert_pub_key);
-                    switch (pk.modulus.len) {
-                        inline 128, 256, 512 => |modulus_len| {
-                            const msg_len = h.rsa_pre_master_secret.len;
-                            const pad_len = modulus_len - msg_len - 3;
-                            const padded_msg: [modulus_len]u8 =
-                                [2]u8{ 0, 2 } ++
-                                ([1]u8{0xff} ** pad_len) ++
-                                [1]u8{0} ++
-                                h.rsa_pre_master_secret;
-
-                            const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
-                            // TODO calling private method here
-                            break :brk &(try rsa.encrypt(modulus_len, padded_msg, key));
-                        },
-                        else => {
-                            return error.TlsBadRsaSignatureBitCount;
-                        },
-                    }
-                };
+                    try h.dh_kp.publicKey(&h.shared_buf, named_group)
+                else
+                    try h.rsa_kp.publicKey(&h.shared_buf, h.cert_pub_key_algo, h.cert_pub_key);
 
                 const key_exchange = if (h.named_group != null)
                     &tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
@@ -1008,3 +947,169 @@ test "rsa encrypt" {
 
     bufPrint("v1", &v1);
 }
+
+fn SharedBuffer(size: usize) type {
+    return struct {
+        buf: [size]u8 = undefined,
+        pos: usize = 0,
+        push_start_pos: ?usize = null,
+
+        const Self = @This();
+
+        pub fn alloc(self: *Self, len: usize) ![]u8 {
+            self.pos += len;
+            if (self.pos > self.buf.len) return error.BufferOverflow;
+            return self.buf[self.pos - len .. self.pos];
+        }
+
+        pub fn dupe(self: *Self, buf: []const u8) ![]u8 {
+            const cpy = try self.alloc(buf.len);
+            @memcpy(cpy, buf);
+            return cpy;
+        }
+
+        pub fn free(self: *Self) []u8 {
+            return self.buf[self.pos..];
+        }
+
+        pub fn push(self: *Self, buf: []const u8) !void {
+            if (self.push_start_pos == null)
+                self.push_start_pos = self.pos;
+            _ = try self.dupe(buf);
+        }
+
+        pub fn pushEnum(self: *Self, value: anytype) !void {
+            try self.pushInt(@intFromEnum(value));
+        }
+
+        pub fn pushInt(self: *Self, value: anytype) !void {
+            if (self.push_start_pos == null)
+                self.push_start_pos = self.pos;
+            const IntT = @TypeOf(value);
+            const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
+            const buf = try self.alloc(bytes);
+            std.mem.writeInt(IntT, buf[0..bytes], value, .big);
+        }
+
+        pub fn pop(self: *Self) []const u8 {
+            if (self.push_start_pos) |start_pos| {
+                defer self.push_start_pos = null;
+                return self.buf[start_pos..self.pos];
+            }
+            return "";
+        }
+    };
+}
+
+test "treba mi neki buffer" {
+    var sb: SharedBuffer(16) = .{};
+    var buf = try sb.alloc(4);
+    try testing.expectEqual(4, buf.len);
+    try testing.expectEqual(4, sb.pos);
+    buf = try sb.dupe(&[_]u8{ 1, 2, 3 });
+    try testing.expectEqual(3, buf.len);
+    try testing.expectEqual(7, sb.pos);
+
+    try sb.push("ab");
+    try sb.push("cd");
+    try testing.expectEqualStrings("abcd", sb.pop());
+    try testing.expectEqualStrings("", sb.pop());
+
+    try sb.pushEnum(tls12.CurveType.named_curve);
+    try sb.pushEnum(tls.NamedGroup.x25519);
+    try sb.pushInt(@as(u16, 0x1234));
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x03, 0x00, 0x1d, 0x12, 0x34 }, sb.pop());
+}
+
+const DhKeyPair = struct {
+    x25519_kp: X25519.KeyPair = undefined,
+    secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
+    secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
+
+    const seed_len = 48;
+
+    fn init(seed: [seed_len]u8) !DhKeyPair {
+        return .{
+            .x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
+            .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[0..EcdsaP256Sha256.KeyPair.seed_length].*),
+            .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[0..EcdsaP384Sha384.KeyPair.seed_length].*),
+        };
+    }
+
+    fn preMasterSecret(self: DhKeyPair, buf: anytype, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
+        const pre_master_secret = switch (named_group) {
+            .x25519 => brk: {
+                if (server_pub_key.len != X25519.public_length)
+                    return error.TlsIllegalParameter;
+                break :brk &(try X25519.scalarmult(
+                    self.x25519_kp.secret_key,
+                    server_pub_key[0..X25519.public_length].*,
+                ));
+            },
+            .secp256r1 => brk: {
+                const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
+                const mul = try pk.p.mulPublic(self.secp256r1_kp.secret_key.bytes, .big);
+                break :brk &mul.affineCoordinates().x.toBytes(.big);
+            },
+            .secp384r1 => brk: {
+                const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
+                const mul = try pk.p.mulPublic(self.secp384r1_kp.secret_key.bytes, .big);
+                break :brk &mul.affineCoordinates().x.toBytes(.big);
+            },
+            else => return error.TlsIllegalParameter,
+        };
+
+        return try buf.dupe(pre_master_secret);
+    }
+
+    fn publicKey(self: DhKeyPair, buf: anytype, named_group: tls.NamedGroup) ![]const u8 {
+        const public_key = switch (named_group) {
+            .x25519 => &self.x25519_kp.public_key,
+            .secp256r1 => &self.secp256r1_kp.public_key.toUncompressedSec1(),
+            .secp384r1 => &self.secp384r1_kp.public_key.toUncompressedSec1(),
+            else => return error.TlsIllegalParameter,
+        };
+
+        return try buf.dupe(public_key);
+    }
+};
+
+const RsaKeyPair = struct {
+    pre_master_secret: [48]u8,
+
+    fn init(rand: [46]u8) RsaKeyPair {
+        return .{ .pre_master_secret = tls12.hello.protocol_version ++ rand };
+    }
+
+    fn publicKey(
+        self: RsaKeyPair,
+        buf: anytype,
+        cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
+        cert_pub_key: []const u8,
+    ) ![]const u8 {
+        if (cert_pub_key_algo != .rsaEncryption)
+            return error.TlsBadSignatureScheme;
+
+        const rsa = Certificate.rsa;
+        const pk = try rsa.PublicKey.parseDer(cert_pub_key);
+        switch (pk.modulus.len) {
+            inline 128, 256, 512 => |modulus_len| {
+                const msg_len = self.pre_master_secret.len;
+                const pad_len = modulus_len - msg_len - 3;
+                const padded_msg: [modulus_len]u8 =
+                    [2]u8{ 0, 2 } ++
+                    ([1]u8{0xff} ** pad_len) ++
+                    [1]u8{0} ++
+                    self.pre_master_secret;
+
+                const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
+                // TODO calling private method here
+                const pub_key = &(try rsa.encrypt(modulus_len, padded_msg, key));
+                return try buf.dupe(pub_key);
+            },
+            else => {
+                return error.TlsBadRsaSignatureBitCount;
+            },
+        }
+    }
+};
