@@ -430,7 +430,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn generateKeyMaterial(h: *Handshake, server_pub_key: []const u8) !void {
                 const pre_master_secret = if (h.named_group) |named_group|
-                    try h.dh_kp.preMasterSecret(&h.shared_buf, named_group, server_pub_key)
+                    try h.dh_kp.preMasterSecret(named_group, server_pub_key)
                 else
                     &h.rsa_kp.pre_master_secret;
 
@@ -454,9 +454,9 @@ pub fn ClientT(comptime StreamType: type) type {
             /// handshake finished messages.
             fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
                 const key: []const u8 = if (h.named_group) |named_group|
-                    try h.dh_kp.publicKey(&h.shared_buf, named_group)
+                    try h.dh_kp.publicKey(named_group)
                 else
-                    try h.rsa_kp.publicKey(&h.shared_buf, h.cert_pub_key_algo, h.cert_pub_key);
+                    try h.rsa_kp.publicKey(h.cert_pub_key_algo, h.cert_pub_key);
 
                 const key_exchange = if (h.named_group != null)
                     &tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
@@ -895,13 +895,22 @@ test "Record decoder" {
 }
 
 fn bufPrint(var_name: []const u8, buf: []const u8) void {
-    std.debug.print("const {s} = [_]u8{{", .{var_name});
-    for (buf, 1..) |b, i| {
-        std.debug.print("0x{x:0>2}, ", .{b});
-        if (i % 16 == 0)
-            std.debug.print("\n", .{});
+    // std.debug.print("const {s} = [_]u8{{", .{var_name});
+    // for (buf, 1..) |b, i| {
+    //     std.debug.print("0x{x:0>2}, ", .{b});
+    //     if (i % 16 == 0)
+    //         std.debug.print("\n", .{});
+    // }
+    // std.debug.print("}};\n", .{});
+
+    std.debug.print("const {s} = \"", .{var_name});
+    const charset = "0123456789abcdef";
+    for (buf) |b| {
+        const x = charset[b >> 4];
+        const y = charset[b & 15];
+        std.debug.print("{c}{c}", .{ x, y });
     }
-    std.debug.print("}};\n", .{});
+    std.debug.print("\"\n", .{});
 }
 
 test "verify google.com certificate" {
@@ -1036,8 +1045,9 @@ const DhKeyPair = struct {
         };
     }
 
-    fn preMasterSecret(self: DhKeyPair, buf: anytype, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
-        const pre_master_secret = switch (named_group) {
+    // 32
+    inline fn preMasterSecret(self: DhKeyPair, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
+        return switch (named_group) {
             .x25519 => brk: {
                 if (server_pub_key.len != X25519.public_length)
                     return error.TlsIllegalParameter;
@@ -1058,19 +1068,16 @@ const DhKeyPair = struct {
             },
             else => return error.TlsIllegalParameter,
         };
-
-        return try buf.dupe(pre_master_secret);
     }
 
-    fn publicKey(self: DhKeyPair, buf: anytype, named_group: tls.NamedGroup) ![]const u8 {
-        const public_key = switch (named_group) {
+    // Returns 32, 65 or 97 bytes
+    inline fn publicKey(self: DhKeyPair, named_group: tls.NamedGroup) ![]const u8 {
+        return switch (named_group) {
             .x25519 => &self.x25519_kp.public_key,
             .secp256r1 => &self.secp256r1_kp.public_key.toUncompressedSec1(),
             .secp384r1 => &self.secp384r1_kp.public_key.toUncompressedSec1(),
             else => return error.TlsIllegalParameter,
         };
-
-        return try buf.dupe(public_key);
     }
 };
 
@@ -1081,9 +1088,8 @@ const RsaKeyPair = struct {
         return .{ .pre_master_secret = tls12.hello.protocol_version ++ rand };
     }
 
-    fn publicKey(
+    inline fn publicKey(
         self: RsaKeyPair,
-        buf: anytype,
         cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
         cert_pub_key: []const u8,
     ) ![]const u8 {
@@ -1104,8 +1110,7 @@ const RsaKeyPair = struct {
 
                 const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
                 // TODO calling private method here
-                const pub_key = &(try rsa.encrypt(modulus_len, padded_msg, key));
-                return try buf.dupe(pub_key);
+                return &(try rsa.encrypt(modulus_len, padded_msg, key));
             },
             else => {
                 return error.TlsBadRsaSignatureBitCount;
@@ -1113,3 +1118,46 @@ const RsaKeyPair = struct {
         }
     }
 };
+
+test "RsaKeyPair" {
+    var buf: [48 + 270 + 256]u8 = undefined;
+
+    const seed = try hexToBytes(&buf, "23bc6aea3bf218e0154835af87536c8078b3cb9ed7be55579b6c55b36a503090584936ee572afeb19fd16ad333e4");
+    const cert_pub_key = try hexToBytes(buf[46..], "3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001");
+    const expected_key = try hexToBytes(buf[46 + 270 ..], "495fd4a3ff7b2bf5eb6c316b488559142c2678d3204df4408e9a6ccb0680a52739fc766136e6da92e17941c35e1e02150bfcf7830fe0a1443772bf88ca22b614e5d4df122a3e615e6d409bf4702d34effb0bba9f801b3a795f1ff88e483eaa2968a8f7d1fbddee0ac0ecb88c615b5787fd5daa2180ad9791df87dd7d589884414ebe02576bc136f1aa0d866951a29161d80a3339c92300f37c822c6d303919dc9776fa91c7de45d7b0092014b2e0f678daa81fae1530c90b1ef15eecb3aba2b285ba725a623b083aa70ada7adfebbfcbf8472a3cdd9337b92770e33c86f6180591a4f26db6822c95bc5cf379c9fcb3895561e60bf5be02845b96a3e3867c168b");
+
+    var rsa_kp = RsaKeyPair.init(seed[0..46].*);
+    try testing.expectEqualSlices(
+        u8,
+        expected_key,
+        try rsa_kp.publicKey(.{ .rsaEncryption = {} }, cert_pub_key),
+    );
+}
+
+test "DhKeyPair.x25519" {
+    var buf: [48 + 32 + 32]u8 = undefined;
+    const seed = try hexToBytes(&buf, "4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8bb2");
+    const server_pub_key = try hexToBytes(buf[48..], "3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
+    const expected = try hexToBytes(buf[48 + 32 ..], "f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
+
+    const kp = try DhKeyPair.init(seed[0..48].*);
+    try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
+}
+
+inline fn noInline(c: u8) []const u8 {
+    var buf: [32]u8 = undefined;
+    @memset(buf[0..], c);
+    return &buf;
+}
+
+test "inline function" {
+    var p: usize = 0;
+    p = 1;
+    const ss = @intFromPtr(&p);
+
+    const a = noInline('a');
+    const b = noInline('b');
+
+    std.debug.print("\np: {d}\n", .{ss});
+    std.debug.print("{s} {d}\n{s} {d}\n", .{ a, @intFromPtr(a.ptr) - ss, b, @intFromPtr(b.ptr) - ss });
+}
