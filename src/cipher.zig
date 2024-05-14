@@ -281,6 +281,7 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
 
             return decrypted[0..cleartext_len];
+            // TODO not checking mac
             // TODO: ostavi mjesta u buf i tamo zaljepi ad nakon decrypt napravi
             // mac od ad + cleartext to je ad_actual i usporedi s ovim koji je
             // poslan (ad expected)
