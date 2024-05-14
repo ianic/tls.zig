@@ -37,7 +37,7 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.clientHello(host, &c.stream);
             try h.serverHello(&c.reader, ca_bundle, host);
 
-            if (h.cipher_suite_tag.keyExchangeType() == .ecdhe)
+            if (h.cipher_suite_tag.keyExchange() == .ecdhe)
                 try h.verifySignature();
             try h.generateKeyMaterial();
             c.app_cipher = try AppCipher.init(h.cipher_suite_tag, &h.key_material, crypto.random);
@@ -52,7 +52,7 @@ pub fn ClientT(comptime StreamType: type) type {
             // );
         }
 
-        /// Lowfer for encryption. Cleartext can't be greater than tls record
+        /// Low level api. Cleartext can't be greater than tls record
         /// (16K). Buffer has to be bigger than cleartext for encryption
         /// overhead (AppCipherT.max_overhead = 52 bytes).
         ///
@@ -62,7 +62,6 @@ pub fn ClientT(comptime StreamType: type) type {
             try c.write_(buffer, .application_data, cleartext);
         }
 
-        //var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
         fn write_(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) !void {
             assert(cleartext.len <= tls.max_cipertext_inner_record_len);
             assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
@@ -301,6 +300,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                             prev_cert = subject;
                                         } else |_| {
                                             // skip certificate which is not part of the chain
+                                            continue;
                                         }
                                     }
                                     if (ca_bundle) |cb| {
@@ -311,13 +311,11 @@ pub fn ClientT(comptime StreamType: type) type {
                                             else => |e| return e,
                                         }
                                     }
-                                    // TODO: ????
-                                    prev_cert = subject;
                                 }
                                 if (ca_bundle != null and !trust_chain_established) {
                                     return error.CertificateIssuerNotFound;
                                 }
-                                handshake_state = if (h.cipher_suite_tag.keyExchangeType() == .rsa)
+                                handshake_state = if (h.cipher_suite_tag.keyExchange() == .rsa)
                                     .server_hello_done
                                 else
                                     .server_key_exchange;

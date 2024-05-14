@@ -81,14 +81,14 @@ pub const CipherSuite = enum(u16) {
         return error.TlsIllegalParameter;
     }
 
-    pub const KeyExchangeType = enum {
+    pub const KeyExchangeAlgorithm = enum {
         ecdhe,
         rsa,
     };
 
     // Random premaster secret, encrypted with publich key from certificate.
     // No server key exchange message.
-    pub fn keyExchangeType(s: CipherSuite) KeyExchangeType {
+    pub fn keyExchange(s: CipherSuite) KeyExchangeAlgorithm {
         return switch (s) {
             .TLS_RSA_WITH_AES_128_CBC_SHA,
             .TLS_RSA_WITH_AES_128_CBC_SHA256,
@@ -98,14 +98,14 @@ pub const CipherSuite = enum(u16) {
         };
     }
 
-    pub const Crypter = enum {
+    pub const Cipher = enum {
         aes_128_cbc_sha,
         aes_128_cbc_sha256,
         aes_128_gcm,
         aes_256_gcm,
     };
 
-    pub fn crypter(cs: CipherSuite) !Crypter {
+    pub fn cipher(cs: CipherSuite) !Cipher {
         return switch (cs) {
             .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
@@ -121,12 +121,12 @@ pub const CipherSuite = enum(u16) {
         };
     }
 
-    pub const Hasher = enum {
+    pub const Hash = enum {
         sha256,
         sha384,
     };
 
-    pub fn hasher(cs: CipherSuite) Hasher {
+    pub fn hash(cs: CipherSuite) Hash {
         return switch (cs) {
             .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,

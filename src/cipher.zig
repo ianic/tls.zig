@@ -25,7 +25,7 @@ pub const Transcript = struct {
         client_random: [32]u8,
         server_random: [32]u8,
     ) [len]u8 {
-        return switch (cs.hasher()) {
+        return switch (cs.hash()) {
             .sha256 => Transcript256.masterSecret(pre_master_secret, client_random, server_random)[0..len].*,
             .sha384 => Transcript384.masterSecret(pre_master_secret, client_random, server_random)[0..len].*,
         };
@@ -38,14 +38,14 @@ pub const Transcript = struct {
         client_random: [32]u8,
         server_random: [32]u8,
     ) [len]u8 {
-        return switch (cs.hasher()) {
+        return switch (cs.hash()) {
             .sha256 => Transcript256.keyExpansion(master_secret, client_random, server_random)[0..len].*,
             .sha384 => Transcript384.keyExpansion(master_secret, client_random, server_random)[0..len].*,
         };
     }
 
     pub fn verifyData(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
-        return switch (cs.hasher()) {
+        return switch (cs.hash()) {
             .sha256 => self.sha256.verifyData(master_secret),
             .sha384 => self.sha384.verifyData(master_secret),
         };
@@ -122,14 +122,14 @@ pub fn TranscriptT(comptime HashType: type) type {
     };
 }
 
-pub const AppCipher = union(tls12.CipherSuite.Crypter) {
+pub const AppCipher = union(tls12.CipherSuite.Cipher) {
     aes_128_cbc_sha: CipherCbcT(Aes128Cbc, crypto.hash.Sha1),
     aes_128_cbc_sha256: CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256),
     aes_128_gcm: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
     aes_256_gcm: CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm),
 
     pub fn init(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !AppCipher {
-        return switch (try tag.crypter()) {
+        return switch (try tag.cipher()) {
             .aes_128_cbc_sha => .{ .aes_128_cbc_sha = CipherCbcT(Aes128Cbc, crypto.hash.Sha1).init(key_material, rnd) },
             .aes_128_cbc_sha256 => .{ .aes_128_cbc_sha256 = CipherCbcT(Aes128Cbc, crypto.hash.sha2.Sha256).init(key_material, rnd) },
             .aes_128_gcm => .{ .aes_128_gcm = CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm).init(key_material, rnd) },
