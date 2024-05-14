@@ -510,7 +510,7 @@ pub fn ClientT(comptime StreamType: type) type {
 }
 
 const testing = std.testing;
-const example = @import("example.zig");
+const example = @import("testdata/example.zig");
 const bytesToHex = std.fmt.bytesToHex;
 const hexToBytes = std.fmt.hexToBytes;
 
