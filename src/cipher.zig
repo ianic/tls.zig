@@ -268,24 +268,37 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
         pub fn decrypt(cipher: Cipher, buf: []u8, ad: []u8, payload: []const u8) ![]const u8 {
             if (payload.len < iv_length + mac_length + 1) return error.TlsDecryptError;
 
+            // --------- payload ------------
+            // iv | -------   crypted -------
+            // iv | cleartext | mac | padding
             const iv = payload[0..iv_length];
-
             const crypted = payload[iv_length..];
-            const decrypted = buf[0..crypted.len];
+            // ---------- buf ---------------
+            // ad | ------ decrypted --------
+            // ad | cleartext | mac | padding
+            const decrypted = buf[ad.len..][0..crypted.len];
+            // decrypt crypted -> decrypted
             try CBC.init(cipher.server_key).decrypt(decrypted, crypted, iv[0..iv_length].*);
 
+            // get padding len from last padding byte
             const padding_len = decrypted[decrypted.len - 1] + 1;
             if (decrypted.len < mac_length + padding_len) return error.TlsDecryptError;
 
+            // split decrypted into cleartext and mac
             const cleartext_len = decrypted.len - mac_length - padding_len;
-            std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
+            const cleartext = decrypted[0..cleartext_len];
+            const mac = decrypted[cleartext_len..][0..mac_length];
 
-            return decrypted[0..cleartext_len];
-            // TODO not checking mac
-            // TODO: ostavi mjesta u buf i tamo zaljepi ad nakon decrypt napravi
-            // mac od ad + cleartext to je ad_actual i usporedi s ovim koji je
-            // poslan (ad expected)
-            // Pazi ovaj ad koji ulazi ima unutar i padding... kako njega odbiti
+            // write len to the ad
+            std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
+            @memcpy(buf[0..ad.len], ad);
+            // calculate expected mac
+            var expected_mac: [mac_length]u8 = undefined;
+            Hmac.create(&expected_mac, buf[0 .. ad.len + cleartext_len], &cipher.server_secret);
+            if (!std.mem.eql(u8, &expected_mac, mac))
+                return error.TlsBadRecordMac;
+
+            return cleartext;
         }
     };
 }
