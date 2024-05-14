@@ -44,10 +44,17 @@ pub const Transcript = struct {
         };
     }
 
-    pub fn verifyData(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
+    pub fn clientFinished(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
         return switch (cs.hash()) {
-            .sha256 => self.sha256.verifyData(master_secret),
-            .sha384 => self.sha384.verifyData(master_secret),
+            .sha256 => self.sha256.clientFinished(master_secret),
+            .sha384 => self.sha384.clientFinished(master_secret),
+        };
+    }
+
+    pub fn serverFinished(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
+        return switch (cs.hash()) {
+            .sha256 => self.sha256.serverFinished(master_secret),
+            .sha384 => self.sha384.serverFinished(master_secret),
         };
     }
 };
@@ -111,13 +118,22 @@ pub fn TranscriptT(comptime HashType: type) type {
             return key_material;
         }
 
-        pub fn verifyData(c: *Cipher, master_secret: []const u8) [16]u8 {
-            const seed = "client finished" ++ c.transcript.finalResult();
+        pub fn clientFinished(c: *Cipher, master_secret: []const u8) [16]u8 {
+            const seed = "client finished" ++ c.transcript.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return [_]u8{ 0x14, 0x00, 0x00, 0x0c } ++ p1[0..12].*;
+            return tls12.handshake_finished_header ++ p1[0..12].*;
+        }
+
+        pub fn serverFinished(c: *Cipher, master_secret: []const u8) [16]u8 {
+            const seed = "server finished" ++ c.transcript.peek();
+            var a1: [mac_length]u8 = undefined;
+            var p1: [mac_length]u8 = undefined;
+            Hmac.create(&a1, seed, master_secret);
+            Hmac.create(&p1, a1 ++ seed, master_secret);
+            return tls12.handshake_finished_header ++ p1[0..12].*;
         }
     };
 }

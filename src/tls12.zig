@@ -172,3 +172,5 @@ pub const close_notify_alert = [2]u8{
     @intFromEnum(tls.AlertLevel.warning),
     @intFromEnum(tls.AlertDescription.close_notify),
 };
+
+pub const handshake_finished_header = [_]u8{ 0x14, 0x00, 0x00, 0x0c };

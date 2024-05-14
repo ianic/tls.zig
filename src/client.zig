@@ -474,13 +474,15 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.recordHeader(.change_cipher_spec, 1) ++
                     tls12.int1(1);
 
+                const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
                 const handshake_finished = brk: {
+                    // encrypt client_finished into handshake_finished record
                     var buffer: [AppCipher.max_overhead + 5 + 16]u8 = undefined;
-                    const verify_data = h.transcript.verifyData(h.cipher_suite_tag, &h.master_secret);
-                    const payload = try c.encrypt(buffer[5..], .handshake, &verify_data);
+                    const payload = try c.encrypt(buffer[5..], .handshake, &client_finished);
                     buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
                     break :brk buffer[0 .. tls.record_header_len + payload.len];
                 };
+                h.transcript.update(&client_finished);
 
                 var iovecs = [_]posix.iovec_const{
                     .{ .iov_base = key_exchange.ptr, .iov_len = key_exchange.len },
@@ -492,15 +494,17 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
-                _ = h;
-                { // read change ciperh spec message
+                { // parse change ciperh spec message
                     var rec = (try c.reader.next()) orelse return error.EndOfStream;
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
                     try rec.expectContentType(.change_cipher_spec);
                 }
-                { // read server handshake finished
-                    // TODO check content of the handshake finished message
-                    _ = try c.next_(.handshake);
+                { // parse server handshake finished
+                    const server_finished = try c.next_(.handshake) orelse return error.EndOfStream;
+                    const expected_server_finished = h.transcript.serverFinished(h.cipher_suite_tag, &h.master_secret);
+                    if (!std.mem.eql(u8, server_finished, &expected_server_finished))
+                        // TODO should we write alert message
+                        return error.TlsBadRecordMac;
                 }
             }
         };
@@ -546,7 +550,6 @@ test "Client encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = TestStream.init(&example.server_pong, &output_buf);
     var c = client(stream);
-
     c.app_cipher = try AppCipher.init(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
 
     var encrypt_buffer: [1024]u8 = undefined;
@@ -554,7 +557,7 @@ test "Client encrypt decrypt" {
     { // encrypt verify data from example
         c.client_sequence = 0; //
         test_rnd.idx = 0x40; // sets iv to 40, 41, ... 4f
-        try c.write_(&encrypt_buffer, .handshake, &example.verify_data);
+        try c.write_(&encrypt_buffer, .handshake, &example.client_finished);
         try testing.expectEqualSlices(u8, &example.verify_data_encrypted_msg, c.stream.output.getWritten());
     }
 
@@ -584,8 +587,18 @@ test "Handshake.verifyData" {
     }
 
     // expect verify data
-    const verify_data = h.transcript.verifyData(h.cipher_suite_tag, &h.master_secret);
-    try testing.expectEqualSlices(u8, &example.verify_data, &verify_data);
+    const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
+    try testing.expectEqualSlices(u8, &example.client_finished, &client_finished);
+
+    var output_buf: [1024]u8 = undefined;
+    const stream = TestStream.init(&example.server_handshake_finished_msgs, &output_buf);
+    // init client with prepared key_material
+    var c = client(stream);
+    c.app_cipher = try AppCipher.init(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, crypto.random);
+
+    // check that server verify data matches calculates from hashes of all handshake messages
+    h.transcript.update(&example.client_finished);
+    try h.serverHandshakeFinished(&c);
 }
 
 const TestStream = struct {
