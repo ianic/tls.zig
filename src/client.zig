@@ -842,6 +842,7 @@ test "verify google.com certificate" {
     defer ca_bundle.deinit(testing.allocator);
 
     try h.serverHello(&rdr, ca_bundle, "google.com");
+    try h.verifySignature();
 }
 
 fn dupe(buf: []u8, data: []const u8) ![]u8 {
