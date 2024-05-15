@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const crypto = std.crypto;
 const posix = std.posix;
+const mem = std.mem;
 
 const tls = crypto.tls;
 const tls12 = @import("tls12.zig");
@@ -9,6 +10,7 @@ const AppCipher = @import("cipher.zig").AppCipher;
 const Transcript = @import("cipher.zig").Transcript;
 
 const Certificate = crypto.Certificate;
+const rsa = Certificate.rsa;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
@@ -124,7 +126,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
         fn additonalData(sequence: u64, content_type: tls.ContentType, cleartext_len: usize) [13]u8 {
             var sequence_buf: [8]u8 = undefined;
-            std.mem.writeInt(u64, &sequence_buf, sequence, .big);
+            mem.writeInt(u64, &sequence_buf, sequence, .big);
             return sequence_buf ++ tls12.recordHeader(content_type, cleartext_len);
         }
 
@@ -357,9 +359,6 @@ pub fn ClientT(comptime StreamType: type) type {
                     try w.write(h.server_pub_key);
                     break :brk w.getWritten();
                 };
-
-                const rsa = Certificate.rsa;
-
                 switch (h.signature_scheme) {
                     inline .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
@@ -402,8 +401,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     => |comptime_scheme| {
                         if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
                         const Hash = SchemeHash(comptime_scheme);
-                        // TODO: calling private method
-                        try Certificate.verifyRsa(Hash, verify_bytes, h.signature, h.cert_pub_key_algo, h.cert_pub_key);
+                        try verifyRsa(Hash, verify_bytes, h.signature, h.cert_pub_key_algo, h.cert_pub_key);
                     },
                     else => return error.TlsUnknownSignatureScheme,
                 }
@@ -502,7 +500,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 { // parse server handshake finished
                     const server_finished = try c.next_(.handshake) orelse return error.EndOfStream;
                     const expected_server_finished = h.transcript.serverFinished(h.cipher_suite_tag, &h.master_secret);
-                    if (!std.mem.eql(u8, server_finished, &expected_server_finished))
+                    if (!mem.eql(u8, server_finished, &expected_server_finished))
                         // TODO should we write alert message
                         return error.TlsBadRecordMac;
                 }
@@ -732,8 +730,8 @@ fn RecordReader(comptime ReaderType: type) type {
                 if (buffer.len >= tls.record_header_len) {
                     const record_header = buffer[0..tls.record_header_len];
                     const content_type: tls.ContentType = @enumFromInt(record_header[0]);
-                    const protocol_version: tls.ProtocolVersion = @enumFromInt(std.mem.readInt(u16, record_header[1..3], .big));
-                    const payload_len = std.mem.readInt(u16, record_header[3..5], .big);
+                    const protocol_version: tls.ProtocolVersion = @enumFromInt(mem.readInt(u16, record_header[1..3], .big));
+                    const payload_len = mem.readInt(u16, record_header[3..5], .big);
                     if (payload_len > tls.max_ciphertext_len)
                         return error.TlsRecordOverflow;
                     // If we have whole record
@@ -753,7 +751,7 @@ fn RecordReader(comptime ReaderType: type) type {
                         if (c.start > n) {
                             @memcpy(c.buffer[0..n], c.buffer[c.start..][0..n]);
                         } else {
-                            std.mem.copyForwards(u8, c.buffer[0..n], c.buffer[c.start..][0..n]);
+                            mem.copyForwards(u8, c.buffer[0..n], c.buffer[c.start..][0..n]);
                         }
                     }
                     c.start = 0;
@@ -880,7 +878,7 @@ const BufWriter = struct {
         const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
         const free = self.buf[self.pos..];
         if (free.len < bytes) return error.BufferOverflow;
-        std.mem.writeInt(IntT, free[0..bytes], value, .big);
+        mem.writeInt(IntT, free[0..bytes], value, .big);
         self.pos += bytes;
     }
 
@@ -966,7 +964,6 @@ const RsaKeyPair = struct {
         if (cert_pub_key_algo != .rsaEncryption)
             return error.TlsBadSignatureScheme;
 
-        const rsa = Certificate.rsa;
         const pk = try rsa.PublicKey.parseDer(cert_pub_key);
         switch (pk.modulus.len) {
             inline 128, 256, 512 => |modulus_len| {
@@ -979,8 +976,7 @@ const RsaKeyPair = struct {
                     self.pre_master_secret;
 
                 const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
-                // TODO calling private method here
-                return &(try rsa.encrypt(modulus_len, padded_msg, key));
+                return &(try rsaEncrypt(modulus_len, padded_msg, key));
             },
             else => {
                 return error.TlsBadRsaSignatureBitCount;
@@ -1012,4 +1008,89 @@ test "DhKeyPair.x25519" {
 
     const kp = try DhKeyPair.init(seed[0..48].*);
     try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
+}
+
+// This is copy of the private method encrypt from std.crypto.Certificate.rsa
+// If that method can be make public this can be removed.
+pub fn rsaEncrypt(comptime modulus_len: usize, msg: [modulus_len]u8, public_key: rsa.PublicKey) ![modulus_len]u8 {
+    const max_modulus_bits = 4096;
+    const Modulus = std.crypto.ff.Modulus(max_modulus_bits);
+    const Fe = Modulus.Fe;
+
+    const m = Fe.fromBytes(public_key.n, &msg, .big) catch return error.MessageTooLong;
+    const e = public_key.n.powPublic(m, public_key.e) catch unreachable;
+    var res: [modulus_len]u8 = undefined;
+    e.toBytes(&res, .big) catch unreachable;
+    return res;
+}
+
+// This is copy of the private method verifyRsa from std.crypto.Certificate
+pub fn verifyRsa(
+    comptime Hash: type,
+    message: []const u8,
+    sig: []const u8,
+    pub_key_algo: Certificate.Parsed.PubKeyAlgo,
+    pub_key: []const u8,
+) !void {
+    if (pub_key_algo != .rsaEncryption) return error.CertificateSignatureAlgorithmMismatch;
+    const pk_components = try rsa.PublicKey.parseDer(pub_key);
+    const exponent = pk_components.exponent;
+    const modulus = pk_components.modulus;
+    if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
+    if (sig.len != modulus.len) return error.CertificateSignatureInvalidLength;
+
+    const hash_der = switch (Hash) {
+        crypto.hash.Sha1 => [_]u8{
+            0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
+            0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+        },
+        crypto.hash.sha2.Sha224 => [_]u8{
+            0x30, 0x2d, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04, 0x05,
+            0x00, 0x04, 0x1c,
+        },
+        crypto.hash.sha2.Sha256 => [_]u8{
+            0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+            0x00, 0x04, 0x20,
+        },
+        crypto.hash.sha2.Sha384 => [_]u8{
+            0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05,
+            0x00, 0x04, 0x30,
+        },
+        crypto.hash.sha2.Sha512 => [_]u8{
+            0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05,
+            0x00, 0x04, 0x40,
+        },
+        else => @compileError("unreachable"),
+    };
+
+    var msg_hashed: [Hash.digest_length]u8 = undefined;
+    Hash.hash(message, &msg_hashed, .{});
+
+    switch (modulus.len) {
+        inline 128, 256, 384, 512 => |modulus_len| {
+            const ps_len = modulus_len - (hash_der.len + msg_hashed.len) - 3;
+            const em: [modulus_len]u8 =
+                [2]u8{ 0, 1 } ++
+                ([1]u8{0xff} ** ps_len) ++
+                [1]u8{0} ++
+                hash_der ++
+                msg_hashed;
+
+            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch return error.CertificateSignatureInvalid;
+            const em_dec = rsaEncrypt(modulus_len, sig[0..modulus_len].*, public_key) catch |err| switch (err) {
+                error.MessageTooLong => unreachable,
+            };
+
+            if (!mem.eql(u8, &em, &em_dec)) {
+                return error.CertificateSignatureInvalid;
+            }
+        },
+        else => {
+            return error.CertificateSignatureUnsupportedBitCount;
+        },
+    }
 }
