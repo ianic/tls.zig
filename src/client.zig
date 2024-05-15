@@ -72,8 +72,8 @@ pub fn ClientT(comptime StreamType: type) type {
             const header = tls12.recordHeader(content_type, payload.len);
 
             var iovecs = [_]posix.iovec_const{
-                .{ .iov_base = &header, .iov_len = header.len },
-                .{ .iov_base = payload.ptr, .iov_len = payload.len },
+                .{ .base = &header, .len = header.len },
+                .{ .base = payload.ptr, .len = payload.len },
             };
             try c.stream.writevAll(&iovecs);
         }
@@ -226,8 +226,8 @@ pub fn ClientT(comptime StreamType: type) type {
                 h.transcript.update(host);
 
                 var iovecs = [_]posix.iovec_const{
-                    .{ .iov_base = &record, .iov_len = record.len },
-                    .{ .iov_base = host.ptr, .iov_len = host.len },
+                    .{ .base = &record, .len = record.len },
+                    .{ .base = host.ptr, .len = host.len },
                 };
                 try stream.writevAll(&iovecs);
             }
@@ -483,10 +483,10 @@ pub fn ClientT(comptime StreamType: type) type {
                 h.transcript.update(&client_finished);
 
                 var iovecs = [_]posix.iovec_const{
-                    .{ .iov_base = key_exchange.ptr, .iov_len = key_exchange.len },
-                    .{ .iov_base = key.ptr, .iov_len = key.len },
-                    .{ .iov_base = &change_cipher_spec, .iov_len = change_cipher_spec.len },
-                    .{ .iov_base = handshake_finished.ptr, .iov_len = handshake_finished.len },
+                    .{ .base = key_exchange.ptr, .len = key_exchange.len },
+                    .{ .base = key.ptr, .len = key.len },
+                    .{ .base = &change_cipher_spec, .len = change_cipher_spec.len },
+                    .{ .base = handshake_finished.ptr, .len = handshake_finished.len },
                 };
                 try c.stream.writevAll(&iovecs);
             }
@@ -613,8 +613,8 @@ const TestStream = struct {
     pub fn writevAll(self: *TestStream, iovecs: []posix.iovec_const) !void {
         for (iovecs) |iovec| {
             var buf: []const u8 = undefined;
-            buf.ptr = iovec.iov_base;
-            buf.len = iovec.iov_len;
+            buf.ptr = iovec.base;
+            buf.len = iovec.len;
             _ = try self.output.write(buf);
         }
     }
