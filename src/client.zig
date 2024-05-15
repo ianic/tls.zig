@@ -37,15 +37,15 @@ pub fn ClientT(comptime StreamType: type) type {
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
             try h.clientHello(host, &c.stream);
-            try h.serverHello(&c.reader, ca_bundle, host);
+            try h.serverFlight1(&c.reader, ca_bundle, host);
 
             if (h.cipher_suite_tag.keyExchange() == .ecdhe)
                 try h.verifySignature();
             try h.generateKeyMaterial();
             c.app_cipher = try AppCipher.init(h.cipher_suite_tag, &h.key_material, crypto.random);
 
-            try h.clientHandshakeFinished(c);
-            try h.serverHandshakeFinished(c);
+            try h.clientFlight2(c);
+            try h.serverFlight2(c);
 
             // // TODO remove debug
             // std.debug.print(
@@ -232,12 +232,81 @@ pub fn ClientT(comptime StreamType: type) type {
                 try stream.writevAll(&iovecs);
             }
 
+            fn serverHello(h: *Handshake, rec: *Record, length: u24) !void {
+                if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
+                    return error.TlsBadVersion;
+                h.server_random = (try rec.array(32)).*;
+
+                const session_id_len = try rec.decode(u8);
+                if (session_id_len > 32) return error.TlsIllegalParameter;
+                try rec.skip(session_id_len);
+
+                h.cipher_suite_tag = try rec.decode(tls12.CipherSuite);
+                try h.cipher_suite_tag.validate();
+                try rec.skip(1); // skip compression method
+
+                const extensions_present = length > 2 + 32 + session_id_len + 2 + 1;
+                if (extensions_present) {
+                    const extensions_size = try rec.decode(u16);
+                    try rec.skip(extensions_size);
+                }
+            }
+
+            fn serverCertificate(h: *Handshake, rec: *Record, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
+                var trust_chain_established = false;
+                var prev_cert: Certificate.Parsed = undefined;
+                const certs_len = try rec.decode(u24);
+
+                var l: usize = 0;
+                while (l < certs_len) {
+                    const cert_len = try rec.decode(u24);
+                    defer l += cert_len + 3;
+
+                    const cert = try rec.slice(cert_len);
+                    if (trust_chain_established) continue;
+                    const subject_cert: Certificate = .{ .buffer = cert, .index = 0 };
+                    const subject = try subject_cert.parse();
+
+                    if (l == 0) { // first certificate
+                        try subject.verifyHostName(host);
+                        h.cert_pub_key = try dupe(&h.cert_pub_key_buf, subject.pubKey());
+                        h.cert_pub_key_algo = subject.pub_key_algo;
+                        prev_cert = subject;
+                    } else {
+                        if (prev_cert.verify(subject, h.now_sec)) {
+                            prev_cert = subject;
+                        } else |_| {
+                            // skip certificate which is not part of the chain
+                            continue;
+                        }
+                    }
+                    if (ca_bundle) |cb| {
+                        if (cb.verify(prev_cert, h.now_sec)) |_| {
+                            trust_chain_established = true;
+                        } else |err| switch (err) {
+                            error.CertificateIssuerNotFound => {},
+                            else => |e| return e,
+                        }
+                    }
+                }
+                if (ca_bundle != null and !trust_chain_established) {
+                    return error.CertificateIssuerNotFound;
+                }
+            }
+
+            fn serverKeyExchange(h: *Handshake, rec: *Record) !void {
+                const curve_type = try rec.decode(tls12.CurveType);
+                h.named_group = try rec.decode(tls.NamedGroup);
+                h.server_pub_key = try dupe(&h.server_pub_key_buf, try rec.slice(try rec.decode(u8)));
+                h.signature_scheme = try rec.decode(tls.SignatureScheme);
+                h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
+                if (curve_type != .named_curve) return error.TlsIllegalParameter;
+            }
+
             /// Read server hello, certificate, key_exchange and hello done messages.
             /// Extract server public key and server random.
-            fn serverHello(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
+            fn serverFlight1(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
                 var handshake_state = tls12.HandshakeType.server_hello;
-
-                var prev_cert: Certificate.Parsed = undefined;
 
                 while (true) {
                     var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
@@ -256,80 +325,18 @@ pub fn ClientT(comptime StreamType: type) type {
 
                         switch (handshake_type) {
                             .server_hello => { // server hello, ref: https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.3
-                                // try std.fs.cwd().writeFile("server_hello", reader.buffer[0..reader.end]);
-
-                                if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
-                                    return error.TlsBadVersion;
-                                h.server_random = (try rec.array(32)).*;
-
-                                const session_id_len = try rec.decode(u8);
-                                if (session_id_len > 32) return error.TlsIllegalParameter;
-                                try rec.skip(session_id_len);
-
-                                h.cipher_suite_tag = try rec.decode(tls12.CipherSuite);
-                                try h.cipher_suite_tag.validate();
-                                try rec.skip(1); // skip compression method
-
-                                const extensions_present = length > 2 + 32 + session_id_len + 2 + 1;
-                                if (extensions_present) {
-                                    const extensions_size = try rec.decode(u16);
-                                    try rec.skip(extensions_size);
-                                }
-
+                                try h.serverHello(&rec, length);
                                 handshake_state = .certificate;
                             },
                             .certificate => {
-                                var trust_chain_established = false;
-                                const certs_len = try rec.decode(u24);
-
-                                var l: usize = 0;
-                                while (l < certs_len) {
-                                    const cert_len = try rec.decode(u24);
-                                    defer l += cert_len + 3;
-
-                                    const cert = try rec.slice(cert_len);
-                                    if (trust_chain_established) continue;
-                                    const subject_cert: Certificate = .{ .buffer = cert, .index = 0 };
-                                    const subject = try subject_cert.parse();
-
-                                    if (l == 0) { // first certificate
-                                        try subject.verifyHostName(host);
-                                        h.cert_pub_key = try dupe(&h.cert_pub_key_buf, subject.pubKey());
-                                        h.cert_pub_key_algo = subject.pub_key_algo;
-                                        prev_cert = subject;
-                                    } else {
-                                        if (prev_cert.verify(subject, h.now_sec)) {
-                                            prev_cert = subject;
-                                        } else |_| {
-                                            // skip certificate which is not part of the chain
-                                            continue;
-                                        }
-                                    }
-                                    if (ca_bundle) |cb| {
-                                        if (cb.verify(prev_cert, h.now_sec)) |_| {
-                                            trust_chain_established = true;
-                                        } else |err| switch (err) {
-                                            error.CertificateIssuerNotFound => {},
-                                            else => |e| return e,
-                                        }
-                                    }
-                                }
-                                if (ca_bundle != null and !trust_chain_established) {
-                                    return error.CertificateIssuerNotFound;
-                                }
+                                try h.serverCertificate(&rec, ca_bundle, host);
                                 handshake_state = if (h.cipher_suite_tag.keyExchange() == .rsa)
                                     .server_hello_done
                                 else
                                     .server_key_exchange;
                             },
                             .server_key_exchange => {
-                                const curve_type = try rec.decode(tls12.CurveType);
-                                h.named_group = try rec.decode(tls.NamedGroup);
-                                h.server_pub_key = try dupe(&h.server_pub_key_buf, try rec.slice(try rec.decode(u8)));
-                                h.signature_scheme = try rec.decode(tls.SignatureScheme);
-                                h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
-                                if (curve_type != .named_curve) return error.TlsIllegalParameter;
-
+                                try h.serverKeyExchange(&rec);
                                 handshake_state = .server_hello_done;
                             },
                             .server_hello_done => {
@@ -452,7 +459,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             /// Sends client key exchange, client chiper spec and client
             /// handshake finished messages.
-            fn clientHandshakeFinished(h: *Handshake, c: *Client) !void {
+            fn clientFlight2(h: *Handshake, c: *Client) !void {
                 const key: []const u8 = if (h.named_group) |named_group|
                     try h.dh_kp.publicKey(named_group)
                 else
@@ -491,19 +498,24 @@ pub fn ClientT(comptime StreamType: type) type {
                 try c.stream.writevAll(&iovecs);
             }
 
+            fn serverFlight2(h: *Handshake, c: *Client) !void {
+                try h.serverChangeCipherSpec(c);
+                try h.serverHandshakeFinished(c);
+            }
+
+            fn serverChangeCipherSpec(h: *Handshake, c: *Client) !void {
+                _ = h;
+                var rec = (try c.reader.next()) orelse return error.EndOfStream;
+                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                try rec.expectContentType(.change_cipher_spec);
+            }
+
             fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
-                { // parse change ciperh spec message
-                    var rec = (try c.reader.next()) orelse return error.EndOfStream;
-                    if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-                    try rec.expectContentType(.change_cipher_spec);
-                }
-                { // parse server handshake finished
-                    const server_finished = try c.next_(.handshake) orelse return error.EndOfStream;
-                    const expected_server_finished = h.transcript.serverFinished(h.cipher_suite_tag, &h.master_secret);
-                    if (!mem.eql(u8, server_finished, &expected_server_finished))
-                        // TODO should we write alert message
-                        return error.TlsBadRecordMac;
-                }
+                const server_finished = try c.next_(.handshake) orelse return error.EndOfStream;
+                const expected_server_finished = h.transcript.serverFinished(h.cipher_suite_tag, &h.master_secret);
+                if (!mem.eql(u8, server_finished, &expected_server_finished))
+                    // TODO should we write alert message
+                    return error.TlsBadRecordMac;
             }
         };
     };
@@ -526,7 +538,7 @@ test "Handshake.serverHello" {
     // Read cipher suite, named group, signature scheme, server random certificate public key
     // Verify host name, signature
     // Calculate key material
-    try h.serverHello(&reader, null, "example.ulfheim.net");
+    try h.serverFlight1(&reader, null, "example.ulfheim.net");
     try testing.expectEqual(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite_tag);
     try testing.expectEqual(.x25519, h.named_group.?);
     try testing.expectEqual(.rsa_pkcs1_sha256, h.signature_scheme);
@@ -596,7 +608,7 @@ test "Handshake.verifyData" {
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&example.client_finished);
-    try h.serverHandshakeFinished(&c);
+    try h.serverFlight2(&c);
 }
 
 const TestStream = struct {
@@ -850,7 +862,7 @@ test "verify google.com certificate" {
     try ca_bundle.rescan(testing.allocator);
     defer ca_bundle.deinit(testing.allocator);
 
-    try h.serverHello(&rdr, ca_bundle, "google.com");
+    try h.serverFlight1(&rdr, ca_bundle, "google.com");
     try h.verifySignature();
 }
 
