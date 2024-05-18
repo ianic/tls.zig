@@ -58,7 +58,8 @@ pub const CipherSuite = enum(u16) {
     TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
     TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
 
-    // TLS_EMPTY_RENEGOTIATION_INFO_SCSV = 0x00ff
+    // TLS 1.3
+    TLS_AES_256_GCM_SHA384 = 0x1302,
     _,
 
     // in the order of preference
@@ -74,8 +75,15 @@ pub const CipherSuite = enum(u16) {
         .TLS_RSA_WITH_AES_128_CBC_SHA256,
     };
 
+    pub const supported13 = [_]CipherSuite{
+        .TLS_AES_256_GCM_SHA384,
+    };
+
     pub fn validate(cs: CipherSuite) !void {
         for (supported) |s| {
+            if (cs == s) return;
+        }
+        for (supported13) |s| {
             if (cs == s) return;
         }
         return error.TlsIllegalParameter;
@@ -103,6 +111,8 @@ pub const CipherSuite = enum(u16) {
         aes_128_cbc_sha256,
         aes_128_gcm,
         aes_256_gcm,
+
+        aes_256_gcm_sha384,
     };
 
     pub fn cipher(cs: CipherSuite) !Cipher {
@@ -117,6 +127,8 @@ pub const CipherSuite = enum(u16) {
             => .aes_128_gcm,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             => .aes_256_gcm,
+
+            .TLS_AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
             else => return error.TlsIllegalParameter,
         };
     }
@@ -130,6 +142,7 @@ pub const CipherSuite = enum(u16) {
         return switch (cs) {
             .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            .TLS_AES_256_GCM_SHA384,
             => .sha384,
             else => .sha256,
         };
