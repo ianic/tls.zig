@@ -40,7 +40,7 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.serverFlight1(&c.reader, ca_bundle, host);
 
             if (h.cipher_suite_tag.keyExchange() == .ecdhe)
-                try h.verifySignature();
+                try h.verifySignature12();
             try h.generateKeyMaterial();
             c.app_cipher = try AppCipher.init(h.cipher_suite_tag, &h.key_material, crypto.random);
 
@@ -156,6 +156,7 @@ pub fn ClientT(comptime StreamType: type) type {
             signature: []const u8 = undefined,
 
             tls_version: tls.ProtocolVersion = .tls_1_2,
+            cipher: AppCipher = undefined,
 
             pub fn init() !Handshake {
                 var rand_buf: [32 + 48 + 46]u8 = undefined;
@@ -269,34 +270,36 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn serverCertificate(h: *Handshake, rec: *Record, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
                 var trust_chain_established = false;
-                var prev_cert: Certificate.Parsed = undefined;
+                var prev_cert: ?Certificate.Parsed = null;
                 const certs_len = try rec.decode(u24);
 
-                var l: usize = 0;
-                while (l < certs_len) {
+                const start_idx = rec.idx;
+                while (rec.idx - start_idx < certs_len) {
                     const cert_len = try rec.decode(u24);
-                    defer l += cert_len + 3;
 
                     const cert = try rec.slice(cert_len);
                     if (trust_chain_established) continue;
                     const subject_cert: Certificate = .{ .buffer = cert, .index = 0 };
                     const subject = try subject_cert.parse();
+                    if (h.tls_version == .tls_1_3) { // certificate extensions
+                        try rec.skip(try rec.decode(u16));
+                    }
 
-                    if (l == 0) { // first certificate
-                        try subject.verifyHostName(host);
-                        h.cert_pub_key = try dupe(&h.cert_pub_key_buf, subject.pubKey());
-                        h.cert_pub_key_algo = subject.pub_key_algo;
-                        prev_cert = subject;
-                    } else {
-                        if (prev_cert.verify(subject, h.now_sec)) {
+                    if (prev_cert) |pc| {
+                        if (pc.verify(subject, h.now_sec)) {
                             prev_cert = subject;
                         } else |_| {
                             // skip certificate which is not part of the chain
                             continue;
                         }
+                    } else { // first certificate
+                        try subject.verifyHostName(host);
+                        h.cert_pub_key = try dupe(&h.cert_pub_key_buf, subject.pubKey());
+                        h.cert_pub_key_algo = subject.pub_key_algo;
+                        prev_cert = subject;
                     }
                     if (ca_bundle) |cb| {
-                        if (cb.verify(prev_cert, h.now_sec)) |_| {
+                        if (cb.verify(prev_cert.?, h.now_sec)) |_| {
                             trust_chain_established = true;
                         } else |err| switch (err) {
                             error.CertificateIssuerNotFound => {},
@@ -365,7 +368,72 @@ pub fn ClientT(comptime StreamType: type) type {
                 }
             }
 
-            fn verifySignature(h: *Handshake) !void {
+            fn serverFlightTls13(
+                h: *Handshake,
+                reader: *RecordReaderType,
+                ca_bundle: ?Certificate.Bundle,
+                host: []const u8,
+            ) !void {
+                var sequence: u64 = 0; // TODO
+
+                while (true) {
+                    var wrap_rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
+                    if (wrap_rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                    switch (wrap_rec.content_type) {
+                        .change_cipher_spec => {
+                            try wrap_rec.skip(wrap_rec.payload.len);
+                        },
+                        .application_data => {
+                            var cleartext = switch (h.cipher) {
+                                inline else => |*p| try p.decrypt(wrap_rec.payload, sequence, wrap_rec.header, wrap_rec.payload),
+                            };
+                            sequence += 1;
+
+                            var rec = Record{
+                                .content_type = @enumFromInt(cleartext[cleartext.len - 1]),
+                                .payload = cleartext[0 .. cleartext.len - 1],
+                            };
+                            switch (rec.content_type) {
+                                .handshake => {
+                                    defer h.transcript.update(rec.payload);
+                                    const handshake_type = try rec.decode(tls.HandshakeType);
+                                    //if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
+
+                                    const length = try rec.decode(u24);
+                                    if (length > tls.max_cipertext_inner_record_len)
+                                        return error.TlsUnsupportedFragmentedHandshakeMessage;
+
+                                    switch (handshake_type) {
+                                        .encrypted_extensions => {},
+                                        .certificate => {
+                                            const request_context = try rec.decode(u8);
+                                            if (request_context != 0) return error.TlsIllegalParameter;
+                                            try h.serverCertificate(&rec, ca_bundle, host);
+                                        },
+                                        .certificate_verify => {
+                                            h.signature_scheme = try rec.decode(tls.SignatureScheme);
+                                            h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
+                                            try h.verifySignature(h.transcript.verifyBytes13(h.cipher_suite_tag));
+                                        },
+                                        .finished => {
+                                            const actual = try rec.slice(length);
+                                            const expected = h.transcript.serverFinished13(h.cipher_suite_tag);
+                                            if (!mem.eql(u8, expected, actual))
+                                                return error.TlsDecryptError;
+                                            return;
+                                        },
+                                        else => return error.TlsUnexpectedMessage,
+                                    }
+                                },
+                                else => return error.TlsUnexpectedMessage,
+                            }
+                        },
+                        else => return error.TlsUnexpectedMessage,
+                    }
+                }
+            }
+
+            fn verifySignature12(h: *Handshake) !void {
                 const verify_bytes = brk: {
                     // public key len:
                     // x25519 = 32
@@ -382,6 +450,10 @@ pub fn ClientT(comptime StreamType: type) type {
                     try w.write(h.server_pub_key);
                     break :brk w.getWritten();
                 };
+                try h.verifySignature(verify_bytes);
+            }
+
+            fn verifySignature(h: *Handshake, verify_bytes: []const u8) !void {
                 switch (h.signature_scheme) {
                     inline .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
@@ -563,7 +635,7 @@ test "Handshake.serverHello" {
     try testing.expectEqualSlices(u8, &example.signature, h.signature);
     try testing.expectEqualSlices(u8, &example.cert_pub_key, h.cert_pub_key);
 
-    try h.verifySignature();
+    try h.verifySignature12();
     try h.generateKeyMaterial();
 
     try testing.expectEqualSlices(u8, &example.key_material, &h.key_material);
@@ -667,8 +739,8 @@ const TestRnd = struct {
 
 const Record = struct {
     content_type: tls.ContentType,
-    protocol_version: tls.ProtocolVersion,
-    header: [tls.record_header_len]u8,
+    protocol_version: tls.ProtocolVersion = @enumFromInt(0x0000),
+    header: [tls.record_header_len]u8 = [_]u8{ 0, 0, 0, 0, 0 },
     payload: []u8,
     idx: usize = 0,
 
@@ -881,7 +953,7 @@ test "verify google.com certificate" {
     defer ca_bundle.deinit(testing.allocator);
 
     try h.serverFlight1(&rdr, ca_bundle, "google.com");
-    try h.verifySignature();
+    try h.verifySignature12();
 }
 
 fn dupe(buf: []u8, data: []const u8) ![]u8 {
@@ -1163,7 +1235,8 @@ test "tls13 handshake cipher" {
     const shared_key = try dh_kp.preMasterSecret(.x25519, &example13.server_pub_key);
     try testing.expectEqualSlices(u8, &example13.shared_key, shared_key);
 
-    const cipher = try AppCipher.init13(cipher_suite_tag, shared_key, &transcript);
+    const cipher = try AppCipher.initHandshake(cipher_suite_tag, shared_key, &transcript);
+
     const c = &cipher.aes_256_gcm_sha384;
     try testing.expectEqualSlices(u8, &example13.server_handshake_key, &c.server_key);
     try testing.expectEqualSlices(u8, &example13.client_handshake_key, &c.client_key);
@@ -1171,20 +1244,69 @@ test "tls13 handshake cipher" {
     try testing.expectEqualSlices(u8, &example13.client_handshake_iv, &c.client_iv);
 }
 
-test "tls13 rest of server flight" {
+fn exampleHandshakeCipher() !AppCipher {
     const cipher_suite_tag: tls12.CipherSuite = .TLS_AES_256_GCM_SHA384;
     var transcript = Transcript{};
     transcript.update(example13.client_hello[tls.record_header_len..]);
     transcript.update(example13.server_hello[tls.record_header_len..]);
+    return try AppCipher.initHandshake(cipher_suite_tag, &example13.shared_key, &transcript);
+}
 
-    const cipher = try AppCipher.init13(cipher_suite_tag, &example13.shared_key, &transcript);
+fn initExampleHandshake(h: *ClientT(TestStream).Handshake) !void {
+    h.cipher_suite_tag = .TLS_AES_256_GCM_SHA384;
+    h.transcript.update(example13.client_hello[tls.record_header_len..]);
+    h.transcript.update(example13.server_hello[tls.record_header_len..]);
+    h.cipher = try AppCipher.initHandshake(h.cipher_suite_tag, &example13.shared_key, &h.transcript);
+    h.tls_version = .tls_1_3;
+    h.now_sec = 1714846451;
+    h.server_pub_key = &example13.server_pub_key;
+}
 
-    const record_header = example13.server_encrypted_extensions_wrapped[0..tls.record_header_len];
-    const payload = example13.server_encrypted_extensions_wrapped[tls.record_header_len..];
-    const sequence: u64 = 0;
-    var buffer: [1024]u8 = undefined;
-    const cleartext = switch (cipher) {
-        inline else => |*p| try p.decrypt(&buffer, sequence, record_header.*, payload),
+test "tls13 decrypt wrapped record" {
+    var cipher = brk: {
+        var h = try ClientT(TestStream).Handshake.init();
+        try initExampleHandshake(&h);
+        break :brk h.cipher;
     };
-    try testing.expectEqualSlices(u8, &example13.server_encrypted_extensions, cleartext);
+
+    var buffer: [1024]u8 = undefined;
+    {
+        const record_header = example13.server_encrypted_extensions_wrapped[0..tls.record_header_len];
+        const payload = example13.server_encrypted_extensions_wrapped[tls.record_header_len..];
+        const sequence: u64 = 0;
+
+        const cleartext = switch (cipher) {
+            inline else => |*p| try p.decrypt(&buffer, sequence, record_header.*, payload),
+        };
+        try testing.expectEqualSlices(u8, &example13.server_encrypted_extensions, cleartext);
+    }
+    {
+        const record_header = example13.server_certificate_wrapped[0..tls.record_header_len];
+        const payload = example13.server_certificate_wrapped[tls.record_header_len..];
+        const sequence: u64 = 1;
+        const cleartext = switch (cipher) {
+            inline else => |*p| try p.decrypt(&buffer, sequence, record_header.*, payload),
+        };
+        try testing.expectEqualSlices(u8, &example13.server_certificate, cleartext);
+    }
+}
+
+test "tls13 process server flight" {
+    const stream = TestStream.init(&example13.server_flight, "");
+    var reader = recordReader(stream);
+
+    var h = try ClientT(TestStream).Handshake.init();
+    try initExampleHandshake(&h);
+    try h.serverFlightTls13(&reader, null, "example.ulfheim.net");
+
+    { // application cipher keys calculation
+        try testing.expectEqualSlices(u8, &example13.handshake_hash, &h.transcript.sha384.transcript.peek());
+
+        const cipher = try AppCipher.initApp(h.cipher_suite_tag, &h.transcript);
+        const c = &cipher.aes_256_gcm_sha384;
+        try testing.expectEqualSlices(u8, &example13.server_application_key, &c.server_key);
+        try testing.expectEqualSlices(u8, &example13.client_application_key, &c.client_key);
+        try testing.expectEqualSlices(u8, &example13.server_application_iv, &c.server_iv);
+        try testing.expectEqualSlices(u8, &example13.client_application_iv, &c.client_iv);
+    }
 }
