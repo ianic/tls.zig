@@ -87,13 +87,13 @@ pub fn TranscriptT(comptime HashType: type) type {
         server_finished_key: [Hmac.key_length]u8 = undefined,
         client_finished_key: [Hmac.key_length]u8 = undefined,
 
-        const Cipher = @This(); // TODO rename
+        const Self = @This();
 
-        fn init(transcript: Hash) Cipher {
+        fn init(transcript: Hash) Self {
             return .{ .transcript = transcript };
         }
 
-        pub fn verifyBytes13(c: *Cipher) [64 + 34 + Hash.digest_length]u8 {
+        pub fn verifyBytes13(c: *Self) [64 + 34 + Hash.digest_length]u8 {
             return ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, server CertificateVerify\x00".* ++
                 c.transcript.peek();
@@ -144,8 +144,8 @@ pub fn TranscriptT(comptime HashType: type) type {
             return key_material;
         }
 
-        pub fn clientFinished(c: *Cipher, master_secret: []const u8) [16]u8 {
-            const seed = "client finished" ++ c.transcript.peek();
+        pub fn clientFinished(self: *Self, master_secret: []const u8) [16]u8 {
+            const seed = "client finished" ++ self.transcript.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
@@ -153,8 +153,8 @@ pub fn TranscriptT(comptime HashType: type) type {
             return tls12.handshake_finished_header ++ p1[0..12].*;
         }
 
-        pub fn serverFinished(c: *Cipher, master_secret: []const u8) [16]u8 {
-            const seed = "server finished" ++ c.transcript.peek();
+        pub fn serverFinished(self: *Self, master_secret: []const u8) [16]u8 {
+            const seed = "server finished" ++ self.transcript.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
@@ -164,30 +164,30 @@ pub fn TranscriptT(comptime HashType: type) type {
 
         // tls 1.3
 
-        pub fn handshakeSecret(c: *Cipher, shared_key: []const u8) struct { client: [Hash.digest_length]u8, server: [Hash.digest_length]u8 } {
-            const hello_hash = c.transcript.peek();
+        pub fn handshakeSecret(self: *Self, shared_key: []const u8) struct { client: [Hash.digest_length]u8, server: [Hash.digest_length]u8 } {
+            const hello_hash = self.transcript.peek();
 
             const zeroes = [1]u8{0} ** Hash.digest_length;
             const early_secret = Hkdf.extract(&[1]u8{0}, &zeroes);
             const empty_hash = tls.emptyHash(Hash);
             const hs_derived_secret = hkdfExpandLabel(Hkdf, early_secret, "derived", &empty_hash, Hash.digest_length);
 
-            c.handshake_secret = Hkdf.extract(&hs_derived_secret, shared_key);
-            const client_secret = hkdfExpandLabel(Hkdf, c.handshake_secret, "c hs traffic", &hello_hash, Hash.digest_length);
-            const server_secret = hkdfExpandLabel(Hkdf, c.handshake_secret, "s hs traffic", &hello_hash, Hash.digest_length);
+            self.handshake_secret = Hkdf.extract(&hs_derived_secret, shared_key);
+            const client_secret = hkdfExpandLabel(Hkdf, self.handshake_secret, "c hs traffic", &hello_hash, Hash.digest_length);
+            const server_secret = hkdfExpandLabel(Hkdf, self.handshake_secret, "s hs traffic", &hello_hash, Hash.digest_length);
 
-            c.server_finished_key = hkdfExpandLabel(Hkdf, server_secret, "finished", "", Hmac.key_length);
-            c.client_finished_key = hkdfExpandLabel(Hkdf, client_secret, "finished", "", Hmac.key_length);
+            self.server_finished_key = hkdfExpandLabel(Hkdf, server_secret, "finished", "", Hmac.key_length);
+            self.client_finished_key = hkdfExpandLabel(Hkdf, client_secret, "finished", "", Hmac.key_length);
 
             return .{ .client = client_secret, .server = server_secret };
         }
 
-        pub fn applicationSecret(c: *Cipher) struct { client: [Hash.digest_length]u8, server: [Hash.digest_length]u8 } {
-            const handshake_hash = c.transcript.peek();
+        pub fn applicationSecret(self: *Self) struct { client: [Hash.digest_length]u8, server: [Hash.digest_length]u8 } {
+            const handshake_hash = self.transcript.peek();
 
             const empty_hash = tls.emptyHash(Hash);
             const zeroes = [1]u8{0} ** Hash.digest_length;
-            const ap_derived_secret = hkdfExpandLabel(Hkdf, c.handshake_secret, "derived", &empty_hash, Hash.digest_length);
+            const ap_derived_secret = hkdfExpandLabel(Hkdf, self.handshake_secret, "derived", &empty_hash, Hash.digest_length);
             const master_secret = Hkdf.extract(&ap_derived_secret, &zeroes);
 
             const client_secret = hkdfExpandLabel(Hkdf, master_secret, "c ap traffic", &handshake_hash, Hash.digest_length);
@@ -196,27 +196,15 @@ pub fn TranscriptT(comptime HashType: type) type {
             return .{ .client = client_secret, .server = server_secret };
         }
 
-        // pub fn handshakeCipher(c: *Cipher, shared_key: []const u8, AEAD: type) CipherAeadT(AEAD) {
-        //     const hs_secret = c.handshakeSecret(shared_key);
-        //     const iv_len = AEAD.nonce_length - tls12.explicit_iv_len;
-
-        //     return .{
-        //         .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_length),
-        //         .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_length),
-        //         .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_length)[0..iv_len].*,
-        //         .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_length)[0..iv_len].*,
-        //     };
-        // }
-
-        pub fn serverFinished13(c: *Cipher) [mac_length]u8 {
+        pub fn serverFinished13(self: *Self) [mac_length]u8 {
             var msg: [mac_length]u8 = undefined;
-            Hmac.create(&msg, &c.transcript.peek(), &c.server_finished_key);
+            Hmac.create(&msg, &self.transcript.peek(), &self.server_finished_key);
             return msg;
         }
 
-        pub fn clientFinished13(c: *Cipher) [mac_length]u8 {
+        pub fn clientFinished13(self: *Self) [mac_length]u8 {
             var msg: [mac_length]u8 = undefined;
-            Hmac.create(&msg, &c.transcript.peek(), &c.client_finished_key);
+            Hmac.create(&msg, &self.transcript.peek(), &self.client_finished_key);
             return msg;
         }
     };
@@ -333,17 +321,15 @@ fn CipherAeadT(comptime AeadType: type) type {
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) []const u8 {
-            const record_header = tls12.recordHeader(content_type, cleartext.len);
-
             const header = buf[0..tls.record_header_len];
             var explicit_iv: [tls12.explicit_iv_len]u8 = undefined;
             cipher.rnd.bytes(&explicit_iv);
             buf[header.len..][0..explicit_iv.len].* = explicit_iv;
 
-            const ad = additionalData(sequence, record_header);
             const iv = cipher.client_iv ++ explicit_iv;
             const ciphertext = buf[header.len + explicit_iv.len ..][0..cleartext.len];
             const auth_tag = buf[header.len + explicit_iv.len + ciphertext.len ..][0..auth_tag_len];
+            const ad = additionalData(sequence, content_type, cleartext.len);
             AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, cipher.client_key);
 
             header.* = tls12.recordHeader(content_type, explicit_iv.len + ciphertext.len + auth_tag.len);
@@ -354,25 +340,22 @@ fn CipherAeadT(comptime AeadType: type) type {
             cipher: Cipher,
             buf: []u8,
             sequence: u64,
-            record_header: [tls.record_header_len]u8,
+            header: []const u8,
             payload: []const u8,
         ) !struct { tls.ContentType, []u8 } {
             const overhead = tls12.explicit_iv_len + auth_tag_len;
             if (payload.len < overhead) return error.TlsDecryptError;
 
-            var ad = additionalData(sequence, record_header);
             const iv = cipher.server_iv ++ payload[0..tls12.explicit_iv_len].*;
             const cleartext_len = payload.len - overhead;
             const ciphertext = payload[tls12.explicit_iv_len..][0..cleartext_len];
             const auth_tag = payload[tls12.explicit_iv_len + cleartext_len ..][0..auth_tag_len];
-            std.mem.writeInt(u16, ad[ad.len - 2 ..][0..2], @intCast(cleartext_len), .big);
-
             const cleartext = buf[0..cleartext_len];
+            const content_type: tls.ContentType = @enumFromInt(header[0]);
+            const ad = additionalData(sequence, content_type, cleartext_len);
+
             try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, cipher.server_key);
-            return .{
-                @enumFromInt(record_header[0]),
-                cleartext,
-            };
+            return .{ content_type, cleartext };
         }
     };
 }
@@ -419,7 +402,7 @@ fn CipherAead13T(comptime AeadType: type) type {
             cipher: Cipher,
             buf: []u8,
             sequence: u64,
-            record_header: [tls.record_header_len]u8,
+            header: []const u8,
             payload: []const u8,
         ) !struct { tls.ContentType, []u8 } {
             const overhead = auth_tag_len;
@@ -435,7 +418,7 @@ fn CipherAead13T(comptime AeadType: type) type {
             const auth_tag = payload[cleartext_len..][0..auth_tag_len];
 
             const cleartext = buf[0..cleartext_len];
-            try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &record_header, iv, cipher.server_key);
+            try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, header, iv, cipher.server_key);
             return .{
                 @enumFromInt(cleartext[cleartext_len - 1]),
                 cleartext[0 .. cleartext.len - 1],
@@ -478,9 +461,7 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) []const u8 {
-            // TODO fix additional data to accept sequence and content_type
-            const record_header = tls12.recordHeader(content_type, cleartext.len);
-            const ad = additionalData(sequence, record_header);
+            const ad = additionalData(sequence, content_type, cleartext.len);
             const cleartext_idx = tls.record_header_len + iv_length;
 
             // unused | ad | cleartext | mac
@@ -489,6 +470,7 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             @memcpy(mac_input_buf[0..ad.len], &ad);
             @memcpy(mac_input_buf[ad.len..][0..cleartext.len], cleartext);
             const mac_output_buf = mac_input_buf[ad.len + cleartext.len ..][0..mac_length];
+
             Hmac.create(mac_output_buf, mac_input_buf[0 .. ad.len + cleartext.len], &cipher.client_secret);
 
             // unused | ad | cleartext | mac | padding
@@ -513,11 +495,12 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             cipher: Cipher,
             buf: []u8,
             sequence: u64,
-            record_header: [tls.record_header_len]u8,
+            header: []const u8,
             payload: []const u8,
         ) !struct { tls.ContentType, []u8 } {
+            const content_type: tls.ContentType = @enumFromInt(header[0]);
             if (payload.len < iv_length + mac_length + 1) return error.TlsDecryptError;
-            var ad = additionalData(sequence, record_header);
+            var ad = additionalData(sequence, content_type, payload.len);
 
             // --------- payload ------------
             // iv | -------   crypted -------
@@ -549,18 +532,16 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             if (!std.mem.eql(u8, &expected_mac, mac))
                 return error.TlsBadRecordMac;
 
-            return .{
-                @enumFromInt(record_header[0]),
-                cleartext,
-            };
+            return .{ content_type, cleartext };
         }
     };
 }
 
 pub const additional_data_len = tls.record_header_len + @sizeOf(u64);
 
-fn additionalData(sequence: u64, record_header: [tls.record_header_len]u8) [additional_data_len]u8 {
+fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usize) [additional_data_len]u8 {
+    const header = tls12.recordHeader(content_type, payload_len);
     var sequence_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &sequence_buf, sequence, .big);
-    return sequence_buf ++ record_header;
+    return sequence_buf ++ header;
 }
