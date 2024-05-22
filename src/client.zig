@@ -69,10 +69,10 @@ pub fn ClientT(comptime StreamType: type) type {
             assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
             const payload = c.encrypt(buffer, content_type, cleartext);
-            const header = tls12.recordHeader(content_type, payload.len);
+            //const header = tls12.recordHeader(content_type, payload.len);0x
 
             var iovecs = [_]posix.iovec_const{
-                .{ .base = &header, .len = header.len },
+                //.{ .base = &header, .len = header.len },
                 .{ .base = payload.ptr, .len = payload.len },
             };
             try c.stream.writevAll(&iovecs);
@@ -84,18 +84,18 @@ pub fn ClientT(comptime StreamType: type) type {
             return c.next_(.application_data);
         }
 
-        fn next_(c: *Client, content_type: tls.ContentType) !?[]const u8 {
+        fn next_(c: *Client, expected_content_type: tls.ContentType) !?[]const u8 {
             const rec = (try c.reader.next()) orelse return null;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
-            const cleartext = switch (c.app_cipher) {
+            const content_type, const cleartext = switch (c.app_cipher) {
                 inline else => |*p| try p.decrypt(rec.payload, c.server_sequence, rec.header, rec.payload),
             };
             c.server_sequence += 1;
 
-            switch (rec.content_type) {
+            switch (content_type) {
                 .handshake, .application_data => {
-                    if (rec.content_type != content_type) return error.TlsUnexpectedMessage;
+                    if (content_type != expected_content_type) return error.TlsUnexpectedMessage;
                     return cleartext;
                 },
                 .alert => {
@@ -113,18 +113,18 @@ pub fn ClientT(comptime StreamType: type) type {
         fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) []const u8 {
             assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
-            const record_header = tls12.recordHeader(content_type, cleartext.len);
             defer c.client_sequence += 1;
             return switch (c.app_cipher) {
-                inline else => |*p| p.encrypt(buffer, c.client_sequence, record_header, cleartext),
+                inline else => |*p| p.encrypt(buffer, c.client_sequence, content_type, cleartext),
             };
         }
 
         pub fn close(c: *Client) !void {
+            // TODO
             var buffer: [AppCipher.max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
-            const payload = c.encrypt(buffer[tls.record_header_len..], .alert, &tls12.close_notify_alert);
-            buffer[0..tls.record_header_len].* = tls12.recordHeader(.alert, payload.len);
-            try c.stream.writeAll(buffer[0 .. tls.record_header_len + payload.len]);
+            const payload = c.encrypt(&buffer, .alert, &tls12.close_notify_alert);
+            //buffer[0..tls.record_header_len].* = tls12.recordHeader(.alert, payload.len);
+            try c.stream.writeAll(payload);
         }
 
         const Handshake = struct {
@@ -384,14 +384,14 @@ pub fn ClientT(comptime StreamType: type) type {
                             try wrap_rec.skip(wrap_rec.payload.len);
                         },
                         .application_data => {
-                            var cleartext = switch (h.cipher) {
+                            const content_type, const cleartext = switch (h.cipher) {
                                 inline else => |*p| try p.decrypt(wrap_rec.payload, sequence, wrap_rec.header, wrap_rec.payload),
                             };
                             sequence += 1;
 
                             var rec = Record{
-                                .content_type = @enumFromInt(cleartext[cleartext.len - 1]),
-                                .payload = cleartext[0 .. cleartext.len - 1],
+                                .content_type = content_type,
+                                .payload = cleartext,
                             };
                             switch (rec.content_type) {
                                 .handshake => {
@@ -570,10 +570,11 @@ pub fn ClientT(comptime StreamType: type) type {
                 const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
                 const handshake_finished = brk: {
                     // encrypt client_finished into handshake_finished record
-                    var buffer: [AppCipher.max_overhead + 5 + 16]u8 = undefined;
-                    const payload = c.encrypt(buffer[5..], .handshake, &client_finished);
-                    buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
-                    break :brk buffer[0 .. tls.record_header_len + payload.len];
+                    var buffer: [AppCipher.max_overhead + tls.record_header_len + 16]u8 = undefined;
+                    break :brk c.encrypt(&buffer, .handshake, &client_finished);
+                    //break :brk payload;
+                    //buffer[0..tls.record_header_len].* = tls12.recordHeader(.handshake, payload.len);
+                    //break :brk buffer[0 .. tls.record_header_len + payload.len];
                 };
                 h.transcript.update(&client_finished);
 
@@ -1275,18 +1276,20 @@ test "tls13 decrypt wrapped record" {
         const payload = example13.server_encrypted_extensions_wrapped[tls.record_header_len..];
         const sequence: u64 = 0;
 
-        const cleartext = switch (cipher) {
+        const content_type, const cleartext = switch (cipher) {
             inline else => |*p| try p.decrypt(&buffer, sequence, record_header.*, payload),
         };
+        try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &example13.server_encrypted_extensions, cleartext);
     }
     {
         const record_header = example13.server_certificate_wrapped[0..tls.record_header_len];
         const payload = example13.server_certificate_wrapped[tls.record_header_len..];
         const sequence: u64 = 1;
-        const cleartext = switch (cipher) {
+        const content_type, const cleartext = switch (cipher) {
             inline else => |*p| try p.decrypt(&buffer, sequence, record_header.*, payload),
         };
+        try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &example13.server_certificate, cleartext);
     }
 }
@@ -1311,7 +1314,7 @@ test "tls13 process server flight" {
         try testing.expectEqualSlices(u8, &example13.client_application_iv, &c.client_iv);
 
         const encrypted = switch (cipher) {
-            inline else => |*p| p.encrypt(&buffer, 0, [_]u8{0} ** tls.record_header_len, "ping\x17"),
+            inline else => |*p| p.encrypt(&buffer, 0, .application_data, "ping"),
         };
         try testing.expectEqualSlices(u8, &example13.client_ping_wrapped, encrypted);
     }
@@ -1321,11 +1324,10 @@ test "tls13 process server flight" {
         const client_finished =
             tls12.int1e(tls12.HandshakeType.finished) ++
             tls.int3(@intCast(client_finished_verify_data.len)) ++
-            client_finished_verify_data ++
-            tls12.int1e(tls.ContentType.handshake);
+            client_finished_verify_data;
 
         const encrypted = switch (h.cipher) {
-            inline else => |*p| p.encrypt(&buffer, 0, [_]u8{0} ** tls.record_header_len, &client_finished),
+            inline else => |*p| p.encrypt(&buffer, 0, .handshake, &client_finished),
         };
         try testing.expectEqualSlices(u8, &example13.client_finished_wrapped, encrypted);
     }
