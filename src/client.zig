@@ -1294,6 +1294,7 @@ test "tls13 decrypt wrapped record" {
 test "tls13 process server flight" {
     const stream = TestStream.init(&example13.server_flight, "");
     var reader = recordReader(stream);
+    var buffer: [1024]u8 = undefined;
 
     var h = try ClientT(TestStream).Handshake.init();
     try initExampleHandshake(&h);
@@ -1308,5 +1309,24 @@ test "tls13 process server flight" {
         try testing.expectEqualSlices(u8, &example13.client_application_key, &c.client_key);
         try testing.expectEqualSlices(u8, &example13.server_application_iv, &c.server_iv);
         try testing.expectEqualSlices(u8, &example13.client_application_iv, &c.client_iv);
+
+        const encrypted = switch (cipher) {
+            inline else => |*p| p.encrypt(&buffer, 0, [_]u8{0} ** tls.record_header_len, "ping\x17"),
+        };
+        try testing.expectEqualSlices(u8, &example13.client_ping_wrapped, encrypted);
+    }
+    { // client finished message
+        const client_finished_verify_data = h.transcript.sha384.clientFinished13();
+        try testing.expectEqualSlices(u8, &example13.client_finished_verify_data, &client_finished_verify_data);
+        const client_finished =
+            tls12.int1e(tls12.HandshakeType.finished) ++
+            tls.int3(@intCast(client_finished_verify_data.len)) ++
+            client_finished_verify_data ++
+            tls12.int1e(tls.ContentType.handshake);
+
+        const encrypted = switch (h.cipher) {
+            inline else => |*p| p.encrypt(&buffer, 0, [_]u8{0} ** tls.record_header_len, &client_finished),
+        };
+        try testing.expectEqualSlices(u8, &example13.client_finished_wrapped, encrypted);
     }
 }

@@ -45,6 +45,11 @@ pub const server_finished_wrapped = hexToBytes("17030300451061de27e51c2c9f342911
 
 pub const handshake_hash = hexToBytes("fa6800169a6baac19159524fa7b9721b41be3c9db6f3f93fa5ff7e3db3ece204d2b456c51046e40ec5312c55a86126f5");
 
+pub const client_finished_verify_data = hexToBytes("bff56a671b6c659d0a7c5dd18428f58bdd38b184a3ce342d9fde95cbd5056f7da7918ee320eab7a93abd8f1c02454d27");
+
+pub const client_finished_wrapped = hexToBytes("17030300459ff9b063175177322a46dd9896f3c3bb820ab51743ebc25fdadd53454b73deb54cc7248d411a18bccf657a960824e9a19364837c350a69a88d4bf635c85eb874aebc9dfde8");
+
+pub const client_ping_wrapped = hexToBytes("1703030015828139cb7b73aaabf5b82fbf9a2961bcde10038a32");
 pub const server_flight =
     hexToBytes("140303000101") ++
     server_encrypted_extensions_wrapped ++

@@ -213,6 +213,12 @@ pub fn TranscriptT(comptime HashType: type) type {
             Hmac.create(&msg, &c.transcript.peek(), &c.server_finished_key);
             return msg;
         }
+
+        pub fn clientFinished13(c: *Cipher) [mac_length]u8 {
+            var msg: [mac_length]u8 = undefined;
+            Hmac.create(&msg, &c.transcript.peek(), &c.client_finished_key);
+            return msg;
+        }
     };
 }
 
@@ -377,25 +383,6 @@ fn CipherAead13T(comptime AeadType: type) type {
 
         const Cipher = @This();
 
-        // fn init(shared_key: []const u8, transcript: *Transcript, rnd: std.Random) Cipher {
-        //     var transcript384 = transcript.sha384;
-        //     const Hkdf = @TypeOf(transcript384).Hkdf;
-        //     const AEAD = CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm);
-
-        //     const hs_secret = transcript384.handshakeSecret(shared_key);
-
-        //     return .{
-        //         .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_len),
-        //         .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_len),
-        //         .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_len),
-        //         .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_len),
-        //         .rnd = rnd,
-        //     };
-        // }
-
-        /// Encrypt cleartext into provided buffer `buf`.
-        /// After this buf contains payload in format:
-        ///   explicit iv | ciphertext | auth tag
         pub fn encrypt(
             cipher: Cipher,
             buf: []u8,
@@ -403,21 +390,20 @@ fn CipherAead13T(comptime AeadType: type) type {
             record_header: [tls.record_header_len]u8,
             cleartext: []const u8,
         ) []const u8 {
-            _ = cipher;
-            _ = buf;
             _ = record_header;
-            _ = sequence;
-            _ = cleartext;
-            unreachable;
-            // var explicit_iv: [tls12.explicit_iv_len]u8 = undefined;
-            // cipher.rnd.bytes(&explicit_iv);
-            // buf[0..explicit_iv.len].* = explicit_iv;
+            // xor iv and sequence
+            var iv = cipher.client_iv;
+            const operand = std.mem.readInt(u64, iv[nonce_len - 8 ..], .big);
+            std.mem.writeInt(u64, iv[nonce_len - 8 ..], operand ^ sequence, .big);
 
-            // const iv = cipher.client_iv ++ explicit_iv;
-            // const ciphertext = buf[explicit_iv.len..][0..cleartext.len];
-            // const auth_tag = buf[explicit_iv.len + ciphertext.len ..][0..auth_tag_len];
-            // AeadType.encrypt(ciphertext, auth_tag, cleartext, ad, iv, cipher.client_key);
-            // return buf[0 .. explicit_iv.len + ciphertext.len + auth_tag.len];
+            const encrypted_len = cleartext.len + auth_tag_len;
+            const header = buf[0..tls.record_header_len];
+            const ciphertext = buf[tls.record_header_len..][0..cleartext.len];
+            const auth_tag = buf[tls.record_header_len + cleartext.len ..][0..auth_tag_len];
+            header.* = tls12.recordHeader(.application_data, encrypted_len);
+
+            AeadType.encrypt(ciphertext, auth_tag, cleartext, header, iv, cipher.client_key);
+            return buf[0 .. encrypted_len + tls.record_header_len];
         }
 
         pub fn decrypt(
