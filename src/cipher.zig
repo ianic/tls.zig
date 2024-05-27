@@ -73,6 +73,13 @@ pub const Transcript = struct {
             .sha384 => &self.sha384.serverFinished13(),
         };
     }
+
+    pub inline fn clientFinished13Msg(self: *Transcript, cs: tls12.CipherSuite) []const u8 {
+        return switch (cs.hash()) {
+            .sha256 => &self.sha256.clientFinished13Msg(),
+            .sha384 => &self.sha384.clientFinished13Msg(),
+        };
+    }
 };
 
 pub fn TranscriptT(comptime HashType: type) type {
@@ -202,9 +209,12 @@ pub fn TranscriptT(comptime HashType: type) type {
             return msg;
         }
 
-        pub fn clientFinished13(self: *Self) [mac_length]u8 {
-            var msg: [mac_length]u8 = undefined;
-            Hmac.create(&msg, &self.transcript.peek(), &self.client_finished_key);
+        // client finished message with header
+        pub fn clientFinished13Msg(self: *Self) [4 + mac_length]u8 {
+            var msg: [4 + mac_length]u8 = undefined;
+            // 4 bytes handshake header
+            msg[0..4].* = tls12.int1e(tls12.HandshakeType.finished) ++ tls.int3(@intCast(mac_length));
+            Hmac.create(msg[4..], &self.transcript.peek(), &self.client_finished_key);
             return msg;
         }
     };
