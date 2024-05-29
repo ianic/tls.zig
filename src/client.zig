@@ -37,7 +37,7 @@ pub fn ClientT(comptime StreamType: type) type {
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
 
-            defer std.debug.print(
+            errdefer std.debug.print(
                 "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
                 .{
                     host,
@@ -411,8 +411,11 @@ pub fn ClientT(comptime StreamType: type) type {
                 host: []const u8,
             ) !void {
                 var sequence: u64 = 0; // TODO
+                var cleartext_buf: [tls.max_cipertext_inner_record_len]u8 = undefined;
+                var cleartext_buf_head: usize = 0;
+                var cleartext_buf_tail: usize = 0;
 
-                while (true) {
+                outer: while (true) {
                     var wrap_rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
                     if (wrap_rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
                     switch (wrap_rec.content_type) {
@@ -421,57 +424,60 @@ pub fn ClientT(comptime StreamType: type) type {
                         },
                         .application_data => {
                             const content_type, const cleartext = switch (h.cipher) {
-                                inline else => |*p| try p.decrypt(wrap_rec.payload, sequence, wrap_rec.header, wrap_rec.payload),
+                                inline else => |*p| try p.decrypt(cleartext_buf[cleartext_buf_tail..], sequence, wrap_rec.header, wrap_rec.payload),
                             };
+                            if (content_type != .handshake) return error.TlsUnexpectedMessage;
                             sequence += 1;
+                            cleartext_buf_tail += cleartext.len;
 
                             var rec = Record{
                                 .content_type = content_type,
-                                .payload = cleartext,
+                                .payload = cleartext_buf[cleartext_buf_head..cleartext_buf_tail],
                             };
-                            switch (rec.content_type) {
-                                .handshake => {
-                                    while (!rec.eof()) {
-                                        const start_idx = rec.idx;
-                                        defer h.transcript.update(rec.payload[start_idx..rec.idx]);
+                            while (!rec.eof()) {
+                                const start_idx = rec.idx;
+                                const handshake_type = try rec.decode(tls.HandshakeType);
+                                const length = try rec.decode(u24);
+                                // TODO: control what type of message is expected
+                                //if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
-                                        const handshake_type = try rec.decode(tls.HandshakeType);
-                                        //if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
+                                if (length > tls.max_cipertext_inner_record_len)
+                                    return error.TlsUnsupportedFragmentedHandshakeMessage;
+                                if (length > rec.payload.len - 4)
+                                    continue :outer; // fragmented handshake into multiple records
 
-                                        const length = try rec.decode(u24);
-                                        if (length > tls.max_cipertext_inner_record_len)
-                                            return error.TlsUnsupportedFragmentedHandshakeMessage;
-                                        if (length > rec.payload.len - 4)
-                                            return error.TlsUnsupportedFragmentedHandshakeMessage;
-
-                                        // std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
-                                        switch (handshake_type) {
-                                            .encrypted_extensions => {
-                                                try rec.skip(length);
-                                            },
-                                            .certificate => {
-                                                const request_context = try rec.decode(u8);
-                                                if (request_context != 0) return error.TlsIllegalParameter;
-                                                try h.serverCertificate(&rec, ca_bundle, host);
-                                            },
-                                            .certificate_verify => {
-                                                h.signature_scheme = try rec.decode(tls.SignatureScheme);
-                                                h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
-                                                try h.verifySignature(h.transcript.verifyBytes13(h.cipher_suite_tag));
-                                            },
-                                            .finished => {
-                                                const actual = try rec.slice(length);
-                                                const expected = h.transcript.serverFinished13(h.cipher_suite_tag);
-                                                if (!mem.eql(u8, expected, actual))
-                                                    return error.TlsDecryptError;
-                                                return;
-                                            },
-                                            else => return error.TlsUnexpectedMessage,
-                                        }
-                                    }
-                                },
-                                else => return error.TlsUnexpectedMessage,
+                                defer {
+                                    const handshake_payload = rec.payload[start_idx..rec.idx];
+                                    h.transcript.update(handshake_payload);
+                                    cleartext_buf_head += handshake_payload.len;
+                                }
+                                //std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
+                                switch (handshake_type) {
+                                    .encrypted_extensions => {
+                                        try rec.skip(length);
+                                    },
+                                    .certificate => {
+                                        const request_context = try rec.decode(u8);
+                                        if (request_context != 0) return error.TlsIllegalParameter;
+                                        try h.serverCertificate(&rec, ca_bundle, host);
+                                    },
+                                    .certificate_verify => {
+                                        h.signature_scheme = try rec.decode(tls.SignatureScheme);
+                                        h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
+                                        try h.verifySignature(h.transcript.verifyBytes13(h.cipher_suite_tag));
+                                    },
+                                    .finished => {
+                                        const actual = try rec.slice(length);
+                                        const expected = h.transcript.serverFinished13(h.cipher_suite_tag);
+                                        if (!mem.eql(u8, expected, actual))
+                                            return error.TlsDecryptError;
+                                        return;
+                                    },
+                                    else => return error.TlsUnexpectedMessage,
+                                }
                             }
+                            cleartext_buf_head = 0;
+                            cleartext_buf_tail = 0;
                         },
                         else => return error.TlsUnexpectedMessage,
                     }
