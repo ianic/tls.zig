@@ -59,7 +59,16 @@ pub const CipherSuite = enum(u16) {
     TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
 
     // TLS 1.3
-    TLS_AES_256_GCM_SHA384 = 0x1302,
+    //TLS_AES_256_GCM_SHA384 = 0x1302,
+
+    AES_128_GCM_SHA256 = 0x1301,
+    AES_256_GCM_SHA384 = 0x1302,
+    CHACHA20_POLY1305_SHA256 = 0x1303,
+    //AES_128_CCM_SHA256 = 0x1304,
+    //AES_128_CCM_8_SHA256 = 0x1305,
+    //AEGIS_256_SHA512 = 0x1306,
+    //AEGIS_128L_SHA256 = 0x1307,
+
     _,
 
     // in the order of preference
@@ -76,7 +85,9 @@ pub const CipherSuite = enum(u16) {
     };
 
     pub const supported13 = [_]CipherSuite{
-        .TLS_AES_256_GCM_SHA384,
+        .CHACHA20_POLY1305_SHA256,
+        .AES_256_GCM_SHA384,
+        .AES_128_GCM_SHA256,
     };
 
     pub fn validate(cs: CipherSuite) !void {
@@ -107,28 +118,37 @@ pub const CipherSuite = enum(u16) {
     }
 
     pub const Cipher = enum {
+        // tls 1.2
         aes_128_cbc_sha,
         aes_128_cbc_sha256,
+        aes_256_cbc_sha384,
         aes_128_gcm,
         aes_256_gcm,
-
+        // tls 1.3
         aes_256_gcm_sha384,
+        aes_128_gcm_sha256,
+        chacha20_poly1305_sha256,
     };
 
     pub fn cipher(cs: CipherSuite) !Cipher {
         return switch (cs) {
+            // tls 1.2
             .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
             => .aes_128_cbc_sha,
             .TLS_RSA_WITH_AES_128_CBC_SHA256,
             => .aes_128_cbc_sha256,
+            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+            => .aes_256_cbc_sha384,
             .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
             .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             => .aes_128_gcm,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             => .aes_256_gcm,
-
-            .TLS_AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
+            // tls 1.3
+            .AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
+            .AES_128_GCM_SHA256 => .aes_128_gcm_sha256,
+            .CHACHA20_POLY1305_SHA256 => .chacha20_poly1305_sha256,
             else => return error.TlsIllegalParameter,
         };
     }
@@ -142,7 +162,7 @@ pub const CipherSuite = enum(u16) {
         return switch (cs) {
             .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            .TLS_AES_256_GCM_SHA384,
+            .AES_256_GCM_SHA384,
             => .sha384,
             else => .sha256,
         };
@@ -195,4 +215,29 @@ const hello_retry_request_magic = "\xCF\x21\xAD\x74\xE5\x9A\x61\x11\xBE\x1D\x8C\
 
 pub fn isServerHelloRetryRequest(server_random: []const u8) bool {
     return std.mem.eql(u8, server_random, hello_retry_request_magic);
+}
+
+const testing = std.testing;
+
+test "tls1.3 ciphers" {
+    {
+        const cs: CipherSuite = .AES_256_GCM_SHA384;
+        try cs.validate();
+        try testing.expectEqual(cs.cipher(), .aes_256_gcm_sha384);
+        try testing.expectEqual(cs.hash(), .sha384);
+        try testing.expectEqual(cs.keyExchange(), .ecdhe);
+    }
+    {
+        const cs: CipherSuite = .AES_128_GCM_SHA256;
+        try cs.validate();
+        try testing.expectEqual(.aes_128_gcm, cs.cipher());
+        try testing.expectEqual(.sha256, cs.hash());
+        try testing.expectEqual(.ecdhe, cs.keyExchange());
+    }
+    for (CipherSuite.supported) |cs| {
+        try cs.validate();
+        _ = try cs.cipher();
+        _ = cs.hash();
+        _ = cs.keyExchange();
+    }
 }

@@ -5,6 +5,7 @@ const mem = std.mem;
 const debug = std.debug;
 
 pub const Aes128Cbc = CBC(aes.Aes128);
+pub const Aes256Cbc = CBC(aes.Aes256);
 
 /// CBC mode with PKCS#7 padding.
 ///
@@ -12,20 +13,20 @@ pub const Aes128Cbc = CBC(aes.Aes128);
 /// If you need authenticated encryption, use anything from `std.crypto.aead` instead.
 /// If you really need to use CBC mode, make sure to use a MAC to authenticate the ciphertext.
 pub fn CBC(comptime BlockCipher: anytype) type {
-    const EncryptCtx = aes.AesEncryptCtx(BlockCipher);
-    const DecryptCtx = aes.AesDecryptCtx(BlockCipher);
-
     return struct {
+        const EncryptCtx = aes.AesEncryptCtx(BlockCipher);
+        const DecryptCtx = aes.AesDecryptCtx(BlockCipher);
+
         const Self = @This();
 
         pub const key_length = BlockCipher.key_bits / 8;
-        pub const nonce_length = key_length;
+        pub const nonce_length = EncryptCtx.block_length; //key_length;
 
         enc_ctx: EncryptCtx,
         dec_ctx: DecryptCtx,
 
         /// Initialize the CBC context with the given key.
-        pub fn init(key: [BlockCipher.key_bits / 8]u8) Self {
+        pub fn init(key: [key_length]u8) Self {
             const enc_ctx = BlockCipher.initEnc(key);
             const dec_ctx = DecryptCtx.initFromEnc(enc_ctx);
 

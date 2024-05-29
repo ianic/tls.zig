@@ -52,7 +52,6 @@ pub fn ClientT(comptime StreamType: type) type {
 
             try h.clientHello(host, &c.stream);
             try h.serverFlight1(&c.reader, ca_bundle, host);
-            // std.debug.print("handshake {} {}\n", .{ h.tls_version, h.cipher_suite_tag });
             if (h.tls_version == .tls_1_3) {
                 const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
                 h.cipher = try AppCipher.initHandshake(h.cipher_suite_tag, shared_key, &h.transcript);
@@ -66,7 +65,7 @@ pub fn ClientT(comptime StreamType: type) type {
             if (h.cipher_suite_tag.keyExchange() == .ecdhe)
                 try h.verifySignature12();
             try h.generateKeyMaterial();
-            c.app_cipher = try AppCipher.init(h.cipher_suite_tag, &h.key_material, crypto.random);
+            c.app_cipher = try AppCipher.init(h.cipher_suite_tag, h.key_material, crypto.random);
 
             try h.clientFlight2(c);
             try h.serverFlight2(c);
@@ -152,12 +151,12 @@ pub fn ClientT(comptime StreamType: type) type {
 
         const Handshake = struct {
             const master_secret_len = 48;
-            const key_material_len = 32 * 4;
 
             client_random: [32]u8,
             server_random: [32]u8 = undefined,
             master_secret: [master_secret_len]u8 = undefined,
-            key_material: [key_material_len]u8 = undefined,
+            key_material_buf: [48 * 4]u8 = undefined,
+            key_material: []u8 = undefined,
 
             transcript: Transcript = .{},
 
@@ -229,10 +228,12 @@ pub fn ClientT(comptime StreamType: type) type {
                     .key_share,
                     array(1, tls.int2(@intFromEnum(tls.NamedGroup.x25519)) ++
                         array(1, h.dh_kp.x25519_kp.public_key) ++
+                        tls.int2(@intFromEnum(tls.NamedGroup.x25519_kyber768d00)) ++
+                        array(1, h.dh_kp.x25519_kp.public_key ++ h.dh_kp.kyber768_kp.public_key.toBytes()) ++
                         tls.int2(@intFromEnum(tls.NamedGroup.secp256r1)) ++
                         array(1, h.dh_kp.secp256r1_kp.public_key.toUncompressedSec1()) ++
-                        tls.int2(@intFromEnum(tls.NamedGroup.x25519_kyber768d00)) ++
-                        array(1, h.dh_kp.x25519_kp.public_key ++ h.dh_kp.kyber768_kp.public_key.toBytes())),
+                        tls.int2(@intFromEnum(tls.NamedGroup.secp384r1)) ++
+                        array(1, h.dh_kp.secp384r1_kp.public_key.toUncompressedSec1())),
                 ) ++
                     tls12.serverNameExtensionHeader(host_len);
 
@@ -447,7 +448,7 @@ pub fn ClientT(comptime StreamType: type) type {
                                 // TODO: control what type of message is expected
                                 //if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
-                                //std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
+                                // std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
 
                                 if (length > tls.max_cipertext_inner_record_len)
                                     return error.TlsUnsupportedFragmentedHandshakeMessage;
@@ -607,13 +608,12 @@ pub fn ClientT(comptime StreamType: type) type {
                     h.client_random,
                     h.server_random,
                 );
-                h.key_material = Transcript.keyMaterial(
-                    key_material_len,
+                h.key_material = try dupe(&h.key_material_buf, Transcript.keyMaterial(
                     h.cipher_suite_tag,
                     &h.master_secret,
                     h.client_random,
                     h.server_random,
-                );
+                ));
             }
 
             /// Sends client key exchange, client chiper spec and client
@@ -720,7 +720,7 @@ test "Handshake.serverHello" {
     try h.verifySignature12();
     try h.generateKeyMaterial();
 
-    try testing.expectEqualSlices(u8, &example.key_material, &h.key_material);
+    try testing.expectEqualSlices(u8, &example.key_material, h.key_material);
 }
 
 test "Client encrypt decrypt" {
@@ -1310,7 +1310,7 @@ test "tls13 server hello" {
     var h = try ClientT(TestStream).Handshake.init();
     try h.serverHello(&rec, length);
 
-    try testing.expectEqual(.TLS_AES_256_GCM_SHA384, h.cipher_suite_tag);
+    try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite_tag);
     try testing.expectEqualSlices(u8, &example13.server_random, &h.server_random);
     try testing.expectEqual(.tls_1_3, h.tls_version);
     try testing.expectEqual(.x25519, h.named_group);
@@ -1318,7 +1318,7 @@ test "tls13 server hello" {
 }
 
 test "tls13 handshake cipher" {
-    const cipher_suite_tag: tls12.CipherSuite = .TLS_AES_256_GCM_SHA384;
+    const cipher_suite_tag: tls12.CipherSuite = .AES_256_GCM_SHA384;
 
     var transcript = Transcript{};
     transcript.update(example13.client_hello[tls.record_header_len..]);
@@ -1343,7 +1343,7 @@ test "tls13 handshake cipher" {
 }
 
 fn exampleHandshakeCipher() !AppCipher {
-    const cipher_suite_tag: tls12.CipherSuite = .TLS_AES_256_GCM_SHA384;
+    const cipher_suite_tag: tls12.CipherSuite = .AES_256_GCM_SHA384;
     var transcript = Transcript{};
     transcript.update(example13.client_hello[tls.record_header_len..]);
     transcript.update(example13.server_hello[tls.record_header_len..]);
@@ -1351,7 +1351,7 @@ fn exampleHandshakeCipher() !AppCipher {
 }
 
 fn initExampleHandshake(h: *ClientT(TestStream).Handshake) !void {
-    h.cipher_suite_tag = .TLS_AES_256_GCM_SHA384;
+    h.cipher_suite_tag = .AES_256_GCM_SHA384;
     h.transcript.update(example13.client_hello[tls.record_header_len..]);
     h.transcript.update(example13.server_hello[tls.record_header_len..]);
     h.cipher = try AppCipher.initHandshake(h.cipher_suite_tag, &example13.shared_key, &h.transcript);

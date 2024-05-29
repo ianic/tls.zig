@@ -46,8 +46,8 @@ pub fn get2(
     var cli = tls.client(tcp);
     try cli.handshake(host, ca_bundle);
 
-    var buf: [128]u8 = undefined;
-    const req = try std.fmt.bufPrint(buf[64..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    var buf: [256]u8 = undefined;
+    const req = try std.fmt.bufPrint(buf[128..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
     try cli.write(&buf, req);
 
     var n: usize = 0;
@@ -171,6 +171,7 @@ const skipped = [_]usize{
     487, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://twimg.com
 
     // certificate issuer not found, also in curl
+    108,
     150,
     211,
     396,
