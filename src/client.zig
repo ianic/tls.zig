@@ -14,6 +14,8 @@ const rsa = Certificate.rsa;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
+const EcdsaP384Sha256 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
+const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
     return .{
@@ -37,7 +39,7 @@ pub fn ClientT(comptime StreamType: type) type {
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
 
-            defer std.debug.print(
+            errdefer std.debug.print(
                 "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
                 .{
                     host,
@@ -171,7 +173,8 @@ pub fn ClientT(comptime StreamType: type) type {
             cert_pub_key_buf: [600]u8 = undefined,
             cert_pub_key: []const u8 = undefined,
 
-            server_pub_key_buf: [97]u8 = undefined,
+            // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_kyber768d00 = 1120
+            server_pub_key_buf: [1120]u8 = undefined,
             server_pub_key: []const u8 = undefined,
             signature_buf: [1024]u8 = undefined,
             signature: []const u8 = undefined,
@@ -180,13 +183,13 @@ pub fn ClientT(comptime StreamType: type) type {
             cipher: AppCipher = undefined,
 
             pub fn init() !Handshake {
-                var rand_buf: [32 + 48 + 46]u8 = undefined;
+                var rand_buf: [32 + 64 + 46]u8 = undefined;
                 crypto.random.bytes(&rand_buf);
 
                 return .{
                     .client_random = rand_buf[0..32].*,
-                    .dh_kp = try DhKeyPair.init(rand_buf[32..][0..48].*),
-                    .rsa_kp = RsaKeyPair.init(rand_buf[32 + 48 ..][0..46].*),
+                    .dh_kp = try DhKeyPair.init(rand_buf[32..][0..64].*),
+                    .rsa_kp = RsaKeyPair.init(rand_buf[32 + 64 ..][0..46].*),
                     .now_sec = std.time.timestamp(),
                 };
             }
@@ -212,7 +215,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     .rsa_pss_rsae_sha256,
                     .rsa_pss_rsae_sha384,
                     .rsa_pss_rsae_sha512,
-                    // .ed25519, // TODO enable this one
+                    .ed25519,
                     .rsa_pkcs1_sha1,
                     .rsa_pkcs1_sha256,
                     .rsa_pkcs1_sha384,
@@ -221,16 +224,15 @@ pub fn ClientT(comptime StreamType: type) type {
                     .x25519,
                     .secp256r1,
                     .secp384r1,
-                    // .x25519_kyber768d00 ,// TODO add this
+                    .x25519_kyber768d00,
                 })) ++ tls.extension(
                     .key_share,
                     array(1, tls.int2(@intFromEnum(tls.NamedGroup.x25519)) ++
                         array(1, h.dh_kp.x25519_kp.public_key) ++
                         tls.int2(@intFromEnum(tls.NamedGroup.secp256r1)) ++
-                        array(1, h.dh_kp.secp256r1_kp.public_key.toUncompressedSec1()) //++
-                    // tls.int2(@intFromEnum(tls.NamedGroup.x25519_kyber768d00)) ++
-                    // array(1, h.dh_kp.x25519_kp.public_key ++ h.dk_kp.kyber768_kp.public_key.toBytes())
-                    ),
+                        array(1, h.dh_kp.secp256r1_kp.public_key.toUncompressedSec1()) ++
+                        tls.int2(@intFromEnum(tls.NamedGroup.x25519_kyber768d00)) ++
+                        array(1, h.dh_kp.x25519_kp.public_key ++ h.dh_kp.kyber768_kp.public_key.toBytes())),
                 ) ++
                     tls12.serverNameExtensionHeader(host_len);
 
@@ -313,7 +315,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     // std.debug.print("=> {} {} {} {}\n", .{ certs_len, rec.idx, cert_len, rec.payload.len });
                     const cert = try rec.slice(cert_len);
                     if (h.tls_version == .tls_1_3) {
-                        // certificate extensions present in version 1.3
+                        // certificate extensions present in tls 1.3
                         try rec.skip(try rec.decode(u16));
                     }
                     if (trust_chain_established)
@@ -529,6 +531,17 @@ pub fn ClientT(comptime StreamType: type) type {
                         }
                     },
 
+                    inline .ed25519 => {
+                        std.debug.print("evo ga netko koristi .ed25519 !!!!\n", .{});
+                        if (h.cert_pub_key_algo != .curveEd25519) return error.TlsBadSignatureScheme;
+                        const Eddsa = crypto.sign.Ed25519;
+                        if (h.signature.len != Eddsa.Signature.encoded_length) return error.InvalidEncoding;
+                        const sig = Eddsa.Signature.fromBytes(h.signature[0..Eddsa.Signature.encoded_length].*);
+                        if (h.cert_pub_key.len != Eddsa.PublicKey.encoded_length) return error.InvalidEncoding;
+                        const key = try Eddsa.PublicKey.fromBytes(h.cert_pub_key[0..Eddsa.PublicKey.encoded_length].*);
+                        try sig.verify(verify_bytes, key);
+                    },
+
                     inline .rsa_pss_rsae_sha256,
                     .rsa_pss_rsae_sha384,
                     .rsa_pss_rsae_sha512,
@@ -563,7 +576,7 @@ pub fn ClientT(comptime StreamType: type) type {
             fn SchemeEcdsa(comptime scheme: tls.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
                 return switch (scheme) {
                     .ecdsa_secp256r1_sha256 => switch (cert_named_curve) {
-                        .secp384r1 => crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256),
+                        .secp384r1 => EcdsaP384Sha256,
                         else => EcdsaP256Sha256,
                     },
                     .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
@@ -1073,14 +1086,16 @@ const DhKeyPair = struct {
     x25519_kp: X25519.KeyPair = undefined,
     secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
     secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
+    kyber768_kp: Kyber768.KeyPair = undefined,
 
-    const seed_len = 48;
+    const seed_len = 64;
 
     fn init(seed: [seed_len]u8) !DhKeyPair {
         return .{
             .x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
             .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[0..EcdsaP256Sha256.KeyPair.seed_length].*),
             .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[0..EcdsaP384Sha384.KeyPair.seed_length].*),
+            .kyber768_kp = try Kyber768.KeyPair.create(seed),
         };
     }
 
@@ -1105,6 +1120,20 @@ const DhKeyPair = struct {
                 const mul = try pk.p.mulPublic(self.secp384r1_kp.secret_key.bytes, .big);
                 break :brk &mul.affineCoordinates().x.toBytes(.big);
             },
+            .x25519_kyber768d00 => brk: {
+                const xksl = crypto.dh.X25519.public_length;
+                const hksl = xksl + Kyber768.ciphertext_length;
+                if (server_pub_key.len != hksl)
+                    return error.TlsIllegalParameter;
+
+                break :brk &((crypto.dh.X25519.scalarmult(
+                    self.x25519_kp.secret_key,
+                    server_pub_key[0..xksl].*,
+                ) catch return error.TlsDecryptFailure) ++ (self.kyber768_kp.secret_key.decaps(
+                    server_pub_key[xksl..hksl],
+                ) catch return error.TlsDecryptFailure));
+            },
+
             else => return error.TlsIllegalParameter,
         };
     }
@@ -1173,11 +1202,11 @@ test "RsaKeyPair" {
 
 test "DhKeyPair.x25519" {
     var buf: [48 + 32 + 32]u8 = undefined;
-    const seed = try hexToBytes(&buf, "4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8bb2");
+    const seed = try hexToBytes(&buf, "4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
     const server_pub_key = try hexToBytes(buf[48..], "3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
     const expected = try hexToBytes(buf[48 + 32 ..], "f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
 
-    const kp = try DhKeyPair.init(seed[0..48].*);
+    const kp = try DhKeyPair.init(seed[0..64].*);
     try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
 }
 
