@@ -40,7 +40,7 @@ pub fn get2(
     var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
 
-    const read_timeout: std.posix.timeval = .{ .tv_sec = 5, .tv_usec = 0 };
+    const read_timeout: std.posix.timeval = .{ .tv_sec = 30, .tv_usec = 0 };
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     var cli = tls.client(tcp);
@@ -169,6 +169,11 @@ const skipped = [_]usize{
     387, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ggpht.com
     465, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://sedoparking.com
     487, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://twimg.com
+
+    // certificate issuer not found, also in curl
+    150,
+    211,
+    396,
 };
 
 // skipped reasons:

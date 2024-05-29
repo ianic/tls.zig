@@ -37,7 +37,7 @@ pub fn ClientT(comptime StreamType: type) type {
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
 
-            errdefer std.debug.print(
+            defer std.debug.print(
                 "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
                 .{
                     host,
@@ -50,6 +50,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             try h.clientHello(host, &c.stream);
             try h.serverFlight1(&c.reader, ca_bundle, host);
+            // std.debug.print("handshake {} {}\n", .{ h.tls_version, h.cipher_suite_tag });
             if (h.tls_version == .tls_1_3) {
                 const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
                 h.cipher = try AppCipher.initHandshake(h.cipher_suite_tag, shared_key, &h.transcript);
@@ -260,6 +261,8 @@ pub fn ClientT(comptime StreamType: type) type {
                 if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
                     return error.TlsBadVersion;
                 h.server_random = (try rec.array(32)).*;
+                if (tls12.isServerHelloRetryRequest(&h.server_random))
+                    return error.TlsServerHelloRetryRequest;
 
                 const session_id_len = try rec.decode(u8);
                 if (session_id_len > 32) return error.TlsIllegalParameter;
@@ -418,6 +421,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 outer: while (true) {
                     var wrap_rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
                     if (wrap_rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                    //std.debug.print("serverFlightTls13 {} {}\n", .{ wrap_rec.content_type, wrap_rec.payload.len });
                     switch (wrap_rec.content_type) {
                         .change_cipher_spec => {
                             try wrap_rec.skip(wrap_rec.payload.len);
@@ -441,6 +445,8 @@ pub fn ClientT(comptime StreamType: type) type {
                                 // TODO: control what type of message is expected
                                 //if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
+                                //std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
+
                                 if (length > tls.max_cipertext_inner_record_len)
                                     return error.TlsUnsupportedFragmentedHandshakeMessage;
                                 if (length > rec.payload.len - 4)
@@ -451,9 +457,10 @@ pub fn ClientT(comptime StreamType: type) type {
                                     h.transcript.update(handshake_payload);
                                     cleartext_buf_head += handshake_payload.len;
                                 }
-                                //std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
+
                                 switch (handshake_type) {
                                     .encrypted_extensions => {
+                                        // std.debug.print("encrypted extensions len: {}\n", .{length});
                                         try rec.skip(length);
                                     },
                                     .certificate => {
