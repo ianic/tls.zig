@@ -86,12 +86,11 @@ pub fn ClientT(comptime StreamType: type) type {
             assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
             const payload = c.encrypt(buffer, content_type, cleartext);
-            //const header = tls12.recordHeader(content_type, payload.len);0x
 
             var iovecs = [_]posix.iovec_const{
-                //.{ .base = &header, .len = header.len },
                 .{ .base = payload.ptr, .len = payload.len },
             };
+            // TODO: ne treba vise writev
             try c.stream.writevAll(&iovecs);
         }
 
@@ -223,11 +222,17 @@ pub fn ClientT(comptime StreamType: type) type {
                     .x25519,
                     .secp256r1,
                     .secp384r1,
+                    // Some sites are not working when sending keyber public key: godaddy.com, secureserver.net
+                    // That key is making hello message big ~1655 bytes instead of 360
+                    // Both have header "Server: ATS/9.2.3"
+                    // In Wireshark I got window update then tcp retransmissions of 1440 bytes without ack.
+                    // After 17sec and 6 retransmissions connection is broken.
                     .x25519_kyber768d00,
                 })) ++ tls.extension(
                     .key_share,
                     array(1, tls.int2(@intFromEnum(tls.NamedGroup.x25519)) ++
                         array(1, h.dh_kp.x25519_kp.public_key) ++
+                        // Disabling keyber, see note above
                         tls.int2(@intFromEnum(tls.NamedGroup.x25519_kyber768d00)) ++
                         array(1, h.dh_kp.x25519_kp.public_key ++ h.dh_kp.kyber768_kp.public_key.toBytes()) ++
                         tls.int2(@intFromEnum(tls.NamedGroup.secp256r1)) ++
@@ -365,7 +370,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 var handshake_state = tls12.HandshakeType.server_hello;
 
                 while (true) {
-                    var rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
+                    var rec = (try reader.next()) orelse return error.EndOfStream;
                     try rec.expectContentType(.handshake);
                     if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
