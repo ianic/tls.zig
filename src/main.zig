@@ -46,9 +46,9 @@ pub fn get2(
     var cli = tls.client(tcp);
     try cli.handshake(host, ca_bundle);
 
-    var buf: [256]u8 = undefined;
-    const req = try std.fmt.bufPrint(buf[128..], "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
-    try cli.write(&buf, req);
+    var buf: [64]u8 = undefined;
+    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    try cli.write(req);
 
     var n: usize = 0;
     while (try cli.next()) |data| {

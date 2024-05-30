@@ -33,6 +33,7 @@ pub fn ClientT(comptime StreamType: type) type {
         app_cipher: AppCipher = undefined,
         client_sequence: usize = 0,
         server_sequence: usize = 0,
+        write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
 
         const Client = @This();
 
@@ -77,15 +78,20 @@ pub fn ClientT(comptime StreamType: type) type {
         ///
         /// Cleartext can be part of the buffer but has to start at byte 16 or
         /// later.
-        pub fn write(c: *Client, buffer: []u8, cleartext: []const u8) !void {
-            try c.write_(buffer, .application_data, cleartext);
+        pub fn write(c: *Client, cleartext: []const u8) !void {
+            var pos: usize = 0;
+            while (pos < cleartext.len) {
+                const data = cleartext[pos..];
+                const n = @min(data.len, tls.max_cipertext_inner_record_len);
+                try c.write_(.application_data, data[0..n]);
+                pos += n;
+            }
         }
 
-        fn write_(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) !void {
+        fn write_(c: *Client, content_type: tls.ContentType, cleartext: []const u8) !void {
             assert(cleartext.len <= tls.max_cipertext_inner_record_len);
-            assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
-            const payload = c.encrypt(buffer, content_type, cleartext);
+            const payload = c.encrypt(&c.write_buf, content_type, cleartext);
             try c.stream.writeAll(payload);
         }
 
@@ -614,40 +620,45 @@ pub fn ClientT(comptime StreamType: type) type {
             /// Sends client key exchange, client chiper spec and client
             /// handshake finished messages.
             fn clientFlight2(h: *Handshake, c: *Client) !void {
-                const key: []const u8 = if (h.named_group) |named_group|
-                    try h.dh_kp.publicKey(named_group)
-                else
-                    try h.rsa_kp.publicKey(h.cert_pub_key_algo, h.cert_pub_key);
+                var fbs = std.io.fixedBufferStream(&c.write_buf);
 
-                const key_exchange = if (h.named_group != null)
-                    &tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
-                        tls12.int1(@intCast(key.len))
-                else
-                    &tls12.handshakeHeader(.client_key_exchange, 2 + key.len) ++
-                        tls12.int2(@intCast(key.len));
+                // client key exchange message
+                {
+                    const key: []const u8 = if (h.named_group) |named_group|
+                        try h.dh_kp.publicKey(named_group)
+                    else
+                        try h.rsa_kp.publicKey(h.cert_pub_key_algo, h.cert_pub_key);
 
-                h.transcript.update(key_exchange[tls.record_header_len..]);
-                h.transcript.update(key);
+                    const header = if (h.named_group != null)
+                        &tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
+                            tls12.int1(@intCast(key.len))
+                    else
+                        &tls12.handshakeHeader(.client_key_exchange, 2 + key.len) ++
+                            tls12.int2(@intCast(key.len));
 
-                const change_cipher_spec =
-                    tls12.recordHeader(.change_cipher_spec, 1) ++
-                    tls12.int1(1);
+                    _ = try fbs.write(header);
+                    _ = try fbs.write(key);
 
-                const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
-                const handshake_finished = brk: {
-                    // encrypt client_finished into handshake_finished record
-                    var buffer: [AppCipher.max_overhead + tls.record_header_len + 16]u8 = undefined;
-                    break :brk c.encrypt(&buffer, .handshake, &client_finished);
-                };
-                h.transcript.update(&client_finished);
+                    h.transcript.update(fbs.getWritten()[tls.record_header_len..]);
+                }
 
-                var iovecs = [_]posix.iovec_const{
-                    .{ .base = key_exchange.ptr, .len = key_exchange.len },
-                    .{ .base = key.ptr, .len = key.len },
-                    .{ .base = &change_cipher_spec, .len = change_cipher_spec.len },
-                    .{ .base = handshake_finished.ptr, .len = handshake_finished.len },
-                };
-                try c.stream.writevAll(&iovecs);
+                // client change cipher spec message
+                {
+                    const change_cipher_spec = tls12.recordHeader(.change_cipher_spec, 1) ++ tls12.int1(1);
+                    _ = try fbs.write(&change_cipher_spec);
+                }
+
+                // client handshake finished message
+                {
+                    // verify data + handshake header
+                    const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
+                    h.transcript.update(&client_finished);
+                    // encrypt client_finished into handshake_finished tls record
+                    const handshake_finished = c.encrypt(fbs.buffer[fbs.pos..], .handshake, &client_finished);
+                    fbs.pos += handshake_finished.len;
+                }
+
+                try c.stream.writeAll(fbs.getWritten());
             }
 
             fn serverFlight2(h: *Handshake, c: *Client) !void {
@@ -727,12 +738,11 @@ test "Client encrypt decrypt" {
     var c = client(stream);
     c.app_cipher = try AppCipher.init(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
 
-    var encrypt_buffer: [1024]u8 = undefined;
     c.stream.output.reset();
     { // encrypt verify data from example
         c.client_sequence = 0; //
         test_rnd.idx = 0x40; // sets iv to 40, 41, ... 4f
-        try c.write_(&encrypt_buffer, .handshake, &example.client_finished);
+        try c.write_(.handshake, &example.client_finished);
         try testing.expectEqualSlices(u8, &example.verify_data_encrypted_msg, c.stream.output.getWritten());
     }
 
@@ -742,7 +752,7 @@ test "Client encrypt decrypt" {
         test_rnd.idx = 0; // sets iv to 00, 01, ... 0f
         c.client_sequence = 1;
 
-        try c.write(&encrypt_buffer, cleartext);
+        try c.write(cleartext);
         try testing.expectEqualSlices(u8, &example.encrypted_ping_msg, c.stream.output.getWritten());
     }
     { // descrypt server pong message
@@ -785,15 +795,6 @@ const TestStream = struct {
             .input = std.io.fixedBufferStream(input),
             .output = std.io.fixedBufferStream(output),
         };
-    }
-
-    pub fn writevAll(self: *TestStream, iovecs: []posix.iovec_const) !void {
-        for (iovecs) |iovec| {
-            var buf: []const u8 = undefined;
-            buf.ptr = iovec.base;
-            buf.len = iovec.len;
-            self.writeAll(buf);
-        }
     }
 
     pub fn writeAll(self: *TestStream, buf: []const u8) !void {
