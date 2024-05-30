@@ -81,6 +81,32 @@ pub const Transcript = struct {
             .sha384 => &self.sha384.clientFinished13Msg(),
         };
     }
+
+    pub inline fn handshakeSecret(self: *Transcript, cs: tls12.CipherSuite, shared_key: []const u8) ClientServerSecret {
+        return switch (cs.hash()) {
+            .sha384 => self.sha384.handshakeSecret(shared_key),
+            .sha256 => self.sha256.handshakeSecret(shared_key),
+        };
+    }
+
+    pub inline fn applicationSecret(self: *Transcript, cs: tls12.CipherSuite) ClientServerSecret {
+        return switch (cs.hash()) {
+            .sha384 => self.sha384.applicationSecret(),
+            .sha256 => self.sha256.applicationSecret(),
+        };
+    }
+
+    pub fn Hkdf(cs: tls12.CipherSuite) type {
+        return switch (cs.hash()) {
+            .sha384 => Transcript384.Hkdf,
+            .sha256 => Transcript256.Hkdf,
+        };
+    }
+};
+
+const ClientServerSecret = struct {
+    client: []const u8,
+    server: []const u8,
 };
 
 pub fn TranscriptT(comptime HashType: type) type {
@@ -172,7 +198,7 @@ pub fn TranscriptT(comptime HashType: type) type {
 
         // tls 1.3
 
-        pub fn handshakeSecret(self: *Self, shared_key: []const u8) struct { client: [Hash.digest_length]u8, server: [Hash.digest_length]u8 } {
+        pub inline fn handshakeSecret(self: *Self, shared_key: []const u8) ClientServerSecret {
             const hello_hash = self.transcript.peek();
 
             const zeroes = [1]u8{0} ** Hash.digest_length;
@@ -187,10 +213,10 @@ pub fn TranscriptT(comptime HashType: type) type {
             self.server_finished_key = hkdfExpandLabel(Hkdf, server_secret, "finished", "", Hmac.key_length);
             self.client_finished_key = hkdfExpandLabel(Hkdf, client_secret, "finished", "", Hmac.key_length);
 
-            return .{ .client = client_secret, .server = server_secret };
+            return .{ .client = &client_secret, .server = &server_secret };
         }
 
-        pub fn applicationSecret(self: *Self) struct { client: [Hash.digest_length]u8, server: [Hash.digest_length]u8 } {
+        pub inline fn applicationSecret(self: *Self) ClientServerSecret {
             const handshake_hash = self.transcript.peek();
 
             const empty_hash = tls.emptyHash(Hash);
@@ -201,7 +227,7 @@ pub fn TranscriptT(comptime HashType: type) type {
             const client_secret = hkdfExpandLabel(Hkdf, master_secret, "c ap traffic", &handshake_hash, Hash.digest_length);
             const server_secret = hkdfExpandLabel(Hkdf, master_secret, "s ap traffic", &handshake_hash, Hash.digest_length);
 
-            return .{ .client = client_secret, .server = server_secret };
+            return .{ .client = &client_secret, .server = &server_secret };
         }
 
         pub fn serverFinished13(self: *Self) [mac_length]u8 {
@@ -222,13 +248,13 @@ pub fn TranscriptT(comptime HashType: type) type {
 }
 
 pub const AppCipher = union(tls12.CipherSuite.Cipher) {
+    // tls 1.2
     aes_128_cbc_sha: CipherCbcT(Aes128Cbc, Sha1),
     aes_128_cbc_sha256: CipherCbcT(Aes128Cbc, Sha256),
     aes_256_cbc_sha384: CipherCbcT(Aes256Cbc, Sha384),
     aes_128_gcm: CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm),
     aes_256_gcm: CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm),
-
-    // tls13
+    // tls 1.3
     aes_256_gcm_sha384: CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm),
     aes_128_gcm_sha256: CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm),
     chacha20_poly1305_sha256: CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305),
@@ -245,112 +271,54 @@ pub const AppCipher = union(tls12.CipherSuite.Cipher) {
     }
 
     pub fn initHandshake(tag: tls12.CipherSuite, shared_key: []const u8, transcript: *Transcript) !AppCipher {
-        return switch (try tag.cipher()) {
-            .aes_256_gcm_sha384 => {
-                const Hkdf = @TypeOf(transcript.sha384).Hkdf;
-                const AEAD = CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm);
-                const hs_secret = transcript.sha384.handshakeSecret(shared_key);
-
-                return .{ .aes_256_gcm_sha384 = AEAD{
-                    .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_len),
-                    .rnd = crypto.random,
-                } };
-            },
-            .aes_128_gcm_sha256 => {
-                const Hkdf = @TypeOf(transcript.sha256).Hkdf;
-                const AEAD = CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm);
-                const hs_secret = transcript.sha256.handshakeSecret(shared_key);
-
-                return .{ .aes_128_gcm_sha256 = AEAD{
-                    .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_len),
-                    .rnd = crypto.random,
-                } };
-            },
-            .chacha20_poly1305_sha256 => {
-                const Hkdf = @TypeOf(transcript.sha256).Hkdf;
-                const AEAD = CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305);
-                const hs_secret = transcript.sha256.handshakeSecret(shared_key);
-
-                return .{ .chacha20_poly1305_sha256 = AEAD{
-                    .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_len),
-                    .rnd = crypto.random,
-                } };
+        return switch (tag) {
+            inline .CHACHA20_POLY1305_SHA256,
+            .AES_128_GCM_SHA256,
+            .AES_256_GCM_SHA384,
+            => |comptime_tag| {
+                return init13(comptime_tag, transcript.handshakeSecret(comptime_tag, shared_key));
             },
             else => return error.TlsIllegalParameter,
         };
     }
 
     pub fn initApp(tag: tls12.CipherSuite, transcript: *Transcript) !AppCipher {
-        return switch (try tag.cipher()) {
-            .aes_256_gcm_sha384 => {
-                const Hkdf = @TypeOf(transcript.sha384).Hkdf;
-                const AEAD = CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm);
-                const ap_secret = transcript.sha384.applicationSecret();
-
-                return .{ .aes_256_gcm_sha384 = AEAD{
-                    .client_key = hkdfExpandLabel(Hkdf, ap_secret.client, "key", "", AEAD.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, ap_secret.server, "key", "", AEAD.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, ap_secret.client, "iv", "", AEAD.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, ap_secret.server, "iv", "", AEAD.nonce_len),
-                    .rnd = crypto.random,
-                } };
-            },
-            .aes_128_gcm_sha256 => {
-                const Hkdf = @TypeOf(transcript.sha256).Hkdf;
-                const AEAD = CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm);
-                const hs_secret = transcript.sha256.applicationSecret();
-
-                return .{ .aes_128_gcm_sha256 = AEAD{
-                    .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_len),
-                    .rnd = crypto.random,
-                } };
-            },
-            .chacha20_poly1305_sha256 => {
-                const Hkdf = @TypeOf(transcript.sha256).Hkdf;
-                const AEAD = CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305);
-                const hs_secret = transcript.sha256.applicationSecret();
-
-                return .{ .chacha20_poly1305_sha256 = AEAD{
-                    .client_key = hkdfExpandLabel(Hkdf, hs_secret.client, "key", "", AEAD.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, hs_secret.server, "key", "", AEAD.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, hs_secret.client, "iv", "", AEAD.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, hs_secret.server, "iv", "", AEAD.nonce_len),
-                    .rnd = crypto.random,
-                } };
+        return switch (tag) {
+            inline .CHACHA20_POLY1305_SHA256,
+            .AES_128_GCM_SHA256,
+            .AES_256_GCM_SHA384,
+            => |comptime_tag| {
+                return init13(comptime_tag, transcript.applicationSecret(comptime_tag));
             },
             else => return error.TlsIllegalParameter,
         };
     }
 
-    const Self = @This();
-
-    pub fn overhead(self: Self) usize {
-        return switch (self) {
-            .aes_128_cbc_sha => 16 + 20 + 16, // iv (16 bytes), mac (20 bytes), padding (1-16 bytes)
-            .aes_128_cbc_sha256 => 16 + 32 + 16, // iv (16 bytes), mac (32 bytes), padding (1-16 bytes)
-            .aes_256_cbc_sha384 => 16 + 48 + 16,
-            .aes_128_gcm => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
-            .aes_256_gcm => 8 + 16, // explicit_iv (8 bytes) + auth_tag_len (16 bytes)
-            else => 8, // TODO
+    fn init13(comptime tag: tls12.CipherSuite, secret: ClientServerSecret) !AppCipher {
+        const cipher_tag = switch (tag) {
+            .AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
+            .AES_128_GCM_SHA256 => .aes_128_gcm_sha256,
+            .CHACHA20_POLY1305_SHA256 => .chacha20_poly1305_sha256,
+            else => unreachable,
         };
+        const Hkdf = Transcript.Hkdf(tag);
+        const AEAD = AeadType(tag);
+        return @unionInit(AppCipher, @tagName(cipher_tag), .{
+            .client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", AEAD.key_len),
+            .server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", AEAD.key_len),
+            .client_iv = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "iv", "", AEAD.nonce_len),
+            .server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", AEAD.nonce_len),
+            .rnd = crypto.random,
+        });
     }
 
-    pub const max_overhead = 16 + 48 + 16;
-
-    pub fn minEncryptBufferLen(self: Self, cleartext_len: usize) usize {
-        return self.overhead() + cleartext_len;
+    fn AeadType(comptime cs: tls12.CipherSuite) type {
+        return switch (cs) {
+            .AES_256_GCM_SHA384 => CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm),
+            .AES_128_GCM_SHA256 => CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm),
+            .CHACHA20_POLY1305_SHA256 => CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305),
+            else => unreachable,
+        };
     }
 };
 
@@ -497,9 +465,9 @@ fn CipherAead13T(comptime AeadType: type) type {
 
 fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
     return struct {
-        const mac_length = HashType.digest_length; // 20 bytes for sha1
-        const key_length = CbcType.key_length; // 16 bytes for CBCAed128
-        const iv_length = CbcType.nonce_length; // 16 bytes for CBCAed128
+        const mac_length = HashType.digest_length; // 20, 32, 48 bytes for sha1, sha256, sha384
+        const key_length = CbcType.key_length; // 16 bytes
+        const iv_length = CbcType.nonce_length; // 16 bytes
 
         pub const CBC = CbcType;
         pub const Hmac = crypto.auth.hmac.Hmac(HashType);
@@ -522,6 +490,10 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             };
         }
 
+        // max encrypt buf overhead = iv + mac + padding (1-16)
+        // aes_128_cbc_sha => 16 + 20 + 16
+        // aes_128_cbc_sha256 => 16 + 32 + 16
+        // aes_256_cbc_sha384 => 16 + 48 + 16
         pub fn encrypt(
             cipher: Cipher,
             buf: []u8,
@@ -555,7 +527,6 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
 
             CBC.init(cipher.client_key).encrypt(payload_buf, payload_buf, iv[0..iv_length].*);
             buf[0..tls.record_header_len].* = tls12.recordHeader(content_type, iv_length + payload_buf.len);
-            //return buf[cleartext_idx - iv_length .. cleartext_idx + payload_buf.len];
             return buf[0 .. cleartext_idx + payload_buf.len];
         }
 

@@ -135,8 +135,6 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) []const u8 {
-            assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
-
             defer c.client_sequence += 1;
             return switch (c.app_cipher) {
                 inline else => |*p| p.encrypt(buffer, c.client_sequence, content_type, cleartext),
@@ -144,7 +142,8 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         pub fn close(c: *Client) !void {
-            var buffer: [AppCipher.max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
+            const max_overhead = 256;
+            var buffer: [max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
             const msg = c.encrypt(&buffer, .alert, &tls12.close_notify_alert);
             try c.stream.writeAll(msg);
         }

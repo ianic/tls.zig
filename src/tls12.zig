@@ -166,7 +166,7 @@ pub const CipherSuite = enum(u16) {
         sha384,
     };
 
-    pub fn hash(cs: CipherSuite) Hash {
+    pub inline fn hash(cs: CipherSuite) Hash {
         return switch (cs) {
             .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
