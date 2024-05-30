@@ -86,12 +86,7 @@ pub fn ClientT(comptime StreamType: type) type {
             assert(buffer.len >= c.app_cipher.minEncryptBufferLen(cleartext.len));
 
             const payload = c.encrypt(buffer, content_type, cleartext);
-
-            var iovecs = [_]posix.iovec_const{
-                .{ .base = payload.ptr, .len = payload.len },
-            };
-            // TODO: ne treba vise writev
-            try c.stream.writevAll(&iovecs);
+            try c.stream.writeAll(payload);
         }
 
         /// Can be used in iterator like loop without memcpy to another buffer:
@@ -196,8 +191,8 @@ pub fn ClientT(comptime StreamType: type) type {
             fn clientHello(h: *Handshake, host: []const u8, stream: *StreamType) !void {
                 const enum_array = tls.enum_array;
                 const array = tls.array;
-                const host_len: u16 = @intCast(host.len);
 
+                const server_name_extension, const padding = tls12.serverNameExtension(host);
                 const extensions_payload =
                     tls.extension(.supported_versions, [_]u8{
                     0x04, // byte length of supported versions
@@ -240,7 +235,7 @@ pub fn ClientT(comptime StreamType: type) type {
                         tls.int2(@intFromEnum(tls.NamedGroup.secp384r1)) ++
                         array(1, h.dh_kp.secp384r1_kp.public_key.toUncompressedSec1())),
                 ) ++
-                    tls12.serverNameExtensionHeader(host_len);
+                    server_name_extension;
 
                 const payload =
                     tls12.hello.protocol_version ++
@@ -248,21 +243,16 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.hello.no_session_id ++
                     enum_array(tls12.CipherSuite, &(tls12.CipherSuite.supported ++ tls12.CipherSuite.supported13)) ++
                     tls12.hello.no_compression ++
-                    tls.int2(@intCast(extensions_payload.len + host_len)) ++
+                    tls.int2(@intCast(extensions_payload.len - padding)) ++
                     extensions_payload;
 
                 const record =
-                    tls12.handshakeHeader(.client_hello, payload.len + host_len) ++
+                    tls12.handshakeHeader(.client_hello, payload.len - padding) ++
                     payload;
+                const out = record[0 .. record.len - padding];
 
-                h.transcript.update(record[tls.record_header_len..]);
-                h.transcript.update(host);
-
-                var iovecs = [_]posix.iovec_const{
-                    .{ .base = &record, .len = record.len },
-                    .{ .base = host.ptr, .len = host.len },
-                };
-                try stream.writevAll(&iovecs);
+                h.transcript.update(out[tls.record_header_len..]);
+                try stream.writeAll(out);
             }
 
             fn serverHello(h: *Handshake, rec: *Record, length: u24) !void {
@@ -802,8 +792,12 @@ const TestStream = struct {
             var buf: []const u8 = undefined;
             buf.ptr = iovec.base;
             buf.len = iovec.len;
-            _ = try self.output.write(buf);
+            self.writeAll(buf);
         }
+    }
+
+    pub fn writeAll(self: *TestStream, buf: []const u8) !void {
+        try self.output.writer().writeAll(buf);
     }
 
     pub fn read(self: *TestStream, buffer: []u8) !usize {

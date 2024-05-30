@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const crypto = std.crypto;
 const tls = crypto.tls;
 pub const int2 = tls.int2;
@@ -36,12 +37,19 @@ pub inline fn int2e(x: anytype) [2]u8 {
     return int2(@intFromEnum(x));
 }
 
-pub inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
-    return int2e(tls.ExtensionType.server_name) ++
-        int2(host_len + 5) ++ // byte length of this extension payload
-        int2(host_len + 3) ++ // server_name_list byte count
+// Returns extension payload and number of padding bytes.
+pub inline fn serverNameExtension(host: []const u8) struct { [269]u8, usize } {
+    assert(host.len <= 255);
+    var ext = int2e(tls.ExtensionType.server_name) ++
+        int2(@intCast(host.len + 5)) ++ // byte length of this extension payload
+        int2(@intCast(host.len + 3)) ++ // server_name_list byte count
         [1]u8{0x00} ++ // name_type
-        int2(host_len);
+        int2(@intCast(host.len)) ++
+        [_]u8{0} ** 260;
+    @memcpy(ext[9..][0..host.len], host);
+    ext[9 + host.len ..][0..2].* = [_]u8{ 0x00, 0x15 };
+    ext[9 + host.len + 2 ..][0..2].* = int2(@intCast(260 - host.len - 4));
+    return .{ ext, 260 - host.len };
 }
 
 pub const CipherSuite = enum(u16) {
@@ -230,7 +238,7 @@ test "tls1.3 ciphers" {
     {
         const cs: CipherSuite = .AES_128_GCM_SHA256;
         try cs.validate();
-        try testing.expectEqual(.aes_128_gcm, cs.cipher());
+        try testing.expectEqual(.aes_128_gcm_sha256, cs.cipher());
         try testing.expectEqual(.sha256, cs.hash());
         try testing.expectEqual(.ecdhe, cs.keyExchange());
     }
