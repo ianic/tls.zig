@@ -6,7 +6,7 @@ const mem = std.mem;
 
 const tls = crypto.tls;
 const tls12 = @import("tls12.zig");
-const AppCipher = @import("cipher.zig").AppCipher;
+const Cipher = @import("cipher.zig").Cipher;
 const Transcript = @import("cipher.zig").Transcript;
 
 const Certificate = crypto.Certificate;
@@ -30,7 +30,7 @@ pub fn ClientT(comptime StreamType: type) type {
         stream: StreamType,
         reader: RecordReaderType,
 
-        app_cipher: AppCipher = undefined,
+        cipher: Cipher = undefined,
         client_sequence: usize = 0,
         server_sequence: usize = 0,
         write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
@@ -55,9 +55,9 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.serverFlight1(&c.reader, ca_bundle, host);
             if (h.tls_version == .tls_1_3) {
                 const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
-                h.cipher = try AppCipher.initHandshake(h.cipher_suite_tag, shared_key, &h.transcript);
+                h.cipher = try Cipher.initHandshake(h.cipher_suite_tag, shared_key, &h.transcript);
                 try h.serverFlightTls13(&c.reader, ca_bundle, host);
-                c.app_cipher = try AppCipher.initApp(h.cipher_suite_tag, &h.transcript);
+                c.cipher = try Cipher.initApplication(h.cipher_suite_tag, &h.transcript);
                 try h.clientFlight2Tls13(c);
                 return;
             }
@@ -66,7 +66,7 @@ pub fn ClientT(comptime StreamType: type) type {
             if (h.cipher_suite_tag.keyExchange() == .ecdhe)
                 try h.verifySignature12();
             try h.generateKeyMaterial();
-            c.app_cipher = try AppCipher.init(h.cipher_suite_tag, h.key_material, crypto.random);
+            c.cipher = try Cipher.init12(h.cipher_suite_tag, h.key_material, crypto.random);
 
             try h.clientFlight2(c);
             try h.serverFlight2(c);
@@ -102,7 +102,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 const rec = (try c.reader.next()) orelse return null;
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
-                const content_type, const cleartext = switch (c.app_cipher) {
+                const content_type, const cleartext = switch (c.cipher) {
                     inline else => |*p| try p.decrypt(rec.payload, c.server_sequence, rec.header, rec.payload),
                 };
                 c.server_sequence += 1;
@@ -130,7 +130,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
         fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) []const u8 {
             defer c.client_sequence += 1;
-            return switch (c.app_cipher) {
+            return switch (c.cipher) {
                 inline else => |*p| p.encrypt(buffer, c.client_sequence, content_type, cleartext),
             };
         }
@@ -141,36 +141,30 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         const Handshake = struct {
-            const master_secret_len = 48;
-
             client_random: [32]u8,
             server_random: [32]u8 = undefined,
-            master_secret: [master_secret_len]u8 = undefined,
+            master_secret: [48]u8 = undefined,
             key_material_buf: [48 * 4]u8 = undefined,
             key_material: []u8 = undefined,
 
             transcript: Transcript = .{},
-
             cipher_suite_tag: tls12.CipherSuite = undefined,
             named_group: ?tls.NamedGroup = null,
             dh_kp: DhKeyPair,
             rsa_kp: RsaKeyPair,
             signature_scheme: tls.SignatureScheme = undefined,
-
             now_sec: i64 = 0,
+            tls_version: tls.ProtocolVersion = .tls_1_2,
+            cipher: Cipher = undefined,
 
             cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
             cert_pub_key_buf: [600]u8 = undefined,
             cert_pub_key: []const u8 = undefined,
-
             // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_kyber768d00 = 1120
             server_pub_key_buf: [1120]u8 = undefined,
             server_pub_key: []const u8 = undefined,
             signature_buf: [1024]u8 = undefined,
             signature: []const u8 = undefined,
-
-            tls_version: tls.ProtocolVersion = .tls_1_2,
-            cipher: AppCipher = undefined,
 
             pub fn init() !Handshake {
                 var rand_buf: [32 + 64 + 46]u8 = undefined;
@@ -595,12 +589,11 @@ pub fn ClientT(comptime StreamType: type) type {
                     &h.rsa_kp.pre_master_secret;
 
                 h.master_secret = Transcript.masterSecret(
-                    master_secret_len,
                     h.cipher_suite_tag,
                     pre_master_secret,
                     h.client_random,
                     h.server_random,
-                );
+                )[0..h.master_secret.len].*;
                 h.key_material = try dupe(&h.key_material_buf, Transcript.keyMaterial(
                     h.cipher_suite_tag,
                     &h.master_secret,
@@ -728,7 +721,7 @@ test "Client encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = TestStream.init(&example.server_pong, &output_buf);
     var c = client(stream);
-    c.app_cipher = try AppCipher.init(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
+    c.cipher = try Cipher.init12(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
 
     c.stream.output.reset();
     { // encrypt verify data from example
@@ -771,7 +764,7 @@ test "Handshake.verifyData" {
     const stream = TestStream.init(&example.server_handshake_finished_msgs, &output_buf);
     // init client with prepared key_material
     var c = client(stream);
-    c.app_cipher = try AppCipher.init(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, crypto.random);
+    c.cipher = try Cipher.init12(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, crypto.random);
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&example.client_finished);
@@ -1325,7 +1318,7 @@ test "tls13 handshake cipher" {
     const shared_key = try dh_kp.preMasterSecret(.x25519, &example13.server_pub_key);
     try testing.expectEqualSlices(u8, &example13.shared_key, shared_key);
 
-    const cipher = try AppCipher.initHandshake(cipher_suite_tag, shared_key, &transcript);
+    const cipher = try Cipher.initHandshake(cipher_suite_tag, shared_key, &transcript);
 
     const c = &cipher.aes_256_gcm_sha384;
     try testing.expectEqualSlices(u8, &example13.server_handshake_key, &c.server_key);
@@ -1334,19 +1327,19 @@ test "tls13 handshake cipher" {
     try testing.expectEqualSlices(u8, &example13.client_handshake_iv, &c.client_iv);
 }
 
-fn exampleHandshakeCipher() !AppCipher {
+fn exampleHandshakeCipher() !Cipher {
     const cipher_suite_tag: tls12.CipherSuite = .AES_256_GCM_SHA384;
     var transcript = Transcript{};
     transcript.update(example13.client_hello[tls.record_header_len..]);
     transcript.update(example13.server_hello[tls.record_header_len..]);
-    return try AppCipher.initHandshake(cipher_suite_tag, &example13.shared_key, &transcript);
+    return try Cipher.initHandshake(cipher_suite_tag, &example13.shared_key, &transcript);
 }
 
 fn initExampleHandshake(h: *ClientT(TestStream).Handshake) !void {
     h.cipher_suite_tag = .AES_256_GCM_SHA384;
     h.transcript.update(example13.client_hello[tls.record_header_len..]);
     h.transcript.update(example13.server_hello[tls.record_header_len..]);
-    h.cipher = try AppCipher.initHandshake(h.cipher_suite_tag, &example13.shared_key, &h.transcript);
+    h.cipher = try Cipher.initHandshake(h.cipher_suite_tag, &example13.shared_key, &h.transcript);
     h.tls_version = .tls_1_3;
     h.now_sec = 1714846451;
     h.server_pub_key = &example13.server_pub_key;
@@ -1393,9 +1386,9 @@ test "tls13 process server flight" {
     try h.serverFlightTls13(&reader, null, "example.ulfheim.net");
 
     { // application cipher keys calculation
-        try testing.expectEqualSlices(u8, &example13.handshake_hash, &h.transcript.sha384.transcript.peek());
+        try testing.expectEqualSlices(u8, &example13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cipher = try AppCipher.initApp(h.cipher_suite_tag, &h.transcript);
+        const cipher = try Cipher.initApplication(h.cipher_suite_tag, &h.transcript);
         const c = &cipher.aes_256_gcm_sha384;
         try testing.expectEqualSlices(u8, &example13.server_application_key, &c.server_key);
         try testing.expectEqualSlices(u8, &example13.client_application_key, &c.client_key);
