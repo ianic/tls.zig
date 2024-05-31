@@ -294,7 +294,7 @@ pub const AppCipher = union(tls12.CipherSuite.Cipher) {
         };
     }
 
-    fn init13(comptime tag: tls12.CipherSuite, secret: ClientServerSecret) !AppCipher {
+    fn init13(comptime tag: tls12.CipherSuite, secret: ClientServerSecret) AppCipher {
         const cipher_tag = switch (tag) {
             .AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
             .AES_128_GCM_SHA256 => .aes_128_gcm_sha256,
@@ -302,7 +302,12 @@ pub const AppCipher = union(tls12.CipherSuite.Cipher) {
             else => unreachable,
         };
         const Hkdf = Transcript.Hkdf(tag);
-        const AEAD = AeadType(tag);
+        const AEAD = switch (tag) {
+            .AES_256_GCM_SHA384 => CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm),
+            .AES_128_GCM_SHA256 => CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm),
+            .CHACHA20_POLY1305_SHA256 => CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305),
+            else => unreachable,
+        };
         return @unionInit(AppCipher, @tagName(cipher_tag), .{
             .client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", AEAD.key_len),
             .server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", AEAD.key_len),
@@ -310,15 +315,6 @@ pub const AppCipher = union(tls12.CipherSuite.Cipher) {
             .server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", AEAD.nonce_len),
             .rnd = crypto.random,
         });
-    }
-
-    fn AeadType(comptime cs: tls12.CipherSuite) type {
-        return switch (cs) {
-            .AES_256_GCM_SHA384 => CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm),
-            .AES_128_GCM_SHA256 => CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm),
-            .CHACHA20_POLY1305_SHA256 => CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305),
-            else => unreachable,
-        };
     }
 };
 

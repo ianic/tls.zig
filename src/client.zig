@@ -72,12 +72,6 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.serverFlight2(c);
         }
 
-        /// Low level api. Cleartext can't be greater than tls record
-        /// (16K). Buffer has to be bigger than cleartext for encryption
-        /// overhead (AppCipherT.max_overhead = 52 bytes).
-        ///
-        /// Cleartext can be part of the buffer but has to start at byte 16 or
-        /// later.
         pub fn write(c: *Client, cleartext: []const u8) !void {
             var pos: usize = 0;
             while (pos < cleartext.len) {
@@ -142,9 +136,7 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         pub fn close(c: *Client) !void {
-            const max_overhead = 256;
-            var buffer: [max_overhead + tls.record_header_len + tls12.close_notify_alert.len]u8 = undefined;
-            const msg = c.encrypt(&buffer, .alert, &tls12.close_notify_alert);
+            const msg = c.encrypt(&c.write_buf, .alert, &tls12.close_notify_alert);
             try c.stream.writeAll(msg);
         }
 
@@ -416,10 +408,11 @@ pub fn ClientT(comptime StreamType: type) type {
                 ca_bundle: ?Certificate.Bundle,
                 host: []const u8,
             ) !void {
-                var sequence: u64 = 0; // TODO
+                var sequence: u64 = 0;
                 var cleartext_buf: [tls.max_cipertext_inner_record_len]u8 = undefined;
                 var cleartext_buf_head: usize = 0;
                 var cleartext_buf_tail: usize = 0;
+                var handshake_state: tls.HandshakeType = .encrypted_extensions;
 
                 outer: while (true) {
                     var wrap_rec = (try reader.next()) orelse return error.TlsUnexpectedMessage;
@@ -445,11 +438,8 @@ pub fn ClientT(comptime StreamType: type) type {
                                 const start_idx = rec.idx;
                                 const handshake_type = try rec.decode(tls.HandshakeType);
                                 const length = try rec.decode(u24);
-                                // TODO: control what type of message is expected
-                                //if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
                                 // std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
-
                                 if (length > tls.max_cipertext_inner_record_len)
                                     return error.TlsUnsupportedFragmentedHandshakeMessage;
                                 if (length > rec.payload.len - 4)
@@ -461,20 +451,23 @@ pub fn ClientT(comptime StreamType: type) type {
                                     cleartext_buf_head += handshake_payload.len;
                                 }
 
+                                if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                                 switch (handshake_type) {
                                     .encrypted_extensions => {
-                                        // std.debug.print("encrypted extensions len: {}\n", .{length});
                                         try rec.skip(length);
+                                        handshake_state = .certificate;
                                     },
                                     .certificate => {
                                         const request_context = try rec.decode(u8);
                                         if (request_context != 0) return error.TlsIllegalParameter;
                                         try h.serverCertificate(&rec, ca_bundle, host);
+                                        handshake_state = .certificate_verify;
                                     },
                                     .certificate_verify => {
                                         h.signature_scheme = try rec.decode(tls.SignatureScheme);
                                         h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
                                         try h.verifySignature(h.transcript.verifyBytes13(h.cipher_suite_tag));
+                                        handshake_state = .finished;
                                     },
                                     .finished => {
                                         const actual = try rec.slice(length);

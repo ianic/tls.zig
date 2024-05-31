@@ -53,6 +53,7 @@ pub inline fn serverNameExtension(host: []const u8) struct { [269]u8, usize } {
 }
 
 pub const CipherSuite = enum(u16) {
+    // tls 1.2
     TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
     TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
 
@@ -66,9 +67,11 @@ pub const CipherSuite = enum(u16) {
     TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
     TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
 
-    // TLS 1.3
-    //TLS_AES_256_GCM_SHA384 = 0x1302,
+    // TODO: implement this
+    TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
+    TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
 
+    // tls 1.3
     AES_128_GCM_SHA256 = 0x1301,
     AES_256_GCM_SHA384 = 0x1302,
     CHACHA20_POLY1305_SHA256 = 0x1303,
@@ -113,10 +116,10 @@ pub const CipherSuite = enum(u16) {
         rsa,
     };
 
-    // Random premaster secret, encrypted with publich key from certificate.
-    // No server key exchange message.
     pub fn keyExchange(s: CipherSuite) KeyExchangeAlgorithm {
         return switch (s) {
+            // Random premaster secret, encrypted with publich key from certificate.
+            // No server key exchange message.
             .TLS_RSA_WITH_AES_128_CBC_SHA,
             .TLS_RSA_WITH_AES_128_CBC_SHA256,
             .TLS_RSA_WITH_AES_256_CBC_SHA256,
