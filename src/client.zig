@@ -3,11 +3,7 @@ const assert = std.debug.assert;
 const crypto = std.crypto;
 const posix = std.posix;
 const mem = std.mem;
-
 const tls = crypto.tls;
-const tls12 = @import("tls12.zig");
-const Cipher = @import("cipher.zig").Cipher;
-const Transcript = @import("cipher.zig").Transcript;
 
 const Certificate = crypto.Certificate;
 const rsa = Certificate.rsa;
@@ -16,6 +12,10 @@ const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 const EcdsaP384Sha256 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
 const Kyber768 = crypto.kem.kyber_d00.Kyber768;
+
+const tls12 = @import("tls12.zig");
+const Cipher = @import("cipher.zig").Cipher;
+const Transcript = @import("transcript.zig").Transcript;
 
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
     return .{
@@ -1401,11 +1401,11 @@ test "tls13 process server flight" {
         try testing.expectEqualSlices(u8, &example13.client_ping_wrapped, encrypted);
     }
     { // client finished message
-        const client_finished = h.transcript.sha384.clientFinished13Msg();
+        const client_finished = h.transcript.clientFinished13Msg(.AES_256_GCM_SHA384);
         try testing.expectEqualSlices(u8, &example13.client_finished_verify_data, client_finished[4..]);
 
         const encrypted = switch (h.cipher) {
-            inline else => |*p| p.encrypt(&buffer, 0, .handshake, &client_finished),
+            inline else => |*p| p.encrypt(&buffer, 0, .handshake, client_finished),
         };
         try testing.expectEqualSlices(u8, &example13.client_finished_wrapped, encrypted);
     }
