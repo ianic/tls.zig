@@ -40,7 +40,7 @@ pub fn ClientT(comptime StreamType: type) type {
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
             var h = try Handshake.init();
 
-            errdefer std.debug.print(
+            defer std.debug.print(
                 "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
                 .{
                     host,
@@ -232,7 +232,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     tls12.hello.protocol_version ++
                     h.client_random ++
                     tls12.hello.no_session_id ++
-                    enum_array(tls12.CipherSuite, &(tls12.CipherSuite.supported ++ tls12.CipherSuite.supported13)) ++
+                    enum_array(tls12.CipherSuite, &(tls12.CipherSuite.supported12 ++ tls12.CipherSuite.supported13)) ++
                     tls12.hello.no_compression ++
                     tls.int2(@intCast(extensions_payload.len - padding)) ++
                     extensions_payload;

@@ -67,7 +67,6 @@ pub const CipherSuite = enum(u16) {
     TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
     TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
 
-    // TODO: implement this
     TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
     TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
 
@@ -83,16 +82,21 @@ pub const CipherSuite = enum(u16) {
     _,
 
     // in the order of preference
-    pub const supported = [_]CipherSuite{
+    pub const supported12 = [_]CipherSuite{
         .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
         .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+
+        .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 
         .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
         .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
         .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
 
+        .TLS_RSA_WITH_AES_128_CBC_SHA,
         .TLS_RSA_WITH_AES_128_CBC_SHA256,
+        // .TLS_RSA_WITH_AES_256_CBC_SHA256,
     };
 
     pub const supported13 = [_]CipherSuite{
@@ -102,7 +106,7 @@ pub const CipherSuite = enum(u16) {
     };
 
     pub fn validate(cs: CipherSuite) !void {
-        for (supported) |s| {
+        for (supported12) |s| {
             if (cs == s) return;
         }
         for (supported13) |s| {
@@ -135,9 +139,10 @@ pub const CipherSuite = enum(u16) {
         aes_256_cbc_sha384,
         aes_128_gcm,
         aes_256_gcm,
+        chacha20_poly1305,
         // tls 1.3
-        aes_256_gcm_sha384,
         aes_128_gcm_sha256,
+        aes_256_gcm_sha384,
         chacha20_poly1305_sha256,
     };
 
@@ -146,6 +151,7 @@ pub const CipherSuite = enum(u16) {
             // tls 1.2
             .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            .TLS_RSA_WITH_AES_128_CBC_SHA,
             => .aes_128_cbc_sha,
             .TLS_RSA_WITH_AES_128_CBC_SHA256,
             => .aes_128_cbc_sha256,
@@ -156,6 +162,9 @@ pub const CipherSuite = enum(u16) {
             => .aes_128_gcm,
             .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             => .aes_256_gcm,
+            .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            => .chacha20_poly1305,
             // tls 1.3
             .AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
             .AES_128_GCM_SHA256 => .aes_128_gcm_sha256,
@@ -245,7 +254,7 @@ test "tls1.3 ciphers" {
         try testing.expectEqual(.sha256, cs.hash());
         try testing.expectEqual(.ecdhe, cs.keyExchange());
     }
-    for (CipherSuite.supported) |cs| {
+    for (CipherSuite.supported12) |cs| {
         try cs.validate();
         _ = try cs.cipher();
         _ = cs.hash();

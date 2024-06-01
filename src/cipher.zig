@@ -7,33 +7,44 @@ const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 
 const tls12 = @import("tls12.zig");
+const Transcript = @import("transcript.zig").Transcript;
+
 const Aes128Cbc = @import("cbc.zig").Aes128Cbc;
 const Aes256Cbc = @import("cbc.zig").Aes256Cbc;
-const Aes128Gcm = crypto.aead.aes_gcm.Aes128Gcm;
-const Aes256Gcm = crypto.aead.aes_gcm.Aes256Gcm;
-const ChaCha20Poly1305 = crypto.aead.chacha_poly.ChaCha20Poly1305;
-
-const Transcript = @import("transcript.zig").Transcript;
+// tls 1.2 cbc chipher types
+const CbcAes128Sha1 = CipherCbcT(Aes128Cbc, Sha1);
+const CbcAes128Sha256 = CipherCbcT(Aes128Cbc, Sha256);
+const CbcAes256Sha384 = CipherCbcT(Aes256Cbc, Sha384);
+// tls 1.2 gcm chipher types
+const Aead12Aes128Gcm = CipherAeadT(crypto.aead.aes_gcm.Aes128Gcm);
+const Aead12Aes256Gcm = CipherAeadT(crypto.aead.aes_gcm.Aes256Gcm);
+const Aead12ChaCha = CipherAeadT(crypto.aead.chacha_poly.ChaCha20Poly1305);
+// tls 1.3 cipher types
+const Aead13Aes128Gcm = CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm);
+const Aead13Aes256Gcm = CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm);
+const Aead13ChaCha = CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305);
 
 pub const Cipher = union(tls12.CipherSuite.Cipher) {
     // tls 1.2
-    aes_128_cbc_sha: CipherCbcT(Aes128Cbc, Sha1),
-    aes_128_cbc_sha256: CipherCbcT(Aes128Cbc, Sha256),
-    aes_256_cbc_sha384: CipherCbcT(Aes256Cbc, Sha384),
-    aes_128_gcm: CipherAeadT(Aes128Gcm),
-    aes_256_gcm: CipherAeadT(Aes256Gcm),
+    aes_128_cbc_sha: CbcAes128Sha1,
+    aes_128_cbc_sha256: CbcAes128Sha256,
+    aes_256_cbc_sha384: CbcAes256Sha384,
+    aes_128_gcm: Aead12Aes128Gcm,
+    aes_256_gcm: Aead12Aes256Gcm,
+    chacha20_poly1305: Aead12ChaCha,
     // tls 1.3
-    aes_256_gcm_sha384: CipherAead13T(Aes256Gcm),
-    aes_128_gcm_sha256: CipherAead13T(Aes128Gcm),
-    chacha20_poly1305_sha256: CipherAead13T(ChaCha20Poly1305),
+    aes_128_gcm_sha256: Aead13Aes128Gcm,
+    aes_256_gcm_sha384: Aead13Aes256Gcm,
+    chacha20_poly1305_sha256: Aead13ChaCha,
 
     pub fn init12(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
         return switch (try tag.cipher()) {
-            .aes_128_cbc_sha => .{ .aes_128_cbc_sha = CipherCbcT(Aes128Cbc, Sha1).init(key_material, rnd) },
-            .aes_128_cbc_sha256 => .{ .aes_128_cbc_sha256 = CipherCbcT(Aes128Cbc, Sha256).init(key_material, rnd) },
-            .aes_256_cbc_sha384 => .{ .aes_256_cbc_sha384 = CipherCbcT(Aes256Cbc, Sha384).init(key_material, rnd) },
-            .aes_128_gcm => .{ .aes_128_gcm = CipherAeadT(Aes128Gcm).init(key_material, rnd) },
-            .aes_256_gcm => .{ .aes_256_gcm = CipherAeadT(Aes256Gcm).init(key_material, rnd) },
+            .aes_128_cbc_sha => .{ .aes_128_cbc_sha = CbcAes128Sha1.init(key_material, rnd) },
+            .aes_128_cbc_sha256 => .{ .aes_128_cbc_sha256 = CbcAes128Sha256.init(key_material, rnd) },
+            .aes_256_cbc_sha384 => .{ .aes_256_cbc_sha384 = CbcAes256Sha384.init(key_material, rnd) },
+            .aes_128_gcm => .{ .aes_128_gcm = Aead12Aes128Gcm.init(key_material, rnd) },
+            .aes_256_gcm => .{ .aes_256_gcm = Aead12Aes256Gcm.init(key_material, rnd) },
+            .chacha20_poly1305 => .{ .chacha20_poly1305 = Aead12ChaCha.init(key_material, rnd) },
             else => return error.TlsIllegalParameter,
         };
     }
@@ -71,9 +82,9 @@ pub const Cipher = union(tls12.CipherSuite.Cipher) {
         };
         const Hkdf = Transcript.Hkdf(tag);
         const AEAD = switch (tag) {
-            .AES_256_GCM_SHA384 => CipherAead13T(Aes256Gcm),
-            .AES_128_GCM_SHA256 => CipherAead13T(Aes128Gcm),
-            .CHACHA20_POLY1305_SHA256 => CipherAead13T(ChaCha20Poly1305),
+            .AES_128_GCM_SHA256 => Aead13Aes128Gcm,
+            .AES_256_GCM_SHA384 => Aead13Aes256Gcm,
+            .CHACHA20_POLY1305_SHA256 => Aead13ChaCha,
             else => unreachable,
         };
         return @unionInit(Cipher, @tagName(cipher_tag), .{
@@ -111,6 +122,7 @@ fn CipherAeadT(comptime AeadType: type) type {
             };
         }
 
+        // TODO: nije tocno ima ispred jos i header
         /// Encrypt cleartext into provided buffer `buf`.
         /// After this buf contains payload in format:
         ///   explicit iv | ciphertext | auth tag
@@ -347,4 +359,160 @@ fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usi
     var sequence_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &sequence_buf, sequence, .big);
     return sequence_buf ++ header;
+}
+
+const testing = std.testing;
+
+test "encrypt/decrypt gcm 1.2" {
+    inline for ([_]type{
+        Aead12Aes128Gcm,
+        Aead12Aes256Gcm,
+        Aead12ChaCha,
+    }) |T| {
+        var buf: [128]u8 = undefined;
+        { // show byte lengths
+            const expected_key_len = switch (T) {
+                Aead12Aes128Gcm => 16,
+                else => 32,
+            };
+            try testing.expectEqual(expected_key_len, T.key_len);
+            try testing.expectEqual(16, T.auth_tag_len);
+            try testing.expectEqual(12, T.nonce_len);
+            try testing.expectEqual(4, T.iv_len);
+        }
+        { // init key material with same keys for client and server
+            test_rnd.bytes(buf[0..T.key_len]);
+            test_rnd.bytes(buf[T.key_len..][0..T.key_len]);
+            test_rnd.bytes(buf[T.key_len * 2 ..][0..T.iv_len]);
+            test_rnd.bytes(buf[T.key_len * 2 + T.iv_len ..][0..T.iv_len]);
+        }
+        var cipher: T = T.init(&buf, test_rnd);
+        { // test equal server and client keys
+            try testing.expectEqualSlices(u8, &cipher.server_key, &cipher.client_key);
+            try testing.expectEqualSlices(u8, &cipher.server_iv, &cipher.client_iv);
+        }
+
+        const data = "Hello world!";
+        // encrypt
+        const ciphertext = cipher.encrypt(&buf, 0, .application_data, data);
+        try testing.expectEqual(
+            tls.record_header_len + tls12.explicit_iv_len + data.len + T.auth_tag_len,
+            ciphertext.len,
+        );
+
+        // decrypt
+        const header = ciphertext[0..tls.record_header_len];
+        const payload = ciphertext[tls.record_header_len..];
+        const content_type, const decrypted = try cipher.decrypt(&buf, 0, header, payload);
+        try testing.expectEqualSlices(u8, data, decrypted);
+        try testing.expectEqual(.application_data, content_type);
+    }
+}
+
+test "encrypt/decrypt cbc 1.2" {
+    inline for ([_]type{
+        CbcAes128Sha1,
+        CbcAes128Sha256,
+        CbcAes256Sha384,
+    }) |T| {
+        var buf: [160]u8 = undefined;
+        { // show byte lengths
+            switch (T) {
+                CbcAes128Sha1 => {
+                    try testing.expectEqual(20, T.mac_length);
+                    try testing.expectEqual(16, T.key_length);
+                },
+                CbcAes128Sha256 => {
+                    try testing.expectEqual(32, T.mac_length);
+                    try testing.expectEqual(16, T.key_length);
+                },
+                CbcAes256Sha384 => {
+                    try testing.expectEqual(48, T.mac_length);
+                    try testing.expectEqual(32, T.key_length);
+                },
+                else => unreachable,
+            }
+            try testing.expectEqual(16, T.CBC.paddedLength(1)); // cbc block padding
+            try testing.expectEqual(16, T.iv_length);
+        }
+        { // init key material with same keys for client and server
+            test_rnd.bytes(buf[0..T.mac_length]);
+            test_rnd.bytes(buf[T.mac_length..][0..T.mac_length]);
+            test_rnd.bytes(buf[T.mac_length * 2 ..][0..T.key_length]);
+            test_rnd.bytes(buf[T.mac_length * 2 + T.key_length ..][0..T.key_length]);
+        }
+        var cipher: T = T.init(&buf, test_rnd);
+        { // test equal server and client keys
+            try testing.expectEqualSlices(u8, &cipher.server_secret, &cipher.client_secret);
+            try testing.expectEqualSlices(u8, &cipher.server_key, &cipher.client_key);
+        }
+
+        const data = "Hello world!";
+        // encrypt
+        const ciphertext = cipher.encrypt(&buf, 0, .application_data, data);
+        try testing.expectEqual(
+            tls.record_header_len + T.CBC.paddedLength(T.iv_length + data.len + T.mac_length),
+            ciphertext.len,
+        );
+
+        // decrypt
+        const header = ciphertext[0..tls.record_header_len];
+        const payload = ciphertext[tls.record_header_len..];
+        const content_type, const decrypted = try cipher.decrypt(&buf, 0, header, payload);
+        try testing.expectEqualSlices(u8, data, decrypted);
+        try testing.expectEqual(.application_data, content_type);
+    }
+}
+
+test "encrypt/decrypt 1.3" {
+    inline for ([_]type{
+        Aead13Aes128Gcm,
+        Aead13Aes256Gcm,
+        Aead13ChaCha,
+    }) |T| {
+        var buf: [160]u8 = undefined;
+        { // show byte lengths
+            const expected_key_len = switch (T) {
+                Aead13Aes128Gcm => 16,
+                else => 32,
+            };
+            try testing.expectEqual(expected_key_len, T.key_len);
+            try testing.expectEqual(16, T.auth_tag_len);
+            try testing.expectEqual(12, T.nonce_len);
+        }
+        test_rnd.bytes(buf[0..@max(T.key_len, T.auth_tag_len)]);
+        var cipher = T{
+            .client_key = buf[0..T.key_len].*,
+            .server_key = buf[0..T.key_len].*,
+            .client_iv = buf[0..T.nonce_len].*,
+            .server_iv = buf[0..T.nonce_len].*,
+            .rnd = test_rnd,
+        };
+
+        const data = "Hello world!";
+        // encrypt
+        const ciphertext = cipher.encrypt(&buf, 0, .application_data, data);
+        try testing.expectEqual(
+            tls.record_header_len + data.len + T.auth_tag_len + 1,
+            ciphertext.len,
+        );
+
+        // decrypt
+        const header = ciphertext[0..tls.record_header_len];
+        const payload = ciphertext[tls.record_header_len..];
+        const content_type, const decrypted = try cipher.decrypt(&buf, 0, header, payload);
+        try testing.expectEqualSlices(u8, data, decrypted);
+        try testing.expectEqual(.application_data, content_type);
+    }
+}
+
+const test_rnd = std.Random{ .ptr = undefined, .fillFn = randomFillFn };
+
+// returns 0,1,2..0xff,0,1...
+pub fn randomFillFn(_: *anyopaque, buf: []u8) void {
+    var idx: u8 = 0;
+    for (buf) |*v| {
+        v.* = idx;
+        idx +%= 1;
+    }
 }
