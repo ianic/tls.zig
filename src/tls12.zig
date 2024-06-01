@@ -54,18 +54,18 @@ pub inline fn serverNameExtension(host: []const u8) struct { [269]u8, usize } {
 
 pub const CipherSuite = enum(u16) {
     // tls 1.2
+    // cbc
     TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
-    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
-
     TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
-    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
-
-    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
-    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
-
     TLS_RSA_WITH_AES_128_CBC_SHA = 0x002F,
     TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
-    TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
+    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
+    //TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
+    // gcm
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
+
+    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
 
     TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
     TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
@@ -126,50 +126,9 @@ pub const CipherSuite = enum(u16) {
             // No server key exchange message.
             .TLS_RSA_WITH_AES_128_CBC_SHA,
             .TLS_RSA_WITH_AES_128_CBC_SHA256,
-            .TLS_RSA_WITH_AES_256_CBC_SHA256,
+            //.TLS_RSA_WITH_AES_256_CBC_SHA256,
             => .rsa,
             else => .ecdhe,
-        };
-    }
-
-    pub const Cipher = enum {
-        // tls 1.2
-        aes_128_cbc_sha,
-        aes_128_cbc_sha256,
-        aes_256_cbc_sha384,
-        aes_128_gcm,
-        aes_256_gcm,
-        chacha20_poly1305,
-        // tls 1.3
-        aes_128_gcm_sha256,
-        aes_256_gcm_sha384,
-        chacha20_poly1305_sha256,
-    };
-
-    pub fn cipher(cs: CipherSuite) !Cipher {
-        return switch (cs) {
-            // tls 1.2
-            .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-            .TLS_RSA_WITH_AES_128_CBC_SHA,
-            => .aes_128_cbc_sha,
-            .TLS_RSA_WITH_AES_128_CBC_SHA256,
-            => .aes_128_cbc_sha256,
-            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-            => .aes_256_cbc_sha384,
-            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            => .aes_128_gcm,
-            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            => .aes_256_gcm,
-            .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-            .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-            => .chacha20_poly1305,
-            // tls 1.3
-            .AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
-            .AES_128_GCM_SHA256 => .aes_128_gcm_sha256,
-            .CHACHA20_POLY1305_SHA256 => .chacha20_poly1305_sha256,
-            else => return error.TlsIllegalParameter,
         };
     }
 
@@ -243,20 +202,17 @@ test "tls1.3 ciphers" {
     {
         const cs: CipherSuite = .AES_256_GCM_SHA384;
         try cs.validate();
-        try testing.expectEqual(cs.cipher(), .aes_256_gcm_sha384);
         try testing.expectEqual(cs.hash(), .sha384);
         try testing.expectEqual(cs.keyExchange(), .ecdhe);
     }
     {
         const cs: CipherSuite = .AES_128_GCM_SHA256;
         try cs.validate();
-        try testing.expectEqual(.aes_128_gcm_sha256, cs.cipher());
         try testing.expectEqual(.sha256, cs.hash());
         try testing.expectEqual(.ecdhe, cs.keyExchange());
     }
     for (CipherSuite.supported12) |cs| {
         try cs.validate();
-        _ = try cs.cipher();
         _ = cs.hash();
         _ = cs.keyExchange();
     }

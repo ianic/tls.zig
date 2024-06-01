@@ -1320,7 +1320,7 @@ test "tls13 handshake cipher" {
 
     const cipher = try Cipher.initHandshake(cipher_suite_tag, shared_key, &transcript);
 
-    const c = &cipher.aes_256_gcm_sha384;
+    const c = &cipher.AES_256_GCM_SHA384;
     try testing.expectEqualSlices(u8, &example13.server_handshake_key, &c.server_key);
     try testing.expectEqualSlices(u8, &example13.client_handshake_key, &c.client_key);
     try testing.expectEqualSlices(u8, &example13.server_handshake_iv, &c.server_iv);
@@ -1389,7 +1389,7 @@ test "tls13 process server flight" {
         try testing.expectEqualSlices(u8, &example13.handshake_hash, &h.transcript.sha384.hash.peek());
 
         const cipher = try Cipher.initApplication(h.cipher_suite_tag, &h.transcript);
-        const c = &cipher.aes_256_gcm_sha384;
+        const c = &cipher.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &example13.server_application_key, &c.server_key);
         try testing.expectEqualSlices(u8, &example13.client_application_key, &c.client_key);
         try testing.expectEqualSlices(u8, &example13.server_application_iv, &c.server_iv);

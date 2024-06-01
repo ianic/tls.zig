@@ -24,29 +24,72 @@ const Aead13Aes128Gcm = CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm);
 const Aead13Aes256Gcm = CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm);
 const Aead13ChaCha = CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305);
 
-pub const Cipher = union(tls12.CipherSuite.Cipher) {
+fn CipherType(comptime tag: tls12.CipherSuite) type {
+    return switch (tag) {
+        // tls 1.2
+        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+        .TLS_RSA_WITH_AES_128_CBC_SHA,
+        => CbcAes128Sha1,
+
+        .TLS_RSA_WITH_AES_128_CBC_SHA256 => CbcAes128Sha256,
+        .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 => CbcAes256Sha384,
+
+        .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        => Aead12Aes128Gcm,
+
+        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 => Aead12Aes256Gcm,
+
+        .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+        => Aead12ChaCha,
+
+        // tls 1.3
+        .AES_128_GCM_SHA256 => Aead13Aes128Gcm,
+        .AES_256_GCM_SHA384 => Aead13Aes256Gcm,
+        .CHACHA20_POLY1305_SHA256 => Aead13ChaCha,
+
+        else => unreachable,
+    };
+}
+
+pub const Cipher = union(tls12.CipherSuite) {
     // tls 1.2
-    aes_128_cbc_sha: CbcAes128Sha1,
-    aes_128_cbc_sha256: CbcAes128Sha256,
-    aes_256_cbc_sha384: CbcAes256Sha384,
-    aes_128_gcm: Aead12Aes128Gcm,
-    aes_256_gcm: Aead12Aes256Gcm,
-    chacha20_poly1305: Aead12ChaCha,
+    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA),
+    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA),
+    TLS_RSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_RSA_WITH_AES_128_CBC_SHA),
+    TLS_RSA_WITH_AES_128_CBC_SHA256: CipherType(.TLS_RSA_WITH_AES_128_CBC_SHA256),
+    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384: CipherType(.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384),
+
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: CipherType(.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256),
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: CipherType(.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: CipherType(.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384),
+
+    TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: CipherType(.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256),
+    TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: CipherType(.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256),
     // tls 1.3
-    aes_128_gcm_sha256: Aead13Aes128Gcm,
-    aes_256_gcm_sha384: Aead13Aes256Gcm,
-    chacha20_poly1305_sha256: Aead13ChaCha,
+    AES_128_GCM_SHA256: CipherType(.AES_128_GCM_SHA256),
+    AES_256_GCM_SHA384: CipherType(.AES_256_GCM_SHA384),
+    CHACHA20_POLY1305_SHA256: CipherType(.CHACHA20_POLY1305_SHA256),
 
     pub fn init12(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
-        return switch (try tag.cipher()) {
-            .aes_128_cbc_sha => .{ .aes_128_cbc_sha = CbcAes128Sha1.init(key_material, rnd) },
-            .aes_128_cbc_sha256 => .{ .aes_128_cbc_sha256 = CbcAes128Sha256.init(key_material, rnd) },
-            .aes_256_cbc_sha384 => .{ .aes_256_cbc_sha384 = CbcAes256Sha384.init(key_material, rnd) },
-            .aes_128_gcm => .{ .aes_128_gcm = Aead12Aes128Gcm.init(key_material, rnd) },
-            .aes_256_gcm => .{ .aes_256_gcm = Aead12Aes256Gcm.init(key_material, rnd) },
-            .chacha20_poly1305 => .{ .chacha20_poly1305 = Aead12ChaCha.init(key_material, rnd) },
+        switch (tag) {
+            inline .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            .TLS_RSA_WITH_AES_128_CBC_SHA,
+            .TLS_RSA_WITH_AES_128_CBC_SHA256,
+            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            => |comptime_tag| {
+                return @unionInit(Cipher, @tagName(comptime_tag), CipherType(comptime_tag).init(key_material, rnd));
+            },
             else => return error.TlsIllegalParameter,
-        };
+        }
     }
 
     pub fn initHandshake(tag: tls12.CipherSuite, shared_key: []const u8, transcript: *Transcript) !Cipher {
@@ -74,24 +117,13 @@ pub const Cipher = union(tls12.CipherSuite.Cipher) {
     }
 
     fn init13(comptime tag: tls12.CipherSuite, secret: Transcript.Secret) Cipher {
-        const cipher_tag = switch (tag) {
-            .AES_256_GCM_SHA384 => .aes_256_gcm_sha384,
-            .AES_128_GCM_SHA256 => .aes_128_gcm_sha256,
-            .CHACHA20_POLY1305_SHA256 => .chacha20_poly1305_sha256,
-            else => unreachable,
-        };
         const Hkdf = Transcript.Hkdf(tag);
-        const AEAD = switch (tag) {
-            .AES_128_GCM_SHA256 => Aead13Aes128Gcm,
-            .AES_256_GCM_SHA384 => Aead13Aes256Gcm,
-            .CHACHA20_POLY1305_SHA256 => Aead13ChaCha,
-            else => unreachable,
-        };
-        return @unionInit(Cipher, @tagName(cipher_tag), .{
-            .client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", AEAD.key_len),
-            .server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", AEAD.key_len),
-            .client_iv = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "iv", "", AEAD.nonce_len),
-            .server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", AEAD.nonce_len),
+        const T = CipherType(tag);
+        return @unionInit(Cipher, @tagName(tag), .{
+            .client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", T.key_len),
+            .server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", T.key_len),
+            .client_iv = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "iv", "", T.nonce_len),
+            .server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", T.nonce_len),
             .rnd = crypto.random,
         });
     }
