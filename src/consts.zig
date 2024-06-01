@@ -52,6 +52,14 @@ pub inline fn serverNameExtension(host: []const u8) struct { [269]u8, usize } {
     return .{ ext, 260 - host.len };
 }
 
+pub inline fn serverNameExtensionHeader(host_len: u16) [9]u8 {
+    return int2e(tls.ExtensionType.server_name) ++
+        int2(host_len + 5) ++ // byte length of this extension payload
+        int2(host_len + 3) ++ // server_name_list byte count
+        [1]u8{0x00} ++ // name_type
+        int2(host_len);
+}
+
 pub const CurveType = enum(u8) {
     named_curve = 0x03,
     _,

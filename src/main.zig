@@ -13,16 +13,16 @@ pub fn main() !void {
 
         if (std.mem.eql(u8, "top", url)) return try getTopSites();
 
-        _ = try get(gpa, url);
+        _ = try get(gpa, url, .{});
         return;
     }
 }
 
-pub fn get(gpa: std.mem.Allocator, domain: []const u8) !void {
+pub fn get(gpa: std.mem.Allocator, domain: []const u8, opt: tls.Options) !void {
     var ca_bundle: Certificate.Bundle = .{};
     try ca_bundle.rescan(gpa);
     defer ca_bundle.deinit(gpa);
-    try get2(gpa, domain, ca_bundle, true);
+    try get2(gpa, domain, ca_bundle, true, opt);
 }
 
 pub fn get2(
@@ -30,6 +30,7 @@ pub fn get2(
     domain: []const u8,
     ca_bundle: Certificate.Bundle,
     show_response: bool,
+    opt: tls.Options,
 ) !void {
     var url_buf: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
@@ -44,7 +45,7 @@ pub fn get2(
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle);
+    try cli.handshake(host, ca_bundle, opt);
 
     var buf: [64]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
@@ -64,7 +65,7 @@ pub fn get2(
 
 pub fn get3(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
     while (true) {
-        get2(gpa, domain, ca_bundle, false) catch |err| switch (err) {
+        get2(gpa, domain, ca_bundle, false, .{}) catch |err| switch (err) {
             error.TemporaryNameServerFailure => {
                 continue;
             },
@@ -207,3 +208,25 @@ const skipped = [_]usize{
 // https://ggpht.com 000 Could not resolve host: ggpht.com
 // https://sedoparking.com 000 Failed to connect to sedoparking.com port 443 after 1 ms: Couldn't connect to server
 // https://twimg.com 000 Could not resolve host: twimg.com
+
+const testing = std.testing;
+
+test "tls12" {
+    const url = "google.com";
+    var stats: tls.Stats = .{};
+    try get(testing.allocator, url, .{
+        .version = .tls_1_2,
+        .stats = &stats,
+    });
+
+    std.debug.print(
+        "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
+        .{
+            url,
+            stats.tls_version,
+            stats.cipher_suite_tag,
+            stats.named_group,
+            stats.signature_scheme,
+        },
+    );
+}
