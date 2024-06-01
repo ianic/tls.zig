@@ -6,7 +6,8 @@ const Sha1 = crypto.hash.Sha1;
 const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 
-const tls12 = @import("tls12.zig");
+const consts = @import("consts.zig");
+const CipherSuite = @import("cipher.zig").CipherSuite;
 
 pub const Transcript = struct {
     const Transcript256 = TranscriptT(Sha256);
@@ -21,7 +22,7 @@ pub const Transcript = struct {
     }
 
     pub inline fn masterSecret(
-        cs: tls12.CipherSuite,
+        cs: CipherSuite,
         pre_master_secret: []const u8,
         client_random: [32]u8,
         server_random: [32]u8,
@@ -33,7 +34,7 @@ pub const Transcript = struct {
     }
 
     pub inline fn keyMaterial(
-        cs: tls12.CipherSuite,
+        cs: CipherSuite,
         master_secret: []const u8,
         client_random: [32]u8,
         server_random: [32]u8,
@@ -44,56 +45,56 @@ pub const Transcript = struct {
         };
     }
 
-    pub fn clientFinished(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
+    pub fn clientFinished(self: *Transcript, cs: CipherSuite, master_secret: []const u8) [16]u8 {
         return switch (cs.hash()) {
             .sha256 => self.sha256.clientFinished(master_secret),
             .sha384 => self.sha384.clientFinished(master_secret),
         };
     }
 
-    pub fn serverFinished(self: *Transcript, cs: tls12.CipherSuite, master_secret: []const u8) [16]u8 {
+    pub fn serverFinished(self: *Transcript, cs: CipherSuite, master_secret: []const u8) [16]u8 {
         return switch (cs.hash()) {
             .sha256 => self.sha256.serverFinished(master_secret),
             .sha384 => self.sha384.serverFinished(master_secret),
         };
     }
 
-    pub inline fn verifyBytes13(self: *Transcript, cs: tls12.CipherSuite) []const u8 {
+    pub inline fn verifyBytes13(self: *Transcript, cs: CipherSuite) []const u8 {
         return switch (cs.hash()) {
             .sha256 => &self.sha256.verifyBytes13(),
             .sha384 => &self.sha384.verifyBytes13(),
         };
     }
 
-    pub inline fn serverFinished13(self: *Transcript, cs: tls12.CipherSuite) []const u8 {
+    pub inline fn serverFinished13(self: *Transcript, cs: CipherSuite) []const u8 {
         return switch (cs.hash()) {
             .sha256 => &self.sha256.serverFinished13(),
             .sha384 => &self.sha384.serverFinished13(),
         };
     }
 
-    pub inline fn clientFinished13Msg(self: *Transcript, cs: tls12.CipherSuite) []const u8 {
+    pub inline fn clientFinished13Msg(self: *Transcript, cs: CipherSuite) []const u8 {
         return switch (cs.hash()) {
             .sha256 => &self.sha256.clientFinished13Msg(),
             .sha384 => &self.sha384.clientFinished13Msg(),
         };
     }
 
-    pub inline fn handshakeSecret(self: *Transcript, cs: tls12.CipherSuite, shared_key: []const u8) Secret {
+    pub inline fn handshakeSecret(self: *Transcript, cs: CipherSuite, shared_key: []const u8) Secret {
         return switch (cs.hash()) {
             .sha384 => self.sha384.handshakeSecret(shared_key),
             .sha256 => self.sha256.handshakeSecret(shared_key),
         };
     }
 
-    pub inline fn applicationSecret(self: *Transcript, cs: tls12.CipherSuite) Secret {
+    pub inline fn applicationSecret(self: *Transcript, cs: CipherSuite) Secret {
         return switch (cs.hash()) {
             .sha384 => self.sha384.applicationSecret(),
             .sha256 => self.sha256.applicationSecret(),
         };
     }
 
-    pub fn Hkdf(cs: tls12.CipherSuite) type {
+    pub fn Hkdf(cs: CipherSuite) type {
         return switch (cs.hash()) {
             .sha384 => Transcript384.Hkdf,
             .sha256 => Transcript256.Hkdf,
@@ -181,7 +182,7 @@ fn TranscriptT(comptime HashType: type) type {
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return tls12.handshake_finished_header ++ p1[0..12].*;
+            return consts.handshake_finished_header ++ p1[0..12].*;
         }
 
         fn serverFinished(self: *Self, master_secret: []const u8) [16]u8 {
@@ -190,7 +191,7 @@ fn TranscriptT(comptime HashType: type) type {
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return tls12.handshake_finished_header ++ p1[0..12].*;
+            return consts.handshake_finished_header ++ p1[0..12].*;
         }
 
         // tls 1.3
@@ -237,7 +238,7 @@ fn TranscriptT(comptime HashType: type) type {
         fn clientFinished13Msg(self: *Self) [4 + mac_length]u8 {
             var msg: [4 + mac_length]u8 = undefined;
             // 4 bytes handshake header
-            msg[0..4].* = tls12.int1e(tls12.HandshakeType.finished) ++ tls.int3(@intCast(mac_length));
+            msg[0..4].* = consts.int1e(consts.HandshakeType.finished) ++ tls.int3(@intCast(mac_length));
             Hmac.create(msg[4..], &self.hash.peek(), &self.client_finished_key);
             return msg;
         }

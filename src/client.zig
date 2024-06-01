@@ -13,8 +13,9 @@ const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 const EcdsaP384Sha256 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
 const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 
-const tls12 = @import("tls12.zig");
+const consts = @import("consts.zig");
 const Cipher = @import("cipher.zig").Cipher;
+const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
 
 pub fn client(stream: anytype) ClientT(@TypeOf(stream)) {
@@ -110,7 +111,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
-                        const handshake_type: tls12.HandshakeType = @enumFromInt(cleartext[0]);
+                        const handshake_type: consts.HandshakeType = @enumFromInt(cleartext[0]);
                         if (handshake_type == .new_session_ticket)
                             continue;
                     },
@@ -136,7 +137,7 @@ pub fn ClientT(comptime StreamType: type) type {
         }
 
         pub fn close(c: *Client) !void {
-            const msg = c.encrypt(&c.write_buf, .alert, &tls12.close_notify_alert);
+            const msg = c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
             try c.stream.writeAll(msg);
         }
 
@@ -148,7 +149,7 @@ pub fn ClientT(comptime StreamType: type) type {
             key_material: []u8 = undefined,
 
             transcript: Transcript = .{},
-            cipher_suite_tag: tls12.CipherSuite = undefined,
+            cipher_suite_tag: CipherSuite = undefined,
             named_group: ?tls.NamedGroup = null,
             dh_kp: DhKeyPair,
             rsa_kp: RsaKeyPair,
@@ -183,16 +184,16 @@ pub fn ClientT(comptime StreamType: type) type {
                 const enum_array = tls.enum_array;
                 const array = tls.array;
 
-                const server_name_extension, const padding = tls12.serverNameExtension(host);
+                const server_name_extension, const padding = consts.serverNameExtension(host);
                 const extensions_payload =
                     tls.extension(.supported_versions, [_]u8{
                     0x04, // byte length of supported versions
                     0x03, 0x04, // TLS 1.3
                     0x03, 0x03, // TLS 1.2
                 }) ++
-                    tls12.extension.ec_point_formats ++
-                    tls12.extension.renegotiation_info ++
-                    tls12.extension.sct ++
+                    consts.extension.ec_point_formats ++
+                    consts.extension.renegotiation_info ++
+                    consts.extension.sct ++
                     tls.extension(.signature_algorithms, enum_array(tls.SignatureScheme, &.{
                     .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
@@ -229,16 +230,16 @@ pub fn ClientT(comptime StreamType: type) type {
                     server_name_extension;
 
                 const payload =
-                    tls12.hello.protocol_version ++
+                    consts.hello.protocol_version ++
                     h.client_random ++
-                    tls12.hello.no_session_id ++
-                    enum_array(tls12.CipherSuite, &(tls12.CipherSuite.supported12 ++ tls12.CipherSuite.supported13)) ++
-                    tls12.hello.no_compression ++
+                    consts.hello.no_session_id ++
+                    enum_array(CipherSuite, &(CipherSuite.supported12 ++ CipherSuite.supported13)) ++
+                    consts.hello.no_compression ++
                     tls.int2(@intCast(extensions_payload.len - padding)) ++
                     extensions_payload;
 
                 const record =
-                    tls12.handshakeHeader(.client_hello, payload.len - padding) ++
+                    consts.handshakeHeader(.client_hello, payload.len - padding) ++
                     payload;
                 const out = record[0 .. record.len - padding];
 
@@ -250,14 +251,14 @@ pub fn ClientT(comptime StreamType: type) type {
                 if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
                     return error.TlsBadVersion;
                 h.server_random = (try rec.array(32)).*;
-                if (tls12.isServerHelloRetryRequest(&h.server_random))
+                if (consts.isServerHelloRetryRequest(&h.server_random))
                     return error.TlsServerHelloRetryRequest;
 
                 const session_id_len = try rec.decode(u8);
                 if (session_id_len > 32) return error.TlsIllegalParameter;
                 try rec.skip(session_id_len);
 
-                h.cipher_suite_tag = try rec.decode(tls12.CipherSuite);
+                h.cipher_suite_tag = try rec.decode(CipherSuite);
                 try h.cipher_suite_tag.validate();
                 try rec.skip(1); // skip compression method
 
@@ -337,7 +338,7 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             fn serverKeyExchange(h: *Handshake, rec: *Record) !void {
-                const curve_type = try rec.decode(tls12.CurveType);
+                const curve_type = try rec.decode(consts.CurveType);
                 h.named_group = try rec.decode(tls.NamedGroup);
                 h.server_pub_key = try dupe(&h.server_pub_key_buf, try rec.slice(try rec.decode(u8)));
                 h.signature_scheme = try rec.decode(tls.SignatureScheme);
@@ -348,7 +349,7 @@ pub fn ClientT(comptime StreamType: type) type {
             /// Read server hello, certificate, key_exchange and hello done messages.
             /// Extract server public key and server random.
             fn serverFlight1(h: *Handshake, reader: *RecordReaderType, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
-                var handshake_state = tls12.HandshakeType.server_hello;
+                var handshake_state = consts.HandshakeType.server_hello;
 
                 while (true) {
                     var rec = (try reader.next()) orelse return error.EndOfStream;
@@ -359,7 +360,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
                     // Multiple handshake messages can be packed in single tls record.
                     while (!rec.eof()) {
-                        const handshake_type = try rec.decode(tls12.HandshakeType);
+                        const handshake_type = try rec.decode(consts.HandshakeType);
                         if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
                         const length = try rec.decode(u24);
@@ -492,7 +493,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     var w = BufWriter{ .buf = &buf };
                     try w.write(&h.client_random);
                     try w.write(&h.server_random);
-                    try w.writeEnum(tls12.CurveType.named_curve);
+                    try w.writeEnum(consts.CurveType.named_curve);
                     try w.writeEnum(h.named_group.?);
                     try w.writeInt(@as(u8, @intCast(h.server_pub_key.len)));
                     try w.write(h.server_pub_key);
@@ -615,11 +616,11 @@ pub fn ClientT(comptime StreamType: type) type {
                         try h.rsa_kp.publicKey(h.cert_pub_key_algo, h.cert_pub_key);
 
                     const header = if (h.named_group != null)
-                        &tls12.handshakeHeader(.client_key_exchange, 1 + key.len) ++
-                            tls12.int1(@intCast(key.len))
+                        &consts.handshakeHeader(.client_key_exchange, 1 + key.len) ++
+                            consts.int1(@intCast(key.len))
                     else
-                        &tls12.handshakeHeader(.client_key_exchange, 2 + key.len) ++
-                            tls12.int2(@intCast(key.len));
+                        &consts.handshakeHeader(.client_key_exchange, 2 + key.len) ++
+                            consts.int2(@intCast(key.len));
 
                     _ = try fbs.write(header);
                     _ = try fbs.write(key);
@@ -629,7 +630,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
                 // client change cipher spec message
                 {
-                    const change_cipher_spec = tls12.recordHeader(.change_cipher_spec, 1) ++ tls12.int1(1);
+                    const change_cipher_spec = consts.recordHeader(.change_cipher_spec, 1) ++ consts.int1(1);
                     _ = try fbs.write(&change_cipher_spec);
                 }
 
@@ -675,7 +676,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 const msg = switch (h.cipher) {
                     inline else => |*p| p.encrypt(buffer[6..], 0, .handshake, client_finished),
                 };
-                buffer[0..6].* = tls12.recordHeader(.change_cipher_spec, 1) ++ [1]u8{0x01};
+                buffer[0..6].* = consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{0x01};
                 try c.stream.writeAll(buffer[0 .. 6 + msg.len]);
             }
         };
@@ -972,7 +973,7 @@ test "Record decoder" {
     var rec = (try rdr.next()).?;
     try testing.expectEqual(.handshake, rec.content_type);
 
-    try testing.expectEqual(.server_hello, try rec.decode(tls12.HandshakeType));
+    try testing.expectEqual(.server_hello, try rec.decode(consts.HandshakeType));
     try testing.expectEqual(45, try rec.decode(u24)); // length
     try testing.expectEqual(.tls_1_2, try rec.decode(tls.ProtocolVersion));
     try testing.expectEqualStrings(
@@ -980,7 +981,7 @@ test "Record decoder" {
         &bytesToHex(try rec.array(32), .lower),
     ); // server random
     try testing.expectEqual(0, try rec.decode(u8)); // session id len
-    try testing.expectEqual(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, try rec.decode(tls12.CipherSuite));
+    try testing.expectEqual(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, try rec.decode(CipherSuite));
     try testing.expectEqual(0, try rec.decode(u8)); // compression method
     try testing.expectEqual(5, try rec.decode(u16)); // extension length
     try testing.expectEqual(5, rec.rest().len);
@@ -1061,7 +1062,7 @@ test "BufWriter" {
     var w = BufWriter{ .buf = &buf };
 
     try w.write("ab");
-    try w.writeEnum(tls12.CurveType.named_curve);
+    try w.writeEnum(consts.CurveType.named_curve);
     try w.writeEnum(tls.NamedGroup.x25519);
     try w.writeInt(@as(u16, 0x1234));
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
@@ -1138,7 +1139,7 @@ const RsaKeyPair = struct {
     pre_master_secret: [48]u8,
 
     fn init(rand: [46]u8) RsaKeyPair {
-        return .{ .pre_master_secret = tls12.hello.protocol_version ++ rand };
+        return .{ .pre_master_secret = consts.hello.protocol_version ++ rand };
     }
 
     inline fn publicKey(
@@ -1287,7 +1288,7 @@ test "tls13 server hello" {
     var rdr = recordReader(fbs.reader());
     var rec = (try rdr.next()).?;
 
-    const handshake_type = try rec.decode(tls12.HandshakeType);
+    const handshake_type = try rec.decode(consts.HandshakeType);
     const length = try rec.decode(u24);
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);
@@ -1303,7 +1304,7 @@ test "tls13 server hello" {
 }
 
 test "tls13 handshake cipher" {
-    const cipher_suite_tag: tls12.CipherSuite = .AES_256_GCM_SHA384;
+    const cipher_suite_tag: CipherSuite = .AES_256_GCM_SHA384;
 
     var transcript = Transcript{};
     transcript.update(example13.client_hello[tls.record_header_len..]);
@@ -1328,7 +1329,7 @@ test "tls13 handshake cipher" {
 }
 
 fn exampleHandshakeCipher() !Cipher {
-    const cipher_suite_tag: tls12.CipherSuite = .AES_256_GCM_SHA384;
+    const cipher_suite_tag: CipherSuite = .AES_256_GCM_SHA384;
     var transcript = Transcript{};
     transcript.update(example13.client_hello[tls.record_header_len..]);
     transcript.update(example13.server_hello[tls.record_header_len..]);

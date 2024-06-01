@@ -6,7 +6,7 @@ const Sha1 = crypto.hash.Sha1;
 const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 
-const tls12 = @import("tls12.zig");
+const consts = @import("consts.zig");
 const Transcript = @import("transcript.zig").Transcript;
 
 const Aes128Cbc = @import("cbc.zig").Aes128Cbc;
@@ -24,7 +24,7 @@ const Aead13Aes128Gcm = CipherAead13T(crypto.aead.aes_gcm.Aes128Gcm);
 const Aead13Aes256Gcm = CipherAead13T(crypto.aead.aes_gcm.Aes256Gcm);
 const Aead13ChaCha = CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305);
 
-fn CipherType(comptime tag: tls12.CipherSuite) type {
+fn CipherType(comptime tag: CipherSuite) type {
     return switch (tag) {
         // tls 1.2
         .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
@@ -54,7 +54,7 @@ fn CipherType(comptime tag: tls12.CipherSuite) type {
     };
 }
 
-pub const Cipher = union(tls12.CipherSuite) {
+pub const Cipher = union(CipherSuite) {
     // tls 1.2
     TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA),
     TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA),
@@ -73,7 +73,7 @@ pub const Cipher = union(tls12.CipherSuite) {
     AES_256_GCM_SHA384: CipherType(.AES_256_GCM_SHA384),
     CHACHA20_POLY1305_SHA256: CipherType(.CHACHA20_POLY1305_SHA256),
 
-    pub fn init12(tag: tls12.CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
+    pub fn init12(tag: CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
         switch (tag) {
             inline .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
@@ -92,7 +92,7 @@ pub const Cipher = union(tls12.CipherSuite) {
         }
     }
 
-    pub fn initHandshake(tag: tls12.CipherSuite, shared_key: []const u8, transcript: *Transcript) !Cipher {
+    pub fn initHandshake(tag: CipherSuite, shared_key: []const u8, transcript: *Transcript) !Cipher {
         return switch (tag) {
             inline .CHACHA20_POLY1305_SHA256,
             .AES_128_GCM_SHA256,
@@ -104,7 +104,7 @@ pub const Cipher = union(tls12.CipherSuite) {
         };
     }
 
-    pub fn initApplication(tag: tls12.CipherSuite, transcript: *Transcript) !Cipher {
+    pub fn initApplication(tag: CipherSuite, transcript: *Transcript) !Cipher {
         return switch (tag) {
             inline .CHACHA20_POLY1305_SHA256,
             .AES_128_GCM_SHA256,
@@ -116,7 +116,7 @@ pub const Cipher = union(tls12.CipherSuite) {
         };
     }
 
-    fn init13(comptime tag: tls12.CipherSuite, secret: Transcript.Secret) Cipher {
+    fn init13(comptime tag: CipherSuite, secret: Transcript.Secret) Cipher {
         const Hkdf = Transcript.Hkdf(tag);
         const T = CipherType(tag);
         return @unionInit(Cipher, @tagName(tag), .{
@@ -134,7 +134,7 @@ fn CipherAeadT(comptime AeadType: type) type {
         const key_len = AeadType.key_length;
         const auth_tag_len = AeadType.tag_length;
         const nonce_len = AeadType.nonce_length;
-        const iv_len = AeadType.nonce_length - tls12.explicit_iv_len;
+        const iv_len = AeadType.nonce_length - consts.explicit_iv_len;
 
         client_key: [key_len]u8,
         server_key: [key_len]u8,
@@ -166,7 +166,7 @@ fn CipherAeadT(comptime AeadType: type) type {
             cleartext: []const u8,
         ) []const u8 {
             const header = buf[0..tls.record_header_len];
-            var explicit_iv: [tls12.explicit_iv_len]u8 = undefined;
+            var explicit_iv: [consts.explicit_iv_len]u8 = undefined;
             self.rnd.bytes(&explicit_iv);
             buf[header.len..][0..explicit_iv.len].* = explicit_iv;
 
@@ -176,7 +176,7 @@ fn CipherAeadT(comptime AeadType: type) type {
             const ad = additionalData(sequence, content_type, cleartext.len);
             AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, self.client_key);
 
-            header.* = tls12.recordHeader(content_type, explicit_iv.len + ciphertext.len + auth_tag.len);
+            header.* = consts.recordHeader(content_type, explicit_iv.len + ciphertext.len + auth_tag.len);
             return buf[0 .. header.len + explicit_iv.len + ciphertext.len + auth_tag.len];
         }
 
@@ -187,13 +187,13 @@ fn CipherAeadT(comptime AeadType: type) type {
             header: []const u8,
             payload: []const u8,
         ) !struct { tls.ContentType, []u8 } {
-            const overhead = tls12.explicit_iv_len + auth_tag_len;
+            const overhead = consts.explicit_iv_len + auth_tag_len;
             if (payload.len < overhead) return error.TlsDecryptError;
 
-            const iv = self.server_iv ++ payload[0..tls12.explicit_iv_len].*;
+            const iv = self.server_iv ++ payload[0..consts.explicit_iv_len].*;
             const cleartext_len = payload.len - overhead;
-            const ciphertext = payload[tls12.explicit_iv_len..][0..cleartext_len];
-            const auth_tag = payload[tls12.explicit_iv_len + cleartext_len ..][0..auth_tag_len];
+            const ciphertext = payload[consts.explicit_iv_len..][0..cleartext_len];
+            const auth_tag = payload[consts.explicit_iv_len + cleartext_len ..][0..auth_tag_len];
             const cleartext = buf[0..cleartext_len];
             const content_type: tls.ContentType = @enumFromInt(header[0]);
             const ad = additionalData(sequence, content_type, cleartext_len);
@@ -236,7 +236,7 @@ fn CipherAead13T(comptime AeadType: type) type {
             const ciphertext = buf[header.len..][0 .. cleartext.len + 1];
             const auth_tag = buf[header.len + ciphertext.len ..][0..auth_tag_len];
             const encrypted_len = ciphertext.len + auth_tag_len;
-            header.* = tls12.recordHeader(.application_data, encrypted_len);
+            header.* = consts.recordHeader(.application_data, encrypted_len);
 
             AeadType.encrypt(ciphertext, auth_tag, ciphertext, header, iv, self.client_key);
             return buf[0 .. header.len + encrypted_len];
@@ -334,7 +334,7 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
             self.rnd.bytes(iv);
 
             CBC.init(self.client_key).encrypt(payload_buf, payload_buf, iv[0..iv_length].*);
-            buf[0..tls.record_header_len].* = tls12.recordHeader(content_type, iv_length + payload_buf.len);
+            buf[0..tls.record_header_len].* = consts.recordHeader(content_type, iv_length + payload_buf.len);
             return buf[0 .. cleartext_idx + payload_buf.len];
         }
 
@@ -387,13 +387,129 @@ fn CipherCbcT(comptime CbcType: type, comptime HashType: type) type {
 pub const additional_data_len = tls.record_header_len + @sizeOf(u64);
 
 fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usize) [additional_data_len]u8 {
-    const header = tls12.recordHeader(content_type, payload_len);
+    const header = consts.recordHeader(content_type, payload_len);
     var sequence_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &sequence_buf, sequence, .big);
     return sequence_buf ++ header;
 }
 
+pub const CipherSuite = enum(u16) {
+    // tls 1.2
+    // cbc
+    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
+    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
+    TLS_RSA_WITH_AES_128_CBC_SHA = 0x002F,
+    TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
+    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
+    //TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
+    // gcm
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
+
+    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
+
+    TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
+    TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
+
+    // tls 1.3
+    AES_128_GCM_SHA256 = 0x1301,
+    AES_256_GCM_SHA384 = 0x1302,
+    CHACHA20_POLY1305_SHA256 = 0x1303,
+    //AES_128_CCM_SHA256 = 0x1304,
+    //AES_128_CCM_8_SHA256 = 0x1305,
+    //AEGIS_256_SHA512 = 0x1306,
+    //AEGIS_128L_SHA256 = 0x1307,
+
+    _,
+
+    // in the order of preference
+    pub const supported12 = [_]CipherSuite{
+        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+
+        .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+
+        .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+
+        .TLS_RSA_WITH_AES_128_CBC_SHA,
+        .TLS_RSA_WITH_AES_128_CBC_SHA256,
+        // .TLS_RSA_WITH_AES_256_CBC_SHA256,
+    };
+
+    pub const supported13 = [_]CipherSuite{
+        .CHACHA20_POLY1305_SHA256,
+        .AES_256_GCM_SHA384,
+        .AES_128_GCM_SHA256,
+    };
+
+    pub fn validate(cs: CipherSuite) !void {
+        for (supported12) |s| {
+            if (cs == s) return;
+        }
+        for (supported13) |s| {
+            if (cs == s) return;
+        }
+        return error.TlsIllegalParameter;
+    }
+
+    pub const KeyExchangeAlgorithm = enum {
+        ecdhe,
+        rsa,
+    };
+
+    pub fn keyExchange(s: CipherSuite) KeyExchangeAlgorithm {
+        return switch (s) {
+            // Random premaster secret, encrypted with publich key from certificate.
+            // No server key exchange message.
+            .TLS_RSA_WITH_AES_128_CBC_SHA,
+            .TLS_RSA_WITH_AES_128_CBC_SHA256,
+            //.TLS_RSA_WITH_AES_256_CBC_SHA256,
+            => .rsa,
+            else => .ecdhe,
+        };
+    }
+
+    pub const Hash = enum {
+        sha256,
+        sha384,
+    };
+
+    pub inline fn hash(cs: CipherSuite) Hash {
+        return switch (cs) {
+            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            .AES_256_GCM_SHA384,
+            => .sha384,
+            else => .sha256,
+        };
+    }
+};
+
 const testing = std.testing;
+
+test "CipherSuite validate" {
+    {
+        const cs: CipherSuite = .AES_256_GCM_SHA384;
+        try cs.validate();
+        try testing.expectEqual(cs.hash(), .sha384);
+        try testing.expectEqual(cs.keyExchange(), .ecdhe);
+    }
+    {
+        const cs: CipherSuite = .AES_128_GCM_SHA256;
+        try cs.validate();
+        try testing.expectEqual(.sha256, cs.hash());
+        try testing.expectEqual(.ecdhe, cs.keyExchange());
+    }
+    for (CipherSuite.supported12) |cs| {
+        try cs.validate();
+        _ = cs.hash();
+        _ = cs.keyExchange();
+    }
+}
 
 test "encrypt/decrypt gcm 1.2" {
     inline for ([_]type{
@@ -428,7 +544,7 @@ test "encrypt/decrypt gcm 1.2" {
         // encrypt
         const ciphertext = cipher.encrypt(&buf, 0, .application_data, data);
         try testing.expectEqual(
-            tls.record_header_len + tls12.explicit_iv_len + data.len + T.auth_tag_len,
+            tls.record_header_len + consts.explicit_iv_len + data.len + T.auth_tag_len,
             ciphertext.len,
         );
 
