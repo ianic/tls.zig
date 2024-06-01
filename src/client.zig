@@ -701,7 +701,7 @@ test "Handshake.serverHello" {
     // Verify host name, signature
     // Calculate key material
     try h.serverFlight1(&reader, null, "example.ulfheim.net");
-    try testing.expectEqual(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite_tag);
+    try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite_tag);
     try testing.expectEqual(.x25519, h.named_group.?);
     try testing.expectEqual(.rsa_pkcs1_sha256, h.signature_scheme);
     try testing.expectEqualSlices(u8, &example.server_random, &h.server_random);
@@ -722,7 +722,7 @@ test "Client encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = TestStream.init(&example.server_pong, &output_buf);
     var c = client(stream);
-    c.cipher = try Cipher.init12(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
+    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
 
     c.stream.output.reset();
     { // encrypt verify data from example
@@ -749,7 +749,7 @@ test "Client encrypt decrypt" {
 
 test "Handshake.verifyData" {
     var h = try ClientT(TestStream).Handshake.init();
-    h.cipher_suite_tag = .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
+    h.cipher_suite_tag = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
     h.master_secret = example.master_secret;
 
     // add handshake messages to the transcript
@@ -765,7 +765,7 @@ test "Handshake.verifyData" {
     const stream = TestStream.init(&example.server_handshake_finished_msgs, &output_buf);
     // init client with prepared key_material
     var c = client(stream);
-    c.cipher = try Cipher.init12(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, crypto.random);
+    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, crypto.random);
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&example.client_finished);
@@ -981,7 +981,7 @@ test "Record decoder" {
         &bytesToHex(try rec.array(32), .lower),
     ); // server random
     try testing.expectEqual(0, try rec.decode(u8)); // session id len
-    try testing.expectEqual(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, try rec.decode(CipherSuite));
+    try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, try rec.decode(CipherSuite));
     try testing.expectEqual(0, try rec.decode(u8)); // compression method
     try testing.expectEqual(5, try rec.decode(u16)); // extension length
     try testing.expectEqual(5, rec.rest().len);

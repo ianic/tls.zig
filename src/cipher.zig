@@ -26,23 +26,23 @@ const Aead13ChaCha = CipherAead13T(crypto.aead.chacha_poly.ChaCha20Poly1305);
 
 fn CipherType(comptime tag: CipherSuite) type {
     return switch (tag) {
-        // tls 1.2
-        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-        .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-        .TLS_RSA_WITH_AES_128_CBC_SHA,
+        // tls 1.2 cbc
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA,
+        .RSA_WITH_AES_128_CBC_SHA,
         => CbcAes128Sha1,
+        .RSA_WITH_AES_128_CBC_SHA256 => CbcAes128Sha256,
+        .ECDHE_RSA_WITH_AES_256_CBC_SHA384 => CbcAes256Sha384,
 
-        .TLS_RSA_WITH_AES_128_CBC_SHA256 => CbcAes128Sha256,
-        .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 => CbcAes256Sha384,
-
-        .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        // tls 1.2 gcm
+        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         => Aead12Aes128Gcm,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384 => Aead12Aes256Gcm,
 
-        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 => Aead12Aes256Gcm,
-
-        .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-        .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+        // tls 1.2 chacha
+        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
         => Aead12ChaCha,
 
         // tls 1.3
@@ -55,19 +55,19 @@ fn CipherType(comptime tag: CipherSuite) type {
 }
 
 pub const Cipher = union(CipherSuite) {
-    // tls 1.2
-    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA),
-    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA),
-    TLS_RSA_WITH_AES_128_CBC_SHA: CipherType(.TLS_RSA_WITH_AES_128_CBC_SHA),
-    TLS_RSA_WITH_AES_128_CBC_SHA256: CipherType(.TLS_RSA_WITH_AES_128_CBC_SHA256),
-    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384: CipherType(.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384),
-
-    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: CipherType(.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256),
-    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: CipherType(.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
-    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: CipherType(.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384),
-
-    TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: CipherType(.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256),
-    TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: CipherType(.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256),
+    // tls 1.2 cbc
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA: CipherType(.ECDHE_ECDSA_WITH_AES_128_CBC_SHA),
+    ECDHE_RSA_WITH_AES_128_CBC_SHA: CipherType(.ECDHE_RSA_WITH_AES_128_CBC_SHA),
+    RSA_WITH_AES_128_CBC_SHA: CipherType(.RSA_WITH_AES_128_CBC_SHA),
+    RSA_WITH_AES_128_CBC_SHA256: CipherType(.RSA_WITH_AES_128_CBC_SHA256),
+    ECDHE_RSA_WITH_AES_256_CBC_SHA384: CipherType(.ECDHE_RSA_WITH_AES_256_CBC_SHA384),
+    // tls 1.2 gcm
+    ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: CipherType(.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256),
+    ECDHE_RSA_WITH_AES_128_GCM_SHA256: CipherType(.ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+    ECDHE_RSA_WITH_AES_256_GCM_SHA384: CipherType(.ECDHE_RSA_WITH_AES_256_GCM_SHA384),
+    // tls 1.2 chacha
+    ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: CipherType(.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256),
+    ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: CipherType(.ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256),
     // tls 1.3
     AES_128_GCM_SHA256: CipherType(.AES_128_GCM_SHA256),
     AES_256_GCM_SHA384: CipherType(.AES_256_GCM_SHA384),
@@ -75,16 +75,16 @@ pub const Cipher = union(CipherSuite) {
 
     pub fn init12(tag: CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
         switch (tag) {
-            inline .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-            .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-            .TLS_RSA_WITH_AES_128_CBC_SHA,
-            .TLS_RSA_WITH_AES_128_CBC_SHA256,
-            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-            .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-            .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            inline .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            .ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            .RSA_WITH_AES_128_CBC_SHA,
+            .RSA_WITH_AES_128_CBC_SHA256,
+            .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+            .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
             => |comptime_tag| {
                 return @unionInit(Cipher, @tagName(comptime_tag), CipherType(comptime_tag).init(key_material, rnd));
             },
@@ -394,23 +394,20 @@ fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usi
 }
 
 pub const CipherSuite = enum(u16) {
-    // tls 1.2
-    // cbc
-    TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
-    TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
-    TLS_RSA_WITH_AES_128_CBC_SHA = 0x002F,
-    TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
-    TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
-    //TLS_RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
-    // gcm
-    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
-    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
-
-    TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
-
-    TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
-    TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
-
+    // tls 1.2 cbc
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
+    ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
+    RSA_WITH_AES_128_CBC_SHA = 0x002F,
+    RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
+    ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
+    //RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
+    // tls 1.2 gcm
+    ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
+    ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
+    ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
+    // tls 1.2 chacha
+    ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
+    ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
     // tls 1.3
     AES_128_GCM_SHA256 = 0x1301,
     AES_256_GCM_SHA384 = 0x1302,
@@ -419,25 +416,24 @@ pub const CipherSuite = enum(u16) {
     //AES_128_CCM_8_SHA256 = 0x1305,
     //AEGIS_256_SHA512 = 0x1306,
     //AEGIS_128L_SHA256 = 0x1307,
-
     _,
 
     // in the order of preference
     pub const supported12 = [_]CipherSuite{
-        .TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        .TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 
-        .TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-        .TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 
-        .TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-        .TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-        .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA,
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
 
-        .TLS_RSA_WITH_AES_128_CBC_SHA,
-        .TLS_RSA_WITH_AES_128_CBC_SHA256,
-        // .TLS_RSA_WITH_AES_256_CBC_SHA256,
+        .RSA_WITH_AES_128_CBC_SHA,
+        .RSA_WITH_AES_128_CBC_SHA256,
+        // .RSA_WITH_AES_256_CBC_SHA256,
     };
 
     pub const supported13 = [_]CipherSuite{
@@ -465,9 +461,9 @@ pub const CipherSuite = enum(u16) {
         return switch (s) {
             // Random premaster secret, encrypted with publich key from certificate.
             // No server key exchange message.
-            .TLS_RSA_WITH_AES_128_CBC_SHA,
-            .TLS_RSA_WITH_AES_128_CBC_SHA256,
-            //.TLS_RSA_WITH_AES_256_CBC_SHA256,
+            .RSA_WITH_AES_128_CBC_SHA,
+            .RSA_WITH_AES_128_CBC_SHA256,
+            //.RSA_WITH_AES_256_CBC_SHA256,
             => .rsa,
             else => .ecdhe,
         };
@@ -480,8 +476,8 @@ pub const CipherSuite = enum(u16) {
 
     pub inline fn hash(cs: CipherSuite) Hash {
         return switch (cs) {
-            .TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-            .TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+            .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             .AES_256_GCM_SHA384,
             => .sha384,
             else => .sha256,
