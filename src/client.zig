@@ -39,9 +39,9 @@ pub fn ClientT(comptime StreamType: type) type {
         const Client = @This();
 
         pub fn handshake(c: *Client, host: []const u8, ca_bundle: ?Certificate.Bundle) !void {
-            var h = try Handshake.init();
+            var h = try Handshake.init(&c.write_buf);
 
-            defer std.debug.print(
+            errdefer std.debug.print(
                 "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
                 .{
                     host,
@@ -103,9 +103,12 @@ pub fn ClientT(comptime StreamType: type) type {
                 const rec = (try c.reader.next()) orelse return null;
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
-                const content_type, const cleartext = switch (c.cipher) {
-                    inline else => |*p| try p.decrypt(rec.payload, c.server_sequence, rec.header, rec.payload),
-                };
+                const content_type, const cleartext = try c.cipher.decrypt(
+                    rec.payload,
+                    c.server_sequence,
+                    rec.header,
+                    rec.payload,
+                );
                 c.server_sequence += 1;
 
                 switch (content_type) {
@@ -131,9 +134,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
         fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) []const u8 {
             defer c.client_sequence += 1;
-            return switch (c.cipher) {
-                inline else => |*p| p.encrypt(buffer, c.client_sequence, content_type, cleartext),
-            };
+            return c.cipher.encrypt(buffer, c.client_sequence, content_type, cleartext);
         }
 
         pub fn close(c: *Client) !void {
@@ -167,7 +168,9 @@ pub fn ClientT(comptime StreamType: type) type {
             signature_buf: [1024]u8 = undefined,
             signature: []const u8 = undefined,
 
-            pub fn init() !Handshake {
+            buffer: []u8, // scratch buffer
+
+            pub fn init(buf: []u8) !Handshake {
                 var rand_buf: [32 + 64 + 46]u8 = undefined;
                 crypto.random.bytes(&rand_buf);
 
@@ -176,6 +179,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     .dh_kp = try DhKeyPair.init(rand_buf[32..][0..64].*),
                     .rsa_kp = RsaKeyPair.init(rand_buf[32 + 64 ..][0..46].*),
                     .now_sec = std.time.timestamp(),
+                    .buffer = buf,
                 };
             }
 
@@ -404,7 +408,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 host: []const u8,
             ) !void {
                 var sequence: u64 = 0;
-                var cleartext_buf: [tls.max_cipertext_inner_record_len]u8 = undefined;
+                var cleartext_buf = h.buffer;
                 var cleartext_buf_head: usize = 0;
                 var cleartext_buf_tail: usize = 0;
                 var handshake_state: tls.HandshakeType = .encrypted_extensions;
@@ -484,13 +488,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
             fn verifySignature12(h: *Handshake) !void {
                 const verify_bytes = brk: {
-                    // public key len:
-                    // x25519 = 32
-                    // secp256r1 = 65
-                    // secp384r1 = 97
-                    var buf: [32 + 32 + 1 + 2 + 1 + 97]u8 = undefined;
-
-                    var w = BufWriter{ .buf = &buf };
+                    var w = BufWriter{ .buf = h.buffer };
                     try w.write(&h.client_random);
                     try w.write(&h.server_random);
                     try w.writeEnum(consts.CurveType.named_curve);
@@ -606,7 +604,7 @@ pub fn ClientT(comptime StreamType: type) type {
             /// Sends client key exchange, client chiper spec and client
             /// handshake finished messages.
             fn clientFlight2(h: *Handshake, c: *Client) !void {
-                var fbs = std.io.fixedBufferStream(&c.write_buf);
+                var fbs = std.io.fixedBufferStream(h.buffer);
 
                 // client key exchange message
                 {
@@ -671,11 +669,9 @@ pub fn ClientT(comptime StreamType: type) type {
 
             // client change cipher spec and client handshake finished
             fn clientFlight2Tls13(h: *Handshake, c: *Client) !void {
-                var buffer: [128]u8 = undefined;
+                var buffer = h.buffer;
                 const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
-                const msg = switch (h.cipher) {
-                    inline else => |*p| p.encrypt(buffer[6..], 0, .handshake, client_finished),
-                };
+                const msg = h.cipher.encrypt(buffer[6..], 0, .handshake, client_finished);
                 buffer[0..6].* = consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{0x01};
                 try c.stream.writeAll(buffer[0 .. 6 + msg.len]);
             }
@@ -690,7 +686,8 @@ const hexToBytes = std.fmt.hexToBytes;
 
 test "Handshake.serverHello" {
     const stream = TestStream.init(&example.server_hello_responses, "");
-    var h = try ClientT(TestStream).Handshake.init();
+    var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+    var h = try ClientT(TestStream).Handshake.init(&buffer);
     var reader = recordReader(stream);
     // Set to known instead of random
     h.client_random = example.client_random;
@@ -748,7 +745,8 @@ test "Client encrypt decrypt" {
 }
 
 test "Handshake.verifyData" {
-    var h = try ClientT(TestStream).Handshake.init();
+    var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+    var h = try ClientT(TestStream).Handshake.init(&buffer);
     h.cipher_suite_tag = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
     h.master_secret = example.master_secret;
 
@@ -1010,7 +1008,8 @@ fn bufPrint(var_name: []const u8, buf: []const u8) void {
 
 test "verify google.com certificate" {
     const stream = TestStream.init(@embedFile("testdata/google.com/server_hello"), "");
-    var h = try ClientT(TestStream).Handshake.init();
+    var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+    var h = try ClientT(TestStream).Handshake.init(&buffer);
     h.now_sec = 1714846451;
     h.client_random = @embedFile("testdata/google.com/client_random").*;
 
@@ -1293,7 +1292,8 @@ test "tls13 server hello" {
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);
 
-    var h = try ClientT(TestStream).Handshake.init();
+    var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+    var h = try ClientT(TestStream).Handshake.init(&buffer);
     try h.serverHello(&rec, length);
 
     try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite_tag);
@@ -1348,7 +1348,8 @@ fn initExampleHandshake(h: *ClientT(TestStream).Handshake) !void {
 
 test "tls13 decrypt wrapped record" {
     var cipher = brk: {
-        var h = try ClientT(TestStream).Handshake.init();
+        var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+        var h = try ClientT(TestStream).Handshake.init(&buffer);
         try initExampleHandshake(&h);
         break :brk h.cipher;
     };
@@ -1359,9 +1360,7 @@ test "tls13 decrypt wrapped record" {
         const payload = example13.server_encrypted_extensions_wrapped[tls.record_header_len..];
         const sequence: u64 = 0;
 
-        const content_type, const cleartext = switch (cipher) {
-            inline else => |*p| try p.decrypt(&buffer, sequence, record_header, payload),
-        };
+        const content_type, const cleartext = try cipher.decrypt(&buffer, sequence, record_header, payload);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &example13.server_encrypted_extensions, cleartext);
     }
@@ -1369,9 +1368,7 @@ test "tls13 decrypt wrapped record" {
         const record_header = example13.server_certificate_wrapped[0..tls.record_header_len];
         const payload = example13.server_certificate_wrapped[tls.record_header_len..];
         const sequence: u64 = 1;
-        const content_type, const cleartext = switch (cipher) {
-            inline else => |*p| try p.decrypt(&buffer, sequence, record_header, payload),
-        };
+        const content_type, const cleartext = try cipher.decrypt(&buffer, sequence, record_header, payload);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &example13.server_certificate, cleartext);
     }
@@ -1380,9 +1377,8 @@ test "tls13 decrypt wrapped record" {
 test "tls13 process server flight" {
     const stream = TestStream.init(&example13.server_flight, "");
     var reader = recordReader(stream);
-    var buffer: [1024]u8 = undefined;
-
-    var h = try ClientT(TestStream).Handshake.init();
+    var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
+    var h = try ClientT(TestStream).Handshake.init(&buffer);
     try initExampleHandshake(&h);
     try h.serverFlightTls13(&reader, null, "example.ulfheim.net");
 
@@ -1396,18 +1392,14 @@ test "tls13 process server flight" {
         try testing.expectEqualSlices(u8, &example13.server_application_iv, &c.server_iv);
         try testing.expectEqualSlices(u8, &example13.client_application_iv, &c.client_iv);
 
-        const encrypted = switch (cipher) {
-            inline else => |*p| p.encrypt(&buffer, 0, .application_data, "ping"),
-        };
+        const encrypted = cipher.encrypt(&buffer, 0, .application_data, "ping");
         try testing.expectEqualSlices(u8, &example13.client_ping_wrapped, encrypted);
     }
     { // client finished message
         const client_finished = h.transcript.clientFinished13Msg(.AES_256_GCM_SHA384);
         try testing.expectEqualSlices(u8, &example13.client_finished_verify_data, client_finished[4..]);
 
-        const encrypted = switch (h.cipher) {
-            inline else => |*p| p.encrypt(&buffer, 0, .handshake, client_finished),
-        };
+        const encrypted = h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
         try testing.expectEqualSlices(u8, &example13.client_finished_wrapped, encrypted);
     }
 }

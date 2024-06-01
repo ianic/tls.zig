@@ -128,6 +128,32 @@ pub const Cipher = union(CipherSuite) {
             .rnd = crypto.random,
         });
     }
+
+    const Self = @This();
+
+    pub fn encrypt(
+        self: Self,
+        buf: []u8,
+        sequence: u64,
+        content_type: tls.ContentType,
+        cleartext: []const u8,
+    ) []const u8 {
+        return switch (self) {
+            inline else => |*cipher| cipher.encrypt(buf, sequence, content_type, cleartext),
+        };
+    }
+
+    pub fn decrypt(
+        self: Self,
+        buf: []u8,
+        sequence: u64,
+        header: []const u8,
+        payload: []const u8,
+    ) !struct { tls.ContentType, []u8 } {
+        return switch (self) {
+            inline else => |*cipher| try cipher.decrypt(buf, sequence, header, payload),
+        };
+    }
 };
 
 fn Aead12Type(comptime AeadType: type) type {
