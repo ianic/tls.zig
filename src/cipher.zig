@@ -446,7 +446,7 @@ pub const CipherSuite = enum(u16) {
     _,
 
     // in the order of preference
-    pub const supported12 = [_]CipherSuite{
+    pub const tls12 = [_]CipherSuite{
         .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -463,19 +463,44 @@ pub const CipherSuite = enum(u16) {
         // .RSA_WITH_AES_256_CBC_SHA256,
     };
 
-    pub const supported13 = [_]CipherSuite{
+    pub const tls13 = [_]CipherSuite{
         .CHACHA20_POLY1305_SHA256,
         .AES_256_GCM_SHA384,
         .AES_128_GCM_SHA256,
     };
 
     pub fn validate(cs: CipherSuite) !void {
-        for (supported12) |s| {
-            if (cs == s) return;
+        if (includes(&tls12, cs)) return;
+        if (includes(&tls13, cs)) return;
+        return error.TlsIllegalParameter;
+    }
+
+    fn includes(list: []const CipherSuite, cs: CipherSuite) bool {
+        for (list) |s| {
+            if (cs == s) return true;
         }
-        for (supported13) |s| {
-            if (cs == s) return;
+        return false;
+    }
+
+    pub const Versions = enum {
+        both,
+        tls_1_3,
+        tls_1_2,
+    };
+
+    pub fn versions(cipher_suites: []const CipherSuite) !Versions {
+        var has_12 = false;
+        var has_13 = false;
+        for (cipher_suites) |cs| {
+            if (includes(&tls12, cs)) {
+                has_12 = true;
+            } else {
+                if (includes(&tls13, cs)) has_13 = true;
+            }
         }
+        if (has_12 and has_13) return .both;
+        if (has_12) return .tls_1_2;
+        if (has_13) return .tls_1_3;
         return error.TlsIllegalParameter;
     }
 
@@ -527,7 +552,7 @@ test "CipherSuite validate" {
         try testing.expectEqual(.sha256, cs.hash());
         try testing.expectEqual(.ecdhe, cs.keyExchange());
     }
-    for (CipherSuite.supported12) |cs| {
+    for (CipherSuite.tls12) |cs| {
         try cs.validate();
         _ = cs.hash();
         _ = cs.keyExchange();

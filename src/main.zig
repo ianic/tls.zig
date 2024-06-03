@@ -215,7 +215,30 @@ test "tls12" {
     const url = "google.com";
     var stats: tls.Stats = .{};
     try get(testing.allocator, url, .{
-        .version = .tls_1_2,
+        .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
+        .disable_keyber = true,
+        //.cipher_suites = &tls.CipherSuite.tls12,
+        .stats = &stats,
+    });
+
+    std.debug.print(
+        "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
+        .{
+            url,
+            stats.tls_version,
+            stats.cipher_suite_tag,
+            stats.named_group,
+            stats.signature_scheme,
+        },
+    );
+}
+
+test "godaddy.comn" {
+    const url = "godaddy.com";
+    var stats: tls.Stats = .{};
+    try get(testing.allocator, url, .{
+        //.disable_keyber = true,
+        .cipher_suites = &tls.CipherSuite.tls12,
         .stats = &stats,
     });
 
