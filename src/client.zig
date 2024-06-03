@@ -217,34 +217,44 @@ pub fn ClientT(comptime StreamType: type) type {
 
             /// Send client hello message.
             fn clientHello(h: *Handshake, host: []const u8, stream: *StreamType, opt: Options) !void {
-                var buffer = h.buffer;
+                const msg = try h.clientHelloMessage(host, opt);
+                h.transcript.update(msg[tls.record_header_len..]);
+                try stream.writeAll(msg);
+            }
 
-                var pw = BufWriter{ .buf = buffer[9..] }; // payload writer, preserve 9 bytes for handshake header
-                try pw.write(&consts.hello.protocol_version ++
+            fn clientHelloMessage(h: *Handshake, host: []const u8, opt: Options) ![]const u8 {
+                // | header | payload | extensions |
+                var buffer = h.buffer;
+                const header_len = 9;
+
+                // Payload writer, preserve header_len bytes for handshake header
+                var payload = BufWriter{ .buf = buffer[header_len..] };
+                try payload.write(&consts.hello.protocol_version ++
                     h.client_random ++
                     consts.hello.no_session_id);
 
-                try pw.writeEnumArray(CipherSuite, switch (opt.version) {
+                try payload.writeEnumArray(CipherSuite, switch (opt.version) {
                     .both => &CipherSuite.supported12 ++ CipherSuite.supported13,
                     .tls_1_3 => &CipherSuite.supported13,
                     .tls_1_2 => &CipherSuite.supported12,
                 });
 
-                try pw.write(&consts.hello.no_compression);
+                try payload.write(&consts.hello.no_compression);
 
-                // extensions writer starts after payload and preserves 2 more bytes for extension len
-                var ew = BufWriter{ .buf = buffer[9 + pw.pos + 2 ..] };
+                // Extensions writer starts after payload and preserves 2 more
+                // bytes for extension len in payload.
+                var ext = BufWriter{ .buf = buffer[header_len + payload.pos + 2 ..] };
                 if (opt.version != .tls_1_2) {
-                    try ew.writeExtension(.supported_versions, switch (opt.version) {
+                    try ext.writeExtension(.supported_versions, switch (opt.version) {
                         .both => &[_]tls.ProtocolVersion{ .tls_1_3, .tls_1_2 },
                         .tls_1_3 => &[_]tls.ProtocolVersion{.tls_1_3},
                         .tls_1_2 => &[_]tls.ProtocolVersion{.tls_1_2},
                     });
                 }
-                try ew.write(&consts.extension.ec_point_formats ++
+                try ext.write(&consts.extension.ec_point_formats ++
                     consts.extension.renegotiation_info ++
                     consts.extension.sct);
-                try ew.writeExtension(.signature_algorithms, &[_]tls.SignatureScheme{
+                try ext.writeExtension(.signature_algorithms, &[_]tls.SignatureScheme{
                     .ecdsa_secp256r1_sha256,
                     .ecdsa_secp384r1_sha384,
                     .rsa_pss_rsae_sha256,
@@ -260,14 +270,14 @@ pub fn ClientT(comptime StreamType: type) type {
                 // Both have header "Server: ATS/9.2.3"
                 // In Wireshark I got window update then tcp retransmissions of 1440 bytes without ack.
                 // After 17sec and 6 retransmissions connection is broken.
-                try ew.writeExtension(.supported_groups, &[_]tls.NamedGroup{
+                try ext.writeExtension(.supported_groups, &[_]tls.NamedGroup{
                     .x25519,
                     .secp256r1,
                     .secp384r1,
                     .x25519_kyber768d00,
                 });
                 if (opt.version != .tls_1_2) {
-                    try ew.writeKeyShare(
+                    try ext.writeKeyShare(
                         &.{ .x25519, .x25519_kyber768d00, .secp256r1, .secp384r1 },
                         &[_][]const u8{
                             &h.dh_kp.x25519_kp.public_key,
@@ -277,14 +287,11 @@ pub fn ClientT(comptime StreamType: type) type {
                         },
                     );
                 }
-                try ew.writeServerName(host);
+                try ext.writeServerName(host);
 
-                try pw.writeInt(@as(u16, @intCast(ew.pos))); // extension length
-                buffer[0..9].* = consts.handshakeHeader(.client_hello, pw.pos + ew.pos); // handshake header
-
-                const record = buffer[0 .. 9 + pw.pos + ew.pos];
-                h.transcript.update(record[tls.record_header_len..]);
-                try stream.writeAll(record);
+                try payload.writeInt(@as(u16, @intCast(ext.pos))); // extensions length
+                buffer[0..header_len].* = consts.handshakeHeader(.client_hello, payload.pos + ext.pos); // handshake header
+                return buffer[0 .. header_len + payload.pos + ext.pos];
             }
 
             fn serverHello(h: *Handshake, rec: *Record, length: u24) !void {
