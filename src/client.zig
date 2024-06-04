@@ -724,8 +724,9 @@ pub fn ClientT(comptime StreamType: type) type {
 
 const testing = std.testing;
 const example = @import("testdata/example.zig");
-const bytesToHex = std.fmt.bytesToHex;
-const hexToBytes = std.fmt.hexToBytes;
+const testu = @import("testu.zig");
+const hexStr2 = testu.hexStr2;
+const hexStr3 = testu.hexStr3;
 
 test "Handshake.serverHello" {
     const stream = TestStream.init(&example.server_hello_responses, "");
@@ -756,18 +757,15 @@ test "Handshake.serverHello" {
 }
 
 test "Client encrypt decrypt" {
-    var test_rnd = TestRnd{};
-    const rnd = std.Random.init(&test_rnd, TestRnd.fillFn);
-
     var output_buf: [1024]u8 = undefined;
     const stream = TestStream.init(&example.server_pong, &output_buf);
     var c = client(stream);
-    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, rnd);
+    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, testu.random(0));
 
     c.stream.output.reset();
     { // encrypt verify data from example
         c.client_sequence = 0; //
-        test_rnd.idx = 0x40; // sets iv to 40, 41, ... 4f
+        _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
         try c.write_(.handshake, &example.client_finished);
         try testing.expectEqualSlices(u8, &example.verify_data_encrypted_msg, c.stream.output.getWritten());
     }
@@ -775,7 +773,7 @@ test "Client encrypt decrypt" {
     c.stream.output.reset();
     { // encrypt ping
         const cleartext = "ping";
-        test_rnd.idx = 0; // sets iv to 00, 01, ... 0f
+        _ = testu.random(0); // sets iv to 00, 01, ... 0f
         c.client_sequence = 1;
 
         try c.write(cleartext);
@@ -830,19 +828,6 @@ const TestStream = struct {
 
     pub fn read(self: *TestStream, buffer: []u8) !usize {
         return self.input.read(buffer);
-    }
-};
-
-// To have predictable random numbers in tests
-const TestRnd = struct {
-    idx: u8 = 0,
-
-    // returns 0,1,2..0xff,0,1...
-    pub fn fillFn(self: *@This(), buf: []u8) void {
-        for (buf) |*v| {
-            v.* = self.idx;
-            self.idx +%= 1;
-        }
     }
 };
 
@@ -1018,8 +1003,8 @@ test "Record decoder" {
     try testing.expectEqual(45, try rec.decode(u24)); // length
     try testing.expectEqual(.tls_1_2, try rec.decode(tls.ProtocolVersion));
     try testing.expectEqualStrings(
-        "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-        &bytesToHex(try rec.array(32), .lower),
+        &hexStr2("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
+        try rec.array(32),
     ); // server random
     try testing.expectEqual(0, try rec.decode(u8)); // session id len
     try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, try rec.decode(CipherSuite));
@@ -1247,11 +1232,9 @@ const RsaKeyPair = struct {
 };
 
 test "RsaKeyPair" {
-    var buf: [48 + 270 + 256]u8 = undefined;
-
-    const seed = try hexToBytes(&buf, "23bc6aea3bf218e0154835af87536c8078b3cb9ed7be55579b6c55b36a503090584936ee572afeb19fd16ad333e4");
-    const cert_pub_key = try hexToBytes(buf[46..], "3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001");
-    const expected_key = try hexToBytes(buf[46 + 270 ..], "495fd4a3ff7b2bf5eb6c316b488559142c2678d3204df4408e9a6ccb0680a52739fc766136e6da92e17941c35e1e02150bfcf7830fe0a1443772bf88ca22b614e5d4df122a3e615e6d409bf4702d34effb0bba9f801b3a795f1ff88e483eaa2968a8f7d1fbddee0ac0ecb88c615b5787fd5daa2180ad9791df87dd7d589884414ebe02576bc136f1aa0d866951a29161d80a3339c92300f37c822c6d303919dc9776fa91c7de45d7b0092014b2e0f678daa81fae1530c90b1ef15eecb3aba2b285ba725a623b083aa70ada7adfebbfcbf8472a3cdd9337b92770e33c86f6180591a4f26db6822c95bc5cf379c9fcb3895561e60bf5be02845b96a3e3867c168b");
+    const seed = hexStr2("23bc6aea3bf218e0154835af87536c8078b3cb9ed7be55579b6c55b36a503090584936ee572afeb19fd16ad333e4");
+    const cert_pub_key = &hexStr2("3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001");
+    const expected_key = &hexStr2("495fd4a3ff7b2bf5eb6c316b488559142c2678d3204df4408e9a6ccb0680a52739fc766136e6da92e17941c35e1e02150bfcf7830fe0a1443772bf88ca22b614e5d4df122a3e615e6d409bf4702d34effb0bba9f801b3a795f1ff88e483eaa2968a8f7d1fbddee0ac0ecb88c615b5787fd5daa2180ad9791df87dd7d589884414ebe02576bc136f1aa0d866951a29161d80a3339c92300f37c822c6d303919dc9776fa91c7de45d7b0092014b2e0f678daa81fae1530c90b1ef15eecb3aba2b285ba725a623b083aa70ada7adfebbfcbf8472a3cdd9337b92770e33c86f6180591a4f26db6822c95bc5cf379c9fcb3895561e60bf5be02845b96a3e3867c168b");
 
     var rsa_kp = RsaKeyPair.init(seed[0..46].*);
     try testing.expectEqualSlices(
@@ -1262,10 +1245,9 @@ test "RsaKeyPair" {
 }
 
 test "DhKeyPair.x25519" {
-    var buf: [48 + 32 + 32]u8 = undefined;
-    const seed = try hexToBytes(&buf, "4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
-    const server_pub_key = try hexToBytes(buf[48..], "3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
-    const expected = try hexToBytes(buf[48 + 32 ..], "f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
+    const seed = hexStr2("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
+    const server_pub_key = &hexStr2("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
+    const expected = &hexStr2("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
 
     const kp = try DhKeyPair.init(seed[0..64].*);
     try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
@@ -1480,17 +1462,8 @@ test "tls13 process server flight" {
     }
 }
 
-const test_random = std.Random{ .ptr = undefined, .fillFn = randomFillFn };
-pub fn randomFillFn(_: *anyopaque, buf: []u8) void {
-    var idx: u8 = 0;
-    for (buf) |*v| {
-        v.* = idx;
-        idx +%= 1;
-    }
-}
-
 test "Handshake client hello" {
-    random = test_random;
+    random = testu.random(0);
 
     var output: [2048]u8 = undefined;
     var stream = TestStream.init("", &output);
@@ -1501,7 +1474,7 @@ test "Handshake client hello" {
         .disable_keyber = true,
     });
 
-    const expected_hello = hex2Bytes(
+    const expected_hello = hexStr3(
         "16 03 03 00 7c " ++ // record header
             "01 00 00 78 " ++ // handshake header
             "03 03 " ++ // protocol version
@@ -1519,45 +1492,4 @@ test "Handshake client hello" {
             "00 00 00 0f 00 0d 00 00 0a 67 6f 6f 67 6c 65 2e 63 6f 6d ", // server name extension
     );
     try testing.expectEqualSlices(u8, &expected_hello, stream.output.getWritten());
-    //bufPrint("expected_hello", stream.output.getWritten());
-}
-
-fn hex2Bytes(comptime input: []const u8) [input.len / 3]u8 {
-    @setEvalBranchQuota(1000 * 10);
-    var out: [input.len / 3]u8 = undefined;
-    var in_i: usize = 0;
-    while (in_i < input.len) : (in_i += 3) {
-        const hi = charToDigit(input[in_i]);
-        const lo = charToDigit(input[in_i + 1]);
-        out[in_i / 3] = (hi << 4) | lo;
-    }
-    return out;
-}
-
-fn charToDigit(c: u8) u8 {
-    return switch (c) {
-        '0'...'9' => c - '0',
-        'A'...'F' => c - 'A' + 10,
-        'a'...'f' => c - 'a' + 10,
-        else => unreachable,
-    };
-}
-
-fn bufPrint(var_name: []const u8, buf: []const u8) void {
-    // std.debug.print("\nconst {s} = [_]u8{{\n", .{var_name});
-    // for (buf, 1..) |b, i| {
-    //     std.debug.print("0x{x:0>2}, ", .{b});
-    //     if (i % 16 == 0)
-    //         std.debug.print("\n", .{});
-    // }
-    // std.debug.print("}};\n", .{});
-
-    std.debug.print("const {s} = \"", .{var_name});
-    const charset = "0123456789abcdef";
-    for (buf) |b| {
-        const x = charset[b >> 4];
-        const y = charset[b & 15];
-        std.debug.print("{c}{c} ", .{ x, y });
-    }
-    std.debug.print("\"\n", .{});
 }
