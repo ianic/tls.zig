@@ -723,19 +723,18 @@ pub fn ClientT(comptime StreamType: type) type {
 }
 
 const testing = std.testing;
-const example = @import("testdata/example.zig");
+const data12 = @import("testdata/tls12.zig");
+const data13 = @import("testdata/tls13.zig");
 const testu = @import("testu.zig");
-const hexStr2 = testu.hexStr2;
-const hexStr3 = testu.hexStr3;
 
 test "Handshake.serverHello" {
-    const stream = TestStream.init(&example.server_hello_responses, "");
+    const stream = TestStream.init(&data12.server_hello_responses, "");
     var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
     var h = try ClientT(TestStream).Handshake.init(&buffer);
     var reader = recordReader(stream);
     // Set to known instead of random
-    h.client_random = example.client_random;
-    h.dh_kp.x25519_kp.secret_key = example.client_secret;
+    h.client_random = data12.client_random;
+    h.dh_kp.x25519_kp.secret_key = data12.client_secret;
 
     // Parse server hello, certificate and key exchange messages.
     // Read cipher suite, named group, signature scheme, server random certificate public key
@@ -745,29 +744,29 @@ test "Handshake.serverHello" {
     try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite_tag);
     try testing.expectEqual(.x25519, h.named_group.?);
     try testing.expectEqual(.rsa_pkcs1_sha256, h.signature_scheme);
-    try testing.expectEqualSlices(u8, &example.server_random, &h.server_random);
-    try testing.expectEqualSlices(u8, &example.server_pub_key, h.server_pub_key);
-    try testing.expectEqualSlices(u8, &example.signature, h.signature);
-    try testing.expectEqualSlices(u8, &example.cert_pub_key, h.cert_pub_key);
+    try testing.expectEqualSlices(u8, &data12.server_random, &h.server_random);
+    try testing.expectEqualSlices(u8, &data12.server_pub_key, h.server_pub_key);
+    try testing.expectEqualSlices(u8, &data12.signature, h.signature);
+    try testing.expectEqualSlices(u8, &data12.cert_pub_key, h.cert_pub_key);
 
     try h.verifySignature12();
     try h.generateKeyMaterial();
 
-    try testing.expectEqualSlices(u8, &example.key_material, h.key_material);
+    try testing.expectEqualSlices(u8, &data12.key_material, h.key_material);
 }
 
 test "Client encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
-    const stream = TestStream.init(&example.server_pong, &output_buf);
+    const stream = TestStream.init(&data12.server_pong, &output_buf);
     var c = client(stream);
-    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, testu.random(0));
+    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0));
 
     c.stream.output.reset();
     { // encrypt verify data from example
         c.client_sequence = 0; //
         _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
-        try c.write_(.handshake, &example.client_finished);
-        try testing.expectEqualSlices(u8, &example.verify_data_encrypted_msg, c.stream.output.getWritten());
+        try c.write_(.handshake, &data12.client_finished);
+        try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, c.stream.output.getWritten());
     }
 
     c.stream.output.reset();
@@ -777,7 +776,7 @@ test "Client encrypt decrypt" {
         c.client_sequence = 1;
 
         try c.write(cleartext);
-        try testing.expectEqualSlices(u8, &example.encrypted_ping_msg, c.stream.output.getWritten());
+        try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, c.stream.output.getWritten());
     }
     { // descrypt server pong message
         c.server_sequence = 1;
@@ -789,25 +788,25 @@ test "Handshake.verifyData" {
     var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
     var h = try ClientT(TestStream).Handshake.init(&buffer);
     h.cipher_suite_tag = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
-    h.master_secret = example.master_secret;
+    h.master_secret = data12.master_secret;
 
     // add handshake messages to the transcript
-    for (example.handshake_messages) |msg| {
+    for (data12.handshake_messages) |msg| {
         h.transcript.update(msg[tls.record_header_len..]);
     }
 
     // expect verify data
     const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
-    try testing.expectEqualSlices(u8, &example.client_finished, &client_finished);
+    try testing.expectEqualSlices(u8, &data12.client_finished, &client_finished);
 
     var output_buf: [1024]u8 = undefined;
-    const stream = TestStream.init(&example.server_handshake_finished_msgs, &output_buf);
+    const stream = TestStream.init(&data12.server_handshake_finished_msgs, &output_buf);
     // init client with prepared key_material
     var c = client(stream);
-    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &example.key_material, random);
+    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, random);
 
     // check that server verify data matches calculates from hashes of all handshake messages
-    h.transcript.update(&example.client_finished);
+    h.transcript.update(&data12.client_finished);
     try h.serverFlight2(&c);
 }
 
@@ -968,7 +967,7 @@ pub fn recordReader(reader: anytype) RecordReader(@TypeOf(reader)) {
 }
 
 test "RecordReader" {
-    var fbs = std.io.fixedBufferStream(&example.server_responses);
+    var fbs = std.io.fixedBufferStream(&data12.server_responses);
     var rdr = recordReader(fbs.reader());
 
     const expected = [_]struct {
@@ -993,7 +992,7 @@ test "RecordReader" {
 }
 
 test "Record decoder" {
-    var fbs = std.io.fixedBufferStream(&example.server_responses);
+    var fbs = std.io.fixedBufferStream(&data12.server_responses);
     var rdr = recordReader(fbs.reader());
 
     var rec = (try rdr.next()).?;
@@ -1003,7 +1002,7 @@ test "Record decoder" {
     try testing.expectEqual(45, try rec.decode(u24)); // length
     try testing.expectEqual(.tls_1_2, try rec.decode(tls.ProtocolVersion));
     try testing.expectEqualStrings(
-        &hexStr2("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
+        &testu.hexStr2("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
         try rec.array(32),
     ); // server random
     try testing.expectEqual(0, try rec.decode(u8)); // session id len
@@ -1232,9 +1231,9 @@ const RsaKeyPair = struct {
 };
 
 test "RsaKeyPair" {
-    const seed = hexStr2("23bc6aea3bf218e0154835af87536c8078b3cb9ed7be55579b6c55b36a503090584936ee572afeb19fd16ad333e4");
-    const cert_pub_key = &hexStr2("3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001");
-    const expected_key = &hexStr2("495fd4a3ff7b2bf5eb6c316b488559142c2678d3204df4408e9a6ccb0680a52739fc766136e6da92e17941c35e1e02150bfcf7830fe0a1443772bf88ca22b614e5d4df122a3e615e6d409bf4702d34effb0bba9f801b3a795f1ff88e483eaa2968a8f7d1fbddee0ac0ecb88c615b5787fd5daa2180ad9791df87dd7d589884414ebe02576bc136f1aa0d866951a29161d80a3339c92300f37c822c6d303919dc9776fa91c7de45d7b0092014b2e0f678daa81fae1530c90b1ef15eecb3aba2b285ba725a623b083aa70ada7adfebbfcbf8472a3cdd9337b92770e33c86f6180591a4f26db6822c95bc5cf379c9fcb3895561e60bf5be02845b96a3e3867c168b");
+    const seed = testu.hexStr2("23bc6aea3bf218e0154835af87536c8078b3cb9ed7be55579b6c55b36a503090584936ee572afeb19fd16ad333e4");
+    const cert_pub_key = &testu.hexStr2("3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001");
+    const expected_key = &testu.hexStr2("495fd4a3ff7b2bf5eb6c316b488559142c2678d3204df4408e9a6ccb0680a52739fc766136e6da92e17941c35e1e02150bfcf7830fe0a1443772bf88ca22b614e5d4df122a3e615e6d409bf4702d34effb0bba9f801b3a795f1ff88e483eaa2968a8f7d1fbddee0ac0ecb88c615b5787fd5daa2180ad9791df87dd7d589884414ebe02576bc136f1aa0d866951a29161d80a3339c92300f37c822c6d303919dc9776fa91c7de45d7b0092014b2e0f678daa81fae1530c90b1ef15eecb3aba2b285ba725a623b083aa70ada7adfebbfcbf8472a3cdd9337b92770e33c86f6180591a4f26db6822c95bc5cf379c9fcb3895561e60bf5be02845b96a3e3867c168b");
 
     var rsa_kp = RsaKeyPair.init(seed[0..46].*);
     try testing.expectEqualSlices(
@@ -1245,9 +1244,9 @@ test "RsaKeyPair" {
 }
 
 test "DhKeyPair.x25519" {
-    const seed = hexStr2("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
-    const server_pub_key = &hexStr2("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
-    const expected = &hexStr2("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
+    const seed = testu.hexStr2("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
+    const server_pub_key = &testu.hexStr2("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
+    const expected = &testu.hexStr2("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
 
     const kp = try DhKeyPair.init(seed[0..64].*);
     try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
@@ -1338,10 +1337,8 @@ pub fn verifyRsa(
     }
 }
 
-const example13 = @import("testdata/example13.zig");
-
 test "tls13 server hello" {
-    var fbs = std.io.fixedBufferStream(&example13.server_hello);
+    var fbs = std.io.fixedBufferStream(&data13.server_hello);
     var rdr = recordReader(fbs.reader());
     var rec = (try rdr.next()).?;
 
@@ -1355,53 +1352,53 @@ test "tls13 server hello" {
     try h.serverHello(&rec, length);
 
     try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite_tag);
-    try testing.expectEqualSlices(u8, &example13.server_random, &h.server_random);
+    try testing.expectEqualSlices(u8, &data13.server_random, &h.server_random);
     try testing.expectEqual(.tls_1_3, h.tls_version);
     try testing.expectEqual(.x25519, h.named_group);
-    try testing.expectEqualSlices(u8, &example13.server_pub_key, h.server_pub_key);
+    try testing.expectEqualSlices(u8, &data13.server_pub_key, h.server_pub_key);
 }
 
 test "tls13 handshake cipher" {
     const cipher_suite_tag: CipherSuite = .AES_256_GCM_SHA384;
 
     var transcript = Transcript{};
-    transcript.update(example13.client_hello[tls.record_header_len..]);
-    transcript.update(example13.server_hello[tls.record_header_len..]);
+    transcript.update(data13.client_hello[tls.record_header_len..]);
+    transcript.update(data13.server_hello[tls.record_header_len..]);
 
     var dh_kp = DhKeyPair{
         .x25519_kp = .{
-            .public_key = example13.client_public_key,
-            .secret_key = example13.client_private_key,
+            .public_key = data13.client_public_key,
+            .secret_key = data13.client_private_key,
         },
     };
-    const shared_key = try dh_kp.preMasterSecret(.x25519, &example13.server_pub_key);
-    try testing.expectEqualSlices(u8, &example13.shared_key, shared_key);
+    const shared_key = try dh_kp.preMasterSecret(.x25519, &data13.server_pub_key);
+    try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
     const cipher = try Cipher.initHandshake(cipher_suite_tag, shared_key, &transcript);
 
     const c = &cipher.AES_256_GCM_SHA384;
-    try testing.expectEqualSlices(u8, &example13.server_handshake_key, &c.server_key);
-    try testing.expectEqualSlices(u8, &example13.client_handshake_key, &c.client_key);
-    try testing.expectEqualSlices(u8, &example13.server_handshake_iv, &c.server_iv);
-    try testing.expectEqualSlices(u8, &example13.client_handshake_iv, &c.client_iv);
+    try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.server_key);
+    try testing.expectEqualSlices(u8, &data13.client_handshake_key, &c.client_key);
+    try testing.expectEqualSlices(u8, &data13.server_handshake_iv, &c.server_iv);
+    try testing.expectEqualSlices(u8, &data13.client_handshake_iv, &c.client_iv);
 }
 
 fn exampleHandshakeCipher() !Cipher {
     const cipher_suite_tag: CipherSuite = .AES_256_GCM_SHA384;
     var transcript = Transcript{};
-    transcript.update(example13.client_hello[tls.record_header_len..]);
-    transcript.update(example13.server_hello[tls.record_header_len..]);
-    return try Cipher.initHandshake(cipher_suite_tag, &example13.shared_key, &transcript);
+    transcript.update(data13.client_hello[tls.record_header_len..]);
+    transcript.update(data13.server_hello[tls.record_header_len..]);
+    return try Cipher.initHandshake(cipher_suite_tag, &data13.shared_key, &transcript);
 }
 
 fn initExampleHandshake(h: *ClientT(TestStream).Handshake) !void {
     h.cipher_suite_tag = .AES_256_GCM_SHA384;
-    h.transcript.update(example13.client_hello[tls.record_header_len..]);
-    h.transcript.update(example13.server_hello[tls.record_header_len..]);
-    h.cipher = try Cipher.initHandshake(h.cipher_suite_tag, &example13.shared_key, &h.transcript);
+    h.transcript.update(data13.client_hello[tls.record_header_len..]);
+    h.transcript.update(data13.server_hello[tls.record_header_len..]);
+    h.cipher = try Cipher.initHandshake(h.cipher_suite_tag, &data13.shared_key, &h.transcript);
     h.tls_version = .tls_1_3;
     h.now_sec = 1714846451;
-    h.server_pub_key = &example13.server_pub_key;
+    h.server_pub_key = &data13.server_pub_key;
 }
 
 test "tls13 decrypt wrapped record" {
@@ -1414,26 +1411,26 @@ test "tls13 decrypt wrapped record" {
 
     var buffer: [1024]u8 = undefined;
     {
-        const record_header = example13.server_encrypted_extensions_wrapped[0..tls.record_header_len];
-        const payload = example13.server_encrypted_extensions_wrapped[tls.record_header_len..];
+        const record_header = data13.server_encrypted_extensions_wrapped[0..tls.record_header_len];
+        const payload = data13.server_encrypted_extensions_wrapped[tls.record_header_len..];
         const sequence: u64 = 0;
 
         const content_type, const cleartext = try cipher.decrypt(&buffer, sequence, record_header, payload);
         try testing.expectEqual(.handshake, content_type);
-        try testing.expectEqualSlices(u8, &example13.server_encrypted_extensions, cleartext);
+        try testing.expectEqualSlices(u8, &data13.server_encrypted_extensions, cleartext);
     }
     {
-        const record_header = example13.server_certificate_wrapped[0..tls.record_header_len];
-        const payload = example13.server_certificate_wrapped[tls.record_header_len..];
+        const record_header = data13.server_certificate_wrapped[0..tls.record_header_len];
+        const payload = data13.server_certificate_wrapped[tls.record_header_len..];
         const sequence: u64 = 1;
         const content_type, const cleartext = try cipher.decrypt(&buffer, sequence, record_header, payload);
         try testing.expectEqual(.handshake, content_type);
-        try testing.expectEqualSlices(u8, &example13.server_certificate, cleartext);
+        try testing.expectEqualSlices(u8, &data13.server_certificate, cleartext);
     }
 }
 
 test "tls13 process server flight" {
-    const stream = TestStream.init(&example13.server_flight, "");
+    const stream = TestStream.init(&data13.server_flight, "");
     var reader = recordReader(stream);
     var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
     var h = try ClientT(TestStream).Handshake.init(&buffer);
@@ -1441,24 +1438,24 @@ test "tls13 process server flight" {
     try h.serverFlightTls13(&reader, null, "example.ulfheim.net");
 
     { // application cipher keys calculation
-        try testing.expectEqualSlices(u8, &example13.handshake_hash, &h.transcript.sha384.hash.peek());
+        try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
         const cipher = try Cipher.initApplication(h.cipher_suite_tag, &h.transcript);
         const c = &cipher.AES_256_GCM_SHA384;
-        try testing.expectEqualSlices(u8, &example13.server_application_key, &c.server_key);
-        try testing.expectEqualSlices(u8, &example13.client_application_key, &c.client_key);
-        try testing.expectEqualSlices(u8, &example13.server_application_iv, &c.server_iv);
-        try testing.expectEqualSlices(u8, &example13.client_application_iv, &c.client_iv);
+        try testing.expectEqualSlices(u8, &data13.server_application_key, &c.server_key);
+        try testing.expectEqualSlices(u8, &data13.client_application_key, &c.client_key);
+        try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.server_iv);
+        try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.client_iv);
 
         const encrypted = cipher.encrypt(&buffer, 0, .application_data, "ping");
-        try testing.expectEqualSlices(u8, &example13.client_ping_wrapped, encrypted);
+        try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
         const client_finished = h.transcript.clientFinished13Msg(.AES_256_GCM_SHA384);
-        try testing.expectEqualSlices(u8, &example13.client_finished_verify_data, client_finished[4..]);
+        try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
 
         const encrypted = h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
-        try testing.expectEqualSlices(u8, &example13.client_finished_wrapped, encrypted);
+        try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, encrypted);
     }
 }
 
@@ -1474,7 +1471,7 @@ test "Handshake client hello" {
         .disable_keyber = true,
     });
 
-    const expected_hello = hexStr3(
+    const expected_hello = testu.hexStr3(
         "16 03 03 00 7c " ++ // record header
             "01 00 00 78 " ++ // handshake header
             "03 03 " ++ // protocol version
