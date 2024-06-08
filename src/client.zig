@@ -46,10 +46,10 @@ pub const Options = struct {
 };
 
 pub const Stats = struct {
-    tls_version: ProtocolVersion = undefined,
-    cipher_suite_tag: CipherSuite = undefined,
-    named_group: tls.NamedGroup = undefined,
-    signature_scheme: tls.SignatureScheme = undefined,
+    tls_version: ProtocolVersion = @enumFromInt(0),
+    cipher_suite_tag: CipherSuite = @enumFromInt(0),
+    named_group: tls.NamedGroup = @enumFromInt(0),
+    signature_scheme: tls.SignatureScheme = @enumFromInt(0),
 };
 
 var random = crypto.random;
@@ -81,17 +81,6 @@ pub fn ClientT(comptime StreamType: type) type {
                 s.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
                 s.signature_scheme = h.signature_scheme;
             };
-
-            errdefer std.debug.print(
-                "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
-                .{
-                    host,
-                    h.tls_version,
-                    h.cipher_suite_tag,
-                    h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000)),
-                    h.signature_scheme,
-                },
-            );
 
             try h.clientHello(host, &c.stream, opt);
             try h.serverFlight1(&c.reader, ca_bundle, host);
@@ -191,11 +180,11 @@ pub fn ClientT(comptime StreamType: type) type {
             key_material: []u8 = undefined,
 
             transcript: Transcript = .{},
-            cipher_suite_tag: CipherSuite = undefined,
+            cipher_suite_tag: CipherSuite = @enumFromInt(0),
             named_group: ?tls.NamedGroup = null,
             dh_kp: DhKeyPair,
             rsa_kp: RsaKeyPair,
-            signature_scheme: tls.SignatureScheme = undefined,
+            signature_scheme: tls.SignatureScheme = @enumFromInt(0),
             now_sec: i64 = 0,
             tls_version: tls.ProtocolVersion = .tls_1_2,
             cipher: Cipher = undefined,

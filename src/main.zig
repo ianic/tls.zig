@@ -8,30 +8,41 @@ pub fn main() !void {
     const arena = arena_instance.allocator();
 
     const args = try std.process.argsAlloc(arena);
+
     if (args.len > 1) {
-        const url = args[1];
+        const domain = args[1];
 
-        if (std.mem.eql(u8, "top", url)) return try getTopSites();
+        var ca_bundle = try initCaBundle(gpa);
+        defer ca_bundle.deinit(gpa);
 
-        _ = try get(gpa, url, .{});
-        return;
+        if (std.mem.eql(u8, "top", domain)) {
+            try getTopSites(gpa, ca_bundle);
+        } else {
+            try get(gpa, domain, ca_bundle, true, true, .{
+                //.stats = &stats,
+                //.cipher_suites = &[_]tls.CipherSuite{.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
+                //.cipher_suites = &tls.CipherSuite.tls12,
+            });
+        }
     }
 }
 
-pub fn get(gpa: std.mem.Allocator, domain: []const u8, opt: tls.Options) !void {
+fn initCaBundle(gpa: std.mem.Allocator) !Certificate.Bundle {
     var ca_bundle: Certificate.Bundle = .{};
     try ca_bundle.rescan(gpa);
-    defer ca_bundle.deinit(gpa);
-    try get2(gpa, domain, ca_bundle, true, opt);
+    return ca_bundle;
 }
 
-pub fn get2(
+pub fn get(
     gpa: std.mem.Allocator,
     domain: []const u8,
     ca_bundle: Certificate.Bundle,
+    show_handshake_stat: bool,
     show_response: bool,
-    opt: tls.Options,
+    opt_: tls.Options,
 ) !void {
+    var opt = opt_;
+
     var url_buf: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
 
@@ -41,8 +52,28 @@ pub fn get2(
     var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
     defer tcp.close();
 
-    const read_timeout: std.posix.timeval = .{ .tv_sec = 30, .tv_usec = 0 };
+    const read_timeout: std.posix.timeval = .{ .tv_sec = 10, .tv_usec = 0 };
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
+
+    if (show_handshake_stat) {
+        if (opt.stats == null) {
+            var stats: tls.Stats = .{};
+            opt.stats = &stats;
+        }
+    }
+    defer if (show_handshake_stat) {
+        const stats = opt.stats.?;
+        std.debug.print(
+            "{s}\n\ttls version: {s}\n\tchipher: {s}\n\tnamed group: {s}\n\tsignature scheme: {s}\n",
+            .{
+                domain,
+                if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
+                if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
+                if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
+                if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
+            },
+        );
+    };
 
     var cli = tls.client(tcp);
     try cli.handshake(host, ca_bundle, opt);
@@ -63,58 +94,55 @@ pub fn get2(
     //std.debug.print("OK {} bytes\n", .{n});
 }
 
-pub fn get3(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
+pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
     while (true) {
-        get2(gpa, domain, ca_bundle, false, .{}) catch |err| switch (err) {
+        var stats: tls.Stats = .{};
+        var opt: tls.Options = .{
+            //.cipher_suites = &tls.CipherSuite.tls12,
+            //.cipher_suites = &[_]tls.CipherSuite{.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
+            .stats = &stats,
+        };
+
+        if (inList(domain, &noKeyber)) {
+            opt.disable_keyber = true;
+        }
+        get(gpa, domain, ca_bundle, false, false, opt) catch |err| switch (err) {
             error.TemporaryNameServerFailure => {
                 continue;
             },
             else => {
-                std.debug.print("{s} ERROR {} \n", .{ domain, err });
+                curl(gpa, domain) catch |curl_err| {
+                    std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
+                    break;
+                };
+                std.debug.print("❌ {s} ERROR {}\n", .{ domain, err });
                 break;
             },
         };
+        std.debug.print("✔️ {s} {s} {s} {s} {s}\n", .{
+            domain,
+            if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
+            if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
+            if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
+            if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
+        });
         break;
     }
 }
 
-pub fn getTopSites() !void {
-    const gpa = std.heap.page_allocator;
-
-    var ca_bundle: Certificate.Bundle = .{};
-    try ca_bundle.rescan(gpa);
-    defer ca_bundle.deinit(gpa);
-
+pub fn getTopSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void {
     const top_sites_parsed = try readSites(gpa);
     defer top_sites_parsed.deinit();
     const top_sites = top_sites_parsed.value;
 
-    var threads: [16]std.Thread = undefined;
-    var i: usize = 0;
-    for (top_sites) |site| {
-        if (skip(site.rank)) {
-            // to check with the curl why it is skipped:
-            // std.debug.print(
-            //     "{d}, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w \"%{{url}} %{{http_code}} %{{errormsg}}\\n\" https://{s}\n",
-            //     .{ site.rank, site.rootDomain },
-            // );
-            continue;
-        }
+    var pool: std.Thread.Pool = undefined;
+    try pool.init(.{ .allocator = gpa, .n_jobs = 32 });
+    defer pool.deinit();
 
-        threads[i] = try std.Thread.spawn(.{}, get3, .{ gpa, site.rootDomain, ca_bundle });
-        if (i == threads.len - 1) {
-            for (threads) |t| t.join();
-            i = 0;
-        } else {
-            i += 1;
-        }
-    }
-    if (i > 0) {
-        while (true) {
-            i -= 1;
-            threads[i].join();
-            if (i == 0) break;
-        }
+    for (top_sites) |site| {
+        const domain = site.rootDomain;
+        if (skipDomain(domain)) continue;
+        try pool.spawn(getTop, .{ gpa, domain, ca_bundle });
     }
 }
 
@@ -135,6 +163,67 @@ const Site = struct {
     domainAuthority: usize,
 };
 
+fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
+    var url_buf: [128]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "curl", "-m 10", "-sS", "-w %{errormsg}", url },
+    });
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    // ref: https://everything.curl.dev/cmdline/exitcode.html
+    switch (result.term) {
+        .Exited => |error_code| switch (error_code) {
+            0 => return,
+            6 => return error.CouldntResolveHost,
+            7 => return error.FailedToConnectToHost,
+            18, 28 => return error.OperationTimeout,
+            60 => return error.Certificate,
+            else => {
+                std.debug.print("curl error code {}\n", .{error_code});
+                return error.Unknown;
+            },
+        },
+        else => {},
+    }
+
+    std.debug.print("curl: {s} {}\n", .{ url, result.term });
+    std.debug.print("{s}\n", .{result.stdout});
+    std.debug.print("{s}\n\n", .{result.stderr});
+
+    return error.CurlFailed;
+}
+
+fn skipDomain(domain: []const u8) bool {
+    for (domainsToSkip) |d| {
+        if (std.mem.eql(u8, d, domain)) return true;
+    }
+    return false;
+}
+
+const domainsToSkip = [_][]const u8{
+    "dw.com", // timeout after long time, fine on www.dw.com
+    "alicdn.com",
+    "usnews.com",
+};
+
+fn inList(domain: []const u8, list: []const []const u8) bool {
+    for (list) |d| {
+        if (std.mem.eql(u8, d, domain)) return true;
+    }
+    return false;
+}
+
+const noKeyber = [_][]const u8{
+    "secureserver.net",
+    "godaddy.com",
+};
+
 // Using curl to test different ciphers:
 // Cipher code for curl can be found at:
 // https://github.com/curl/curl/blob/cf337d851ae0120ec5ed801ad7eb128561bd8cf6/lib/vtls/sectransp.c#L729
@@ -148,108 +237,68 @@ const Site = struct {
 // curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://github.com
 //
 
-pub fn skip(site_rank: usize) bool {
-    const include = skipped;
-    for (include) |i| {
-        if (i == site_rank) return true;
-    }
-    return false;
-}
-const skipped = [_]usize{
-    112, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://planalto.gov.br
-    135, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ytimg.com
-    194, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://usnews.com
-    231, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://clickbank.net
-    244, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ssl-images-amazon.com
-    258, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://doubleclick.net
-    276, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://addthis.com
-    293, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://alicdn.com
-    298, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://example.com
-    301, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://akamaihd.net
-    307, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://rapidshare.com
-    387, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ggpht.com
-    465, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://sedoparking.com
-    487, // curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://twimg.com
-
-    // certificate issuer not found, also in curl
-    108,
-    150,
-    211,
-    396,
-};
-
-// skipped reasons:
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://planalto.gov.br
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ytimg.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://usnews.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://clickbank.net
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ssl-images-amazon.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://doubleclick.net
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://addthis.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://alicdn.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://example.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://akamaihd.net
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://rapidshare.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://ggpht.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://sedoparking.com
-// curl -m 10 --tlsv1.2 --tls-max 1.2 -s -o /dev/null -w "%{url} %{http_code} %{errormsg}\n" https://twimg.com
-//
-// https://planalto.gov.br 000 Operation timed out after 10000 milliseconds with 0 bytes received
-// https://ytimg.com 000 Could not resolve host: ytimg.com
-// https://usnews.com 000 Operation timed out after 10001 milliseconds with 0 bytes received
-// https://clickbank.net 000 Failed to connect to clickbank.net port 443 after 2 ms: Couldn't connect to server
-// https://ssl-images-amazon.com 000 Could not resolve host: ssl-images-amazon.com
-// https://doubleclick.net 000 Failed to connect to doubleclick.net port 443 after 2 ms: Couldn't connect to server
-// https://addthis.com 000 Failed to connect to addthis.com port 443 after 1 ms: Couldn't connect to server
-// https://alicdn.com 000 Connection timed out after 10002 milliseconds
-// https://example.com 000 Could not resolve host: example.com
-// https://akamaihd.net 000 Could not resolve host: akamaihd.net
-// https://rapidshare.com 000 Could not resolve host: rapidshare.com
-// https://ggpht.com 000 Could not resolve host: ggpht.com
-// https://sedoparking.com 000 Failed to connect to sedoparking.com port 443 after 1 ms: Couldn't connect to server
-// https://twimg.com 000 Could not resolve host: twimg.com
-
 const testing = std.testing;
 
-test "tls12" {
-    const url = "google.com";
-    var stats: tls.Stats = .{};
-    try get(testing.allocator, url, .{
-        .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
-        .disable_keyber = true,
-        //.cipher_suites = &tls.CipherSuite.tls12,
-        .stats = &stats,
-    });
+// test "tls12" {
+//     const url = "google.com";
+//     var stats: tls.Stats = .{};
+//     try get(testing.allocator, url, .{
+//         .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
+//         .disable_keyber = true,
+//         //.cipher_suites = &tls.CipherSuite.tls12,
+//         .stats = &stats,
+//     });
 
-    std.debug.print(
-        "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
-        .{
-            url,
-            stats.tls_version,
-            stats.cipher_suite_tag,
-            stats.named_group,
-            stats.signature_scheme,
-        },
-    );
-}
+//     std.debug.print(
+//         "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
+//         .{
+//             url,
+//             stats.tls_version,
+//             stats.cipher_suite_tag,
+//             stats.named_group,
+//             stats.signature_scheme,
+//         },
+//     );
+// }
 
-test "godaddy.comn" {
-    const url = "godaddy.com";
-    var stats: tls.Stats = .{};
-    try get(testing.allocator, url, .{
-        //.disable_keyber = true,
-        .cipher_suites = &tls.CipherSuite.tls12,
-        .stats = &stats,
-    });
+// test "godaddy.comn" {
+//     const url = "godaddy.com";
+//     var stats: tls.Stats = .{};
+//     try get(testing.allocator, url, .{
+//         //.disable_keyber = true,
+//         .cipher_suites = &tls.CipherSuite.tls12,
+//         .stats = &stats,
+//     });
 
-    std.debug.print(
-        "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
-        .{
-            url,
-            stats.tls_version,
-            stats.cipher_suite_tag,
-            stats.named_group,
-            stats.signature_scheme,
-        },
-    );
+//     std.debug.print(
+//         "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
+//         .{
+//             url,
+//             stats.tls_version,
+//             stats.cipher_suite_tag,
+//             stats.named_group,
+//             stats.signature_scheme,
+//         },
+//     );
+// }
+
+// test "pero" {
+//     std.debug.print("{}\n", .{@sizeOf(Certificate.Bundle)});
+// }
+
+test "all ciphers" {
+    const gpa = testing.allocator;
+    var ca_bundle = try initCaBundle(gpa);
+    defer ca_bundle.deinit(gpa);
+    const domain = "wikipedia.com";
+
+    for (tls.CipherSuite.all) |cs| {
+        get(gpa, domain, ca_bundle, false, false, .{
+            .cipher_suites = &[_]tls.CipherSuite{cs},
+        }) catch {
+            std.debug.print("❌ {s}\n", .{@tagName(cs)});
+            continue;
+        };
+        std.debug.print("✔️ {s}\n", .{@tagName(cs)});
+    }
 }

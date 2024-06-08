@@ -19,7 +19,7 @@ const CbcAes256Sha384 = CbcType(Aes256Cbc, Sha384);
 const Aead12Aes128Gcm = Aead12Type(crypto.aead.aes_gcm.Aes128Gcm);
 const Aead12Aes256Gcm = Aead12Type(crypto.aead.aes_gcm.Aes256Gcm);
 // tls 1.2 chacha chipher type
-const Aead12ChaCha = Aead12Type(crypto.aead.chacha_poly.ChaCha20Poly1305);
+const Aead12ChaCha = Aead12ChaChaType(crypto.aead.chacha_poly.ChaCha20Poly1305);
 // tls 1.3 cipher types
 const Aead13Aes128Gcm = Aead13Type(crypto.aead.aes_gcm.Aes128Gcm);
 const Aead13Aes256Gcm = Aead13Type(crypto.aead.aes_gcm.Aes256Gcm);
@@ -231,6 +231,72 @@ fn Aead12Type(comptime AeadType: type) type {
     };
 }
 
+fn Aead12ChaChaType(comptime AeadType: type) type {
+    return struct {
+        const key_len = AeadType.key_length;
+        const auth_tag_len = AeadType.tag_length;
+        const nonce_len = AeadType.nonce_length;
+
+        client_key: [key_len]u8,
+        server_key: [key_len]u8,
+        client_iv: [nonce_len]u8,
+        server_iv: [nonce_len]u8,
+        rnd: std.Random,
+
+        const Self = @This();
+
+        fn init(key_material: []const u8, rnd: std.Random) Self {
+            return .{
+                .rnd = rnd,
+                .client_key = key_material[0..key_len].*,
+                .server_key = key_material[key_len..][0..key_len].*,
+                .client_iv = key_material[2 * key_len ..][0..nonce_len].*,
+                .server_iv = key_material[2 * key_len + nonce_len ..][0..nonce_len].*,
+            };
+        }
+
+        pub fn encrypt(
+            self: Self,
+            buf: []u8,
+            sequence: u64,
+            content_type: tls.ContentType,
+            cleartext: []const u8,
+        ) []const u8 {
+            const header = buf[0..tls.record_header_len];
+            const iv = ivWithSeq(self.client_iv, sequence);
+            const ciphertext = buf[header.len..][0..cleartext.len];
+            const auth_tag = buf[header.len + ciphertext.len ..][0..auth_tag_len];
+            const ad = additionalData(sequence, content_type, cleartext.len);
+            AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, self.client_key);
+
+            header.* = consts.recordHeader(content_type, ciphertext.len + auth_tag.len);
+            return buf[0 .. header.len + ciphertext.len + auth_tag.len];
+        }
+
+        pub fn decrypt(
+            self: Self,
+            buf: []u8,
+            sequence: u64,
+            header: []const u8,
+            payload: []const u8,
+        ) !struct { tls.ContentType, []u8 } {
+            const overhead = auth_tag_len;
+            if (payload.len < overhead) return error.TlsDecryptError;
+
+            const iv = ivWithSeq(self.server_iv, sequence);
+            const cleartext_len = payload.len - overhead;
+            const ciphertext = payload[0..cleartext_len];
+            const auth_tag = payload[cleartext_len..][0..auth_tag_len];
+            const cleartext = buf[0..cleartext_len];
+            const content_type: tls.ContentType = @enumFromInt(header[0]);
+            const ad = additionalData(sequence, content_type, cleartext_len);
+
+            try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.server_key);
+            return .{ content_type, cleartext };
+        }
+    };
+}
+
 fn Aead13Type(comptime AeadType: type) type {
     return struct {
         const key_len = AeadType.key_length;
@@ -252,10 +318,7 @@ fn Aead13Type(comptime AeadType: type) type {
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) []const u8 {
-            // xor iv and sequence
-            var iv = self.client_iv;
-            const operand = std.mem.readInt(u64, iv[nonce_len - 8 ..], .big);
-            std.mem.writeInt(u64, iv[nonce_len - 8 ..], operand ^ sequence, .big);
+            const iv = ivWithSeq(self.client_iv, sequence);
 
             const header = buf[0..tls.record_header_len];
             @memcpy(buf[header.len..][0..cleartext.len], cleartext);
@@ -279,11 +342,7 @@ fn Aead13Type(comptime AeadType: type) type {
             const overhead = auth_tag_len;
             if (payload.len < overhead) return error.TlsDecryptError;
 
-            // xor iv and sequence
-            var iv = self.server_iv;
-            const operand = std.mem.readInt(u64, iv[nonce_len - 8 ..], .big);
-            std.mem.writeInt(u64, iv[nonce_len - 8 ..], operand ^ sequence, .big);
-
+            const iv = ivWithSeq(self.server_iv, sequence);
             const cleartext_len = payload.len - overhead;
             const ciphertext = payload[0..cleartext_len];
             const auth_tag = payload[cleartext_len..][0..auth_tag_len];
@@ -420,6 +479,14 @@ fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usi
     return sequence_buf ++ header;
 }
 
+// xor iv and sequence
+fn ivWithSeq(iv: [12]u8, sequence: u64) [12]u8 {
+    var res = iv;
+    const operand = std.mem.readInt(u64, iv[4..], .big);
+    std.mem.writeInt(u64, res[4..], operand ^ sequence, .big);
+    return res;
+}
+
 pub const CipherSuite = enum(u16) {
     // tls 1.2 cbc
     ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
@@ -468,6 +535,8 @@ pub const CipherSuite = enum(u16) {
         .AES_256_GCM_SHA384,
         .CHACHA20_POLY1305_SHA256,
     };
+
+    pub const all = tls13 ++ tls12;
 
     pub fn validate(cs: CipherSuite) !void {
         if (includes(&tls12, cs)) return;
@@ -569,7 +638,6 @@ test "encrypt/decrypt gcm 1.2" {
     inline for ([_]type{
         Aead12Aes128Gcm,
         Aead12Aes256Gcm,
-        Aead12ChaCha,
     }) |T| {
         var buf: [128]u8 = undefined;
         { // show byte lengths
@@ -671,6 +739,7 @@ test "encrypt/decrypt 1.3" {
         Aead13Aes128Gcm,
         Aead13Aes256Gcm,
         Aead13ChaCha,
+        Aead12ChaCha,
     }) |T| {
         var buf: [160]u8 = undefined;
         { // show byte lengths
@@ -694,8 +763,9 @@ test "encrypt/decrypt 1.3" {
         const data = "Hello world!";
         // encrypt
         const ciphertext = cipher.encrypt(&buf, 0, .application_data, data);
+        const content_type_len = if (T == Aead12ChaCha) 0 else 1;
         try testing.expectEqual(
-            tls.record_header_len + data.len + T.auth_tag_len + 1,
+            tls.record_header_len + data.len + T.auth_tag_len + content_type_len,
             ciphertext.len,
         );
 
