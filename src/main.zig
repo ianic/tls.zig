@@ -224,67 +224,7 @@ const noKeyber = [_][]const u8{
     "godaddy.com",
 };
 
-// Using curl to test different ciphers:
-// Cipher code for curl can be found at:
-// https://github.com/curl/curl/blob/cf337d851ae0120ec5ed801ad7eb128561bd8cf6/lib/vtls/sectransp.c#L729
-//
-// Example of
-// not supported:
-// curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-SHA https://github.com
-// curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-SHA https://www.supersport.hr
-// supported:
-// curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://www.supersport.hr
-// curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://github.com
-//
-
 const testing = std.testing;
-
-// test "tls12" {
-//     const url = "google.com";
-//     var stats: tls.Stats = .{};
-//     try get(testing.allocator, url, .{
-//         .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
-//         .disable_keyber = true,
-//         //.cipher_suites = &tls.CipherSuite.tls12,
-//         .stats = &stats,
-//     });
-
-//     std.debug.print(
-//         "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
-//         .{
-//             url,
-//             stats.tls_version,
-//             stats.cipher_suite_tag,
-//             stats.named_group,
-//             stats.signature_scheme,
-//         },
-//     );
-// }
-
-// test "godaddy.comn" {
-//     const url = "godaddy.com";
-//     var stats: tls.Stats = .{};
-//     try get(testing.allocator, url, .{
-//         //.disable_keyber = true,
-//         .cipher_suites = &tls.CipherSuite.tls12,
-//         .stats = &stats,
-//     });
-
-//     std.debug.print(
-//         "{s}\n\ttls version: {}\n\tchipher: {}\n\tnamded_group: {}\n\tsignature scheme: {}\n",
-//         .{
-//             url,
-//             stats.tls_version,
-//             stats.cipher_suite_tag,
-//             stats.named_group,
-//             stats.signature_scheme,
-//         },
-//     );
-// }
-
-// test "pero" {
-//     std.debug.print("{}\n", .{@sizeOf(Certificate.Bundle)});
-// }
 
 test "find domain for cipher" {
     const gpa = testing.allocator;
@@ -301,10 +241,8 @@ test "find domain for cipher" {
             get(gpa, domain, ca_bundle, false, false, .{
                 .cipher_suites = &[_]tls.CipherSuite{cs},
             }) catch {
-                //std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
                 continue;
             };
-
             std.debug.print("✔️ {s} {s}\n", .{ @tagName(cs), domain });
             break :loop;
         }
