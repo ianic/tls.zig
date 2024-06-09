@@ -286,19 +286,46 @@ const testing = std.testing;
 //     std.debug.print("{}\n", .{@sizeOf(Certificate.Bundle)});
 // }
 
-test "all ciphers" {
+test "find domain for cipher" {
     const gpa = testing.allocator;
     var ca_bundle = try initCaBundle(gpa);
     defer ca_bundle.deinit(gpa);
-    const domain = "wikipedia.com";
+
+    const top_sites_parsed = try readSites(gpa);
+    defer top_sites_parsed.deinit();
+    const top_sites = top_sites_parsed.value;
+
+    for (tls.CipherSuite.all) |cs| loop: {
+        for (top_sites) |ts| {
+            const domain = ts.rootDomain;
+            get(gpa, domain, ca_bundle, false, false, .{
+                .cipher_suites = &[_]tls.CipherSuite{cs},
+            }) catch {
+                //std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
+                continue;
+            };
+
+            std.debug.print("✔️ {s} {s}\n", .{ @tagName(cs), domain });
+            break :loop;
+        }
+
+        std.debug.print("❌ {s}\n", .{@tagName(cs)});
+    }
+}
+
+test "one domain all ciphers" {
+    const gpa = testing.allocator;
+    var ca_bundle = try initCaBundle(gpa);
+    defer ca_bundle.deinit(gpa);
+    const domain = "cloudflare.com";
 
     for (tls.CipherSuite.all) |cs| {
         get(gpa, domain, ca_bundle, false, false, .{
             .cipher_suites = &[_]tls.CipherSuite{cs},
-        }) catch {
-            std.debug.print("❌ {s}\n", .{@tagName(cs)});
+        }) catch |err| {
+            std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
             continue;
         };
-        std.debug.print("✔️ {s}\n", .{@tagName(cs)});
+        std.debug.print("✔️ {s} {s}\n", .{ @tagName(cs), domain });
     }
 }
