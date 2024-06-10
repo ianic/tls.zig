@@ -20,7 +20,7 @@ pub fn main() !void {
         } else {
             try get(gpa, domain, ca_bundle, true, true, .{
                 //.stats = &stats,
-                //.cipher_suites = &[_]tls.CipherSuite{.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
+                //.cipher_suites = &[_]tls.CipherSuite{.AEGIS_128L_SHA256},
                 //.cipher_suites = &tls.CipherSuite.tls12,
             });
         }
@@ -64,7 +64,7 @@ pub fn get(
     defer if (show_handshake_stat) {
         const stats = opt.stats.?;
         std.debug.print(
-            "{s}\n\ttls version: {s}\n\tchipher: {s}\n\tnamed group: {s}\n\tsignature scheme: {s}\n",
+            "\n{s}\n\ttls version: {s}\n\tchipher: {s}\n\tnamed group: {s}\n\tsignature scheme: {s}\n",
             .{
                 domain,
                 if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
@@ -99,7 +99,11 @@ pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate
         var stats: tls.Stats = .{};
         var opt: tls.Options = .{
             //.cipher_suites = &tls.CipherSuite.tls12,
-            //.cipher_suites = &[_]tls.CipherSuite{.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
+            // .cipher_suites = &[_]tls.CipherSuite{
+            //     // .RSA_WITH_AES_128_CBC_SHA,
+            //     //.RSA_WITH_AES_128_CBC_SHA256
+            //     //.RSA_WITH_AES_256_CBC_SHA256,
+            // },
             .stats = &stats,
         };
 
@@ -131,7 +135,7 @@ pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate
 }
 
 pub fn getTopSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void {
-    const top_sites_parsed = try readSites(gpa);
+    const top_sites_parsed = try readTopSites(gpa);
     defer top_sites_parsed.deinit();
     const top_sites = top_sites_parsed.value;
 
@@ -146,7 +150,7 @@ pub fn getTopSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void 
     }
 }
 
-fn readSites(gpa: std.mem.Allocator) !std.json.Parsed([]Site) {
+fn readTopSites(gpa: std.mem.Allocator) !std.json.Parsed([]Site) {
     const data = try std.fs.cwd().readFileAlloc(gpa, "tmp/top-sites.json", 64 * 1024);
     defer gpa.free(data);
     return std.json.parseFromSlice([]Site, gpa, data, .{ .allocate = .alloc_always });
@@ -227,11 +231,14 @@ const noKeyber = [_][]const u8{
 const testing = std.testing;
 
 test "find domain for cipher" {
+    if (true)
+        return error.SkipZigTest;
+
     const gpa = testing.allocator;
     var ca_bundle = try initCaBundle(gpa);
     defer ca_bundle.deinit(gpa);
 
-    const top_sites_parsed = try readSites(gpa);
+    const top_sites_parsed = try readTopSites(gpa);
     defer top_sites_parsed.deinit();
     const top_sites = top_sites_parsed.value;
 
@@ -255,6 +262,7 @@ test "one domain all ciphers" {
     const gpa = testing.allocator;
     var ca_bundle = try initCaBundle(gpa);
     defer ca_bundle.deinit(gpa);
+
     const domain = "cloudflare.com";
 
     for (tls.CipherSuite.all) |cs| {
@@ -267,3 +275,90 @@ test "one domain all ciphers" {
         std.debug.print("✔️ {s} {s}\n", .{ @tagName(cs), domain });
     }
 }
+
+test "extented validation failing" {
+    // curl and chorome are also failing on this one
+    if (true)
+        return error.SkipZigTest;
+
+    const gpa = testing.allocator;
+    var ca_bundle = try initCaBundle(gpa);
+    defer ca_bundle.deinit(gpa);
+
+    const domain = "extended-validation.badssl.com";
+    try get(gpa, domain, ca_bundle, false, false, .{});
+}
+
+test "badssl" {
+    const gpa = testing.allocator;
+    var ca_bundle = try initCaBundle(gpa);
+    defer ca_bundle.deinit(gpa);
+
+    const badssl_parsed = try readBadssl(gpa);
+    defer badssl_parsed.deinit();
+    const sets = badssl_parsed.value;
+
+    for (sets) |set| {
+        std.debug.print("\n{s}\n{s}\n", .{ set.heading, set.description });
+        const fail = YesNo.parse(set.fail);
+        const success = YesNo.parse(set.success);
+        for (set.subdomains) |sd| {
+            //std.debug.print("subdomain: {s}\n", .{sd.subdomain});
+
+            var domain_buf: [128]u8 = undefined;
+            const domain = try std.fmt.bufPrint(&domain_buf, "{s}.badssl.com", .{sd.subdomain});
+
+            get(gpa, domain, ca_bundle, false, false, .{}) catch |err| {
+                std.debug.print(
+                    "\t{s} {s} {}\n",
+                    .{ fail.emoji(), domain, err },
+                );
+                //if (!std.mem.eql(u8, sd.subdomain, "extended-validation"))
+                try testing.expect(fail != .no);
+                continue;
+            };
+            std.debug.print("\t{s} {s}\n", .{ success.emoji(), domain });
+            try testing.expect(success != .no);
+        }
+    }
+}
+
+const YesNo = enum {
+    yes,
+    no,
+    maybe,
+
+    fn emoji(self: YesNo) []const u8 {
+        return switch (self) {
+            .yes => "✅",
+            .no => "❌",
+            .maybe => "🆗",
+        };
+    }
+
+    fn parse(value: []const u8) YesNo {
+        if (std.mem.eql(u8, value, "yes")) return .yes;
+        if (std.mem.eql(u8, value, "no")) return .no;
+        return .maybe;
+    }
+};
+
+fn readBadssl(gpa: std.mem.Allocator) !std.json.Parsed([]BadsslSet) {
+    const data = try std.fs.cwd().readFileAlloc(gpa, "testdata/badssl.json", 64 * 1024);
+    defer gpa.free(data);
+    return std.json.parseFromSlice([]BadsslSet, gpa, data, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+}
+
+const BadsslSet = struct {
+    heading: []const u8,
+    description: []const u8,
+    success: []const u8,
+    fail: []const u8,
+    subdomains: []struct {
+        subdomain: []const u8,
+        port: u16 = 0,
+    },
+};

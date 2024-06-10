@@ -28,3 +28,7 @@ Curl use tls1.2 and specific cipher:
 `curl --tlsv1.2 --tls-max 1.2 -vv --ciphers ECDHE-RSA-AES128-GCM-SHA256 https://github.com`
 
 list of ciphers is here:  https://github.com/curl/curl/blob/cf337d851ae0120ec5ed801ad7eb128561bd8cf6/lib/vtls/sectransp.c#L729
+
+
+ChaCha in tls 1.2 has different iv:
+https://datatracker.ietf.org/doc/rfc7905/

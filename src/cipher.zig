@@ -14,6 +14,7 @@ const Aes256Cbc = @import("cbc.zig").Aes256Cbc;
 // tls 1.2 cbc chipher types
 const CbcAes128Sha1 = CbcType(Aes128Cbc, Sha1);
 const CbcAes128Sha256 = CbcType(Aes128Cbc, Sha256);
+const CbcAes256Sha256 = CbcType(Aes256Cbc, Sha256);
 const CbcAes256Sha384 = CbcType(Aes256Cbc, Sha384);
 // tls 1.2 gcm chipher types
 const Aead12Aes128Gcm = Aead12Type(crypto.aead.aes_gcm.Aes128Gcm);
@@ -24,6 +25,8 @@ const Aead12ChaCha = Aead12ChaChaType(crypto.aead.chacha_poly.ChaCha20Poly1305);
 const Aead13Aes128Gcm = Aead13Type(crypto.aead.aes_gcm.Aes128Gcm);
 const Aead13Aes256Gcm = Aead13Type(crypto.aead.aes_gcm.Aes256Gcm);
 const Aead13ChaCha = Aead13Type(crypto.aead.chacha_poly.ChaCha20Poly1305);
+const Aead13Ageis128 = Aead13Type(crypto.aead.aegis.Aegis128L);
+const Aead13Ageis256 = Aead13Type(crypto.aead.aegis.Aegis256);
 
 fn CipherType(comptime tag: CipherSuite) type {
     return switch (tag) {
@@ -50,6 +53,7 @@ fn CipherType(comptime tag: CipherSuite) type {
         .AES_128_GCM_SHA256 => Aead13Aes128Gcm,
         .AES_256_GCM_SHA384 => Aead13Aes256Gcm,
         .CHACHA20_POLY1305_SHA256 => Aead13ChaCha,
+        .AEGIS_128L_SHA256 => Aead13Ageis128,
 
         else => unreachable,
     };
@@ -73,6 +77,7 @@ pub const Cipher = union(CipherSuite) {
     AES_128_GCM_SHA256: CipherType(.AES_128_GCM_SHA256),
     AES_256_GCM_SHA384: CipherType(.AES_256_GCM_SHA384),
     CHACHA20_POLY1305_SHA256: CipherType(.CHACHA20_POLY1305_SHA256),
+    AEGIS_128L_SHA256: CipherType(.AEGIS_128L_SHA256),
 
     pub fn init12(tag: CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
         switch (tag) {
@@ -95,9 +100,10 @@ pub const Cipher = union(CipherSuite) {
 
     pub fn initHandshake(tag: CipherSuite, shared_key: []const u8, transcript: *Transcript) !Cipher {
         return switch (tag) {
-            inline .CHACHA20_POLY1305_SHA256,
-            .AES_128_GCM_SHA256,
+            inline .AES_128_GCM_SHA256,
             .AES_256_GCM_SHA384,
+            .CHACHA20_POLY1305_SHA256,
+            .AEGIS_128L_SHA256,
             => |comptime_tag| {
                 return init13(comptime_tag, transcript.handshakeSecret(comptime_tag, shared_key));
             },
@@ -107,9 +113,10 @@ pub const Cipher = union(CipherSuite) {
 
     pub fn initApplication(tag: CipherSuite, transcript: *Transcript) !Cipher {
         return switch (tag) {
-            inline .CHACHA20_POLY1305_SHA256,
-            .AES_128_GCM_SHA256,
+            inline .AES_128_GCM_SHA256,
             .AES_256_GCM_SHA384,
+            .CHACHA20_POLY1305_SHA256,
+            .AEGIS_128L_SHA256,
             => |comptime_tag| {
                 return init13(comptime_tag, transcript.applicationSecret(comptime_tag));
             },
@@ -263,7 +270,7 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             cleartext: []const u8,
         ) []const u8 {
             const header = buf[0..tls.record_header_len];
-            const iv = ivWithSeq(self.client_iv, sequence);
+            const iv = ivWithSeq(nonce_len, self.client_iv, sequence);
             const ciphertext = buf[header.len..][0..cleartext.len];
             const auth_tag = buf[header.len + ciphertext.len ..][0..auth_tag_len];
             const ad = additionalData(sequence, content_type, cleartext.len);
@@ -283,7 +290,7 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             const overhead = auth_tag_len;
             if (payload.len < overhead) return error.TlsDecryptError;
 
-            const iv = ivWithSeq(self.server_iv, sequence);
+            const iv = ivWithSeq(nonce_len, self.server_iv, sequence);
             const cleartext_len = payload.len - overhead;
             const ciphertext = payload[0..cleartext_len];
             const auth_tag = payload[cleartext_len..][0..auth_tag_len];
@@ -318,16 +325,16 @@ fn Aead13Type(comptime AeadType: type) type {
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) []const u8 {
-            const iv = ivWithSeq(self.client_iv, sequence);
-
             const header = buf[0..tls.record_header_len];
             @memcpy(buf[header.len..][0..cleartext.len], cleartext);
             buf[header.len + cleartext.len] = @intFromEnum(content_type);
+
             const ciphertext = buf[header.len..][0 .. cleartext.len + 1];
             const auth_tag = buf[header.len + ciphertext.len ..][0..auth_tag_len];
             const encrypted_len = ciphertext.len + auth_tag_len;
             header.* = consts.recordHeader(.application_data, encrypted_len);
 
+            const iv = ivWithSeq(nonce_len, self.client_iv, sequence);
             AeadType.encrypt(ciphertext, auth_tag, ciphertext, header, iv, self.client_key);
             return buf[0 .. header.len + encrypted_len];
         }
@@ -342,12 +349,12 @@ fn Aead13Type(comptime AeadType: type) type {
             const overhead = auth_tag_len;
             if (payload.len < overhead) return error.TlsDecryptError;
 
-            const iv = ivWithSeq(self.server_iv, sequence);
             const cleartext_len = payload.len - overhead;
             const ciphertext = payload[0..cleartext_len];
             const auth_tag = payload[cleartext_len..][0..auth_tag_len];
-
             const cleartext = buf[0..cleartext_len];
+
+            const iv = ivWithSeq(nonce_len, self.server_iv, sequence);
             try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, header, iv, self.server_key);
             return .{
                 @enumFromInt(cleartext[cleartext_len - 1]),
@@ -355,6 +362,15 @@ fn Aead13Type(comptime AeadType: type) type {
             };
         }
     };
+}
+
+// xor iv and sequence
+fn ivWithSeq(comptime nonce_len: usize, iv: [nonce_len]u8, sequence: u64) [nonce_len]u8 {
+    var res = iv;
+    const buf = res[nonce_len - 8 ..];
+    const operand = std.mem.readInt(u64, buf, .big);
+    std.mem.writeInt(u64, buf, operand ^ sequence, .big);
+    return res;
 }
 
 fn CbcType(comptime CBC: type, comptime HashType: type) type {
@@ -479,14 +495,6 @@ fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usi
     return sequence_buf ++ header;
 }
 
-// xor iv and sequence
-fn ivWithSeq(iv: [12]u8, sequence: u64) [12]u8 {
-    var res = iv;
-    const operand = std.mem.readInt(u64, iv[4..], .big);
-    std.mem.writeInt(u64, res[4..], operand ^ sequence, .big);
-    return res;
-}
-
 pub const CipherSuite = enum(u16) {
     // tls 1.2 cbc
     ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
@@ -494,7 +502,6 @@ pub const CipherSuite = enum(u16) {
     RSA_WITH_AES_128_CBC_SHA = 0x002F,
     RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
     ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
-    //RSA_WITH_AES_256_CBC_SHA256 = 0x003d,
     // tls 1.2 gcm
     ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
     ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
@@ -506,10 +513,8 @@ pub const CipherSuite = enum(u16) {
     AES_128_GCM_SHA256 = 0x1301,
     AES_256_GCM_SHA384 = 0x1302,
     CHACHA20_POLY1305_SHA256 = 0x1303,
-    //AES_128_CCM_SHA256 = 0x1304,
-    //AES_128_CCM_8_SHA256 = 0x1305,
-    //AEGIS_256_SHA512 = 0x1306,
-    //AEGIS_128L_SHA256 = 0x1307,
+    AEGIS_128L_SHA256 = 0x1307,
+    // AEGIS_256_SHA512 = 0x1306,
     _,
 
     // In the order of preference
@@ -527,10 +532,12 @@ pub const CipherSuite = enum(u16) {
 
         .RSA_WITH_AES_128_CBC_SHA,
         .RSA_WITH_AES_128_CBC_SHA256,
-        // .RSA_WITH_AES_256_CBC_SHA256,
     };
 
     pub const tls13 = [_]CipherSuite{
+        // Excluded because didn't find server which supports it to test
+        // .AEGIS_128L_SHA256
+
         .AES_128_GCM_SHA256,
         .AES_256_GCM_SHA384,
         .CHACHA20_POLY1305_SHA256,
@@ -584,7 +591,6 @@ pub const CipherSuite = enum(u16) {
             // No server key exchange message.
             .RSA_WITH_AES_128_CBC_SHA,
             .RSA_WITH_AES_128_CBC_SHA256,
-            //.RSA_WITH_AES_256_CBC_SHA256,
             => .rsa,
             else => .ecdhe,
         };
@@ -739,17 +745,23 @@ test "encrypt/decrypt 1.3" {
         Aead13Aes128Gcm,
         Aead13Aes256Gcm,
         Aead13ChaCha,
+        Aead13Ageis128,
         Aead12ChaCha,
     }) |T| {
         var buf: [160]u8 = undefined;
         { // show byte lengths
             const expected_key_len = switch (T) {
                 Aead13Aes128Gcm => 16,
+                Aead13Ageis128 => 16,
                 else => 32,
             };
             try testing.expectEqual(expected_key_len, T.key_len);
             try testing.expectEqual(16, T.auth_tag_len);
-            try testing.expectEqual(12, T.nonce_len);
+            const expected_nonce_len = switch (T) {
+                Aead13Ageis128 => 16,
+                else => 12,
+            };
+            try testing.expectEqual(expected_nonce_len, T.nonce_len);
         }
         test_rnd.bytes(buf[0..@max(T.key_len, T.auth_tag_len)]);
         var cipher = T{

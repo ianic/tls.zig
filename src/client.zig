@@ -11,6 +11,7 @@ const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 const EcdsaP384Sha256 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
+const EcdsaP256Sha384 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P256, crypto.hash.sha2.Sha384);
 const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 
 const consts = @import("consts.zig");
@@ -32,7 +33,7 @@ pub const Options = struct {
     //   .cipher_suites = &tls.CipherSuite.tls12,
     // To select particular cipher suite:
     //   .cipher_suites = &[_]CipherSuite{CipherSuite.CHACHA20_POLY1305_SHA256},
-    cipher_suites: []const CipherSuite = &CipherSuite.tls12 ++ CipherSuite.tls13,
+    cipher_suites: []const CipherSuite = &CipherSuite.all,
 
     // Some sites are not working when sending keyber public key: godaddy.com, secureserver.net
     // That key is making hello message big ~1655 bytes instead of 360
@@ -349,9 +350,12 @@ pub fn ClientT(comptime StreamType: type) type {
                     if (last_cert) |pc| {
                         if (pc.verify(subject, h.now_sec)) {
                             last_cert = subject;
-                        } else |_| {
-                            // skip certificate which is not part of the chain
-                            continue;
+                        } else |err| switch (err) {
+                            error.CertificateIssuerMismatch => {
+                                // skip certificate which is not part of the chain
+                                continue;
+                            },
+                            else => return err,
                         }
                     } else { // first certificate
                         try subject.verifyHostName(host);
@@ -364,7 +368,7 @@ pub fn ClientT(comptime StreamType: type) type {
                             trust_chain_established = true;
                         } else |err| switch (err) {
                             error.CertificateIssuerNotFound => {},
-                            else => |e| return e,
+                            else => return err,
                         }
                     }
                 }
@@ -538,7 +542,6 @@ pub fn ClientT(comptime StreamType: type) type {
                     .ecdsa_secp384r1_sha384,
                     => |comptime_scheme| {
                         if (h.cert_pub_key_algo != .X9_62_id_ecPublicKey) return error.TlsBadSignatureScheme;
-
                         const cert_named_curve = h.cert_pub_key_algo.X9_62_id_ecPublicKey;
                         switch (cert_named_curve) {
                             inline else => |comptime_cert_named_curve| {
@@ -551,7 +554,6 @@ pub fn ClientT(comptime StreamType: type) type {
                     },
 
                     inline .ed25519 => {
-                        std.debug.print("evo ga netko koristi .ed25519 !!!!\n", .{});
                         if (h.cert_pub_key_algo != .curveEd25519) return error.TlsBadSignatureScheme;
                         const Eddsa = crypto.sign.Ed25519;
                         if (h.signature.len != Eddsa.Signature.encoded_length) return error.InvalidEncoding;
@@ -598,7 +600,10 @@ pub fn ClientT(comptime StreamType: type) type {
                         .secp384r1 => EcdsaP384Sha256,
                         else => EcdsaP256Sha256,
                     },
-                    .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
+                    .ecdsa_secp384r1_sha384 => switch (cert_named_curve) {
+                        .X9_62_prime256v1 => EcdsaP256Sha384,
+                        else => EcdsaP384Sha384,
+                    },
                     else => @compileError("bad scheme"),
                 };
             }
