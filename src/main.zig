@@ -18,7 +18,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, "top", domain)) {
             try getTopSites(gpa, ca_bundle);
         } else {
-            try get(gpa, domain, ca_bundle, true, true, .{
+            try get(gpa, domain, null, ca_bundle, true, true, .{
                 //.stats = &stats,
                 //.cipher_suites = &[_]tls.CipherSuite{.AEGIS_128L_SHA256},
                 //.cipher_suites = &tls.CipherSuite.tls12,
@@ -33,9 +33,18 @@ fn initCaBundle(gpa: std.mem.Allocator) !Certificate.Bundle {
     return ca_bundle;
 }
 
+fn hasPrefix(str: []const u8, prefixes: []const []const u8) bool {
+    for (prefixes) |prefix|
+        if (str.len >= prefix.len and std.mem.eql(u8, str[0..prefix.len], prefix))
+            return true;
+
+    return false;
+}
+
 pub fn get(
     gpa: std.mem.Allocator,
     domain: []const u8,
+    port: ?u16,
     ca_bundle: Certificate.Bundle,
     show_handshake_stat: bool,
     show_response: bool,
@@ -43,13 +52,18 @@ pub fn get(
 ) !void {
     var opt = opt_;
 
-    var url_buf: [128]u8 = undefined;
-    const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
+    const url = brk: {
+        if (hasPrefix(domain, &[_][]const u8{ "https://", "wss://" }))
+            break :brk domain;
+
+        var url_buf: [128]u8 = undefined;
+        break :brk try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
+    };
 
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
 
-    var tcp = try std.net.tcpConnectToHost(gpa, host, 443);
+    var tcp = try std.net.tcpConnectToHost(gpa, host, if (port) |p| p else 443);
     defer tcp.close();
 
     const read_timeout: std.posix.timeval = .{ .tv_sec = 10, .tv_usec = 0 };
@@ -110,7 +124,7 @@ pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate
         if (inList(domain, &noKeyber)) {
             opt.disable_keyber = true;
         }
-        get(gpa, domain, ca_bundle, false, false, opt) catch |err| switch (err) {
+        get(gpa, domain, null, ca_bundle, false, false, opt) catch |err| switch (err) {
             error.TemporaryNameServerFailure => {
                 continue;
             },
@@ -245,7 +259,7 @@ test "find domain for cipher" {
     for (tls.CipherSuite.all) |cs| loop: {
         for (top_sites) |ts| {
             const domain = ts.rootDomain;
-            get(gpa, domain, ca_bundle, false, false, .{
+            get(gpa, domain, null, ca_bundle, false, false, .{
                 .cipher_suites = &[_]tls.CipherSuite{cs},
             }) catch {
                 continue;
@@ -266,7 +280,7 @@ test "one domain all ciphers" {
     const domain = "cloudflare.com";
 
     for (tls.CipherSuite.all) |cs| {
-        get(gpa, domain, ca_bundle, false, false, .{
+        get(gpa, domain, null, ca_bundle, false, false, .{
             .cipher_suites = &[_]tls.CipherSuite{cs},
         }) catch |err| {
             std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
@@ -286,7 +300,7 @@ test "extented validation failing" {
     defer ca_bundle.deinit(gpa);
 
     const domain = "extended-validation.badssl.com";
-    try get(gpa, domain, ca_bundle, false, false, .{});
+    try get(gpa, domain, null, ca_bundle, false, false, .{});
 }
 
 test "badssl" {
@@ -308,7 +322,7 @@ test "badssl" {
             var domain_buf: [128]u8 = undefined;
             const domain = try std.fmt.bufPrint(&domain_buf, "{s}.badssl.com", .{sd.subdomain});
 
-            get(gpa, domain, ca_bundle, false, false, .{}) catch |err| {
+            get(gpa, domain, if (sd.port == 0) null else sd.port, ca_bundle, false, false, .{}) catch |err| {
                 std.debug.print(
                     "\t{s} {s} {}\n",
                     .{ fail.emoji(), domain, err },

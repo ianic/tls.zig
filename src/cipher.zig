@@ -35,14 +35,21 @@ fn CipherType(comptime tag: CipherSuite) type {
         .ECDHE_RSA_WITH_AES_128_CBC_SHA,
         .RSA_WITH_AES_128_CBC_SHA,
         => CbcAes128Sha1,
-        .RSA_WITH_AES_128_CBC_SHA256 => CbcAes128Sha256,
-        .ECDHE_RSA_WITH_AES_256_CBC_SHA384 => CbcAes256Sha384,
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+        .RSA_WITH_AES_128_CBC_SHA256,
+        => CbcAes128Sha256,
+        .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+        .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+        => CbcAes256Sha384,
 
         // tls 1.2 gcm
         .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         => Aead12Aes128Gcm,
-        .ECDHE_RSA_WITH_AES_256_GCM_SHA384 => Aead12Aes256Gcm,
+        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        => Aead12Aes256Gcm,
 
         // tls 1.2 chacha
         .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -64,10 +71,16 @@ pub const Cipher = union(CipherSuite) {
     ECDHE_ECDSA_WITH_AES_128_CBC_SHA: CipherType(.ECDHE_ECDSA_WITH_AES_128_CBC_SHA),
     ECDHE_RSA_WITH_AES_128_CBC_SHA: CipherType(.ECDHE_RSA_WITH_AES_128_CBC_SHA),
     RSA_WITH_AES_128_CBC_SHA: CipherType(.RSA_WITH_AES_128_CBC_SHA),
+
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA256: CipherType(.ECDHE_ECDSA_WITH_AES_128_CBC_SHA256),
+    ECDHE_RSA_WITH_AES_128_CBC_SHA256: CipherType(.ECDHE_RSA_WITH_AES_128_CBC_SHA256),
     RSA_WITH_AES_128_CBC_SHA256: CipherType(.RSA_WITH_AES_128_CBC_SHA256),
+
+    ECDHE_ECDSA_WITH_AES_256_CBC_SHA384: CipherType(.ECDHE_ECDSA_WITH_AES_256_CBC_SHA384),
     ECDHE_RSA_WITH_AES_256_CBC_SHA384: CipherType(.ECDHE_RSA_WITH_AES_256_CBC_SHA384),
     // tls 1.2 gcm
     ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: CipherType(.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256),
+    ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: CipherType(.ECDHE_RSA_WITH_AES_256_GCM_SHA384),
     ECDHE_RSA_WITH_AES_128_GCM_SHA256: CipherType(.ECDHE_RSA_WITH_AES_128_GCM_SHA256),
     ECDHE_RSA_WITH_AES_256_GCM_SHA384: CipherType(.ECDHE_RSA_WITH_AES_256_GCM_SHA384),
     // tls 1.2 chacha
@@ -84,9 +97,13 @@ pub const Cipher = union(CipherSuite) {
             inline .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .ECDHE_RSA_WITH_AES_128_CBC_SHA,
             .RSA_WITH_AES_128_CBC_SHA,
+            .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+            .ECDHE_RSA_WITH_AES_128_CBC_SHA256,
             .RSA_WITH_AES_128_CBC_SHA256,
+            .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
             .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -495,21 +512,28 @@ fn additionalData(sequence: u64, content_type: tls.ContentType, payload_len: usi
     return sequence_buf ++ header;
 }
 
+// Week, secure, recomended grades are from https://ciphersuite.info/page/faq/
 pub const CipherSuite = enum(u16) {
     // tls 1.2 cbc
-    ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009,
-    ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013,
-    RSA_WITH_AES_128_CBC_SHA = 0x002F,
-    RSA_WITH_AES_128_CBC_SHA256 = 0x003c,
-    ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028,
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009, // week
+    ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013, // week
+    RSA_WITH_AES_128_CBC_SHA = 0x002F, // week
+
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 = 0xc023, // week
+    ECDHE_RSA_WITH_AES_128_CBC_SHA256 = 0xc027, // week
+    RSA_WITH_AES_128_CBC_SHA256 = 0x003c, // week
+
+    ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 = 0xc024, // week
+    ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028, // week
     // tls 1.2 gcm
-    ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b,
-    ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f,
-    ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030,
+    ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b, // recomended
+    ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 = 0xc02c, // recomended
+    ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f, // secure
+    ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030, // secure
     // tls 1.2 chacha
-    ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9,
-    ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8,
-    // tls 1.3
+    ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9, // recomended
+    ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8, // secure
+    // tls 1.3 (all are recomended)
     AES_128_GCM_SHA256 = 0x1301,
     AES_256_GCM_SHA384 = 0x1302,
     CHACHA20_POLY1305_SHA256 = 0x1303,
@@ -518,31 +542,37 @@ pub const CipherSuite = enum(u16) {
     _,
 
     // In the order of preference
-    pub const tls12 = [_]CipherSuite{
-        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    pub const tls12_secure = [_]CipherSuite{
+        // recomended
         .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-
+        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
         .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        // secure
+        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
         .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-
-        .ECDHE_RSA_WITH_AES_128_CBC_SHA,
-        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-        .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-
-        .RSA_WITH_AES_128_CBC_SHA,
-        .RSA_WITH_AES_128_CBC_SHA256,
     };
+    pub const tls12_week = [_]CipherSuite{
+        // week
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+        .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+        .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA,
 
+        .RSA_WITH_AES_128_CBC_SHA256,
+        .RSA_WITH_AES_128_CBC_SHA,
+    };
     pub const tls13 = [_]CipherSuite{
-        // Excluded because didn't find server which supports it to test
-        // .AEGIS_128L_SHA256
-
         .AES_128_GCM_SHA256,
         .AES_256_GCM_SHA384,
         .CHACHA20_POLY1305_SHA256,
+        // Excluded because didn't find server which supports it to test
+        // .AEGIS_128L_SHA256
     };
-
+    pub const tls12 = tls12_secure ++ tls12_week;
+    pub const secure = tls13 ++ tls12_secure;
     pub const all = tls13 ++ tls12;
 
     pub fn validate(cs: CipherSuite) !void {
@@ -605,6 +635,8 @@ pub const CipherSuite = enum(u16) {
         return switch (cs) {
             .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+            .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             .AES_256_GCM_SHA384,
             => .sha384,
             else => .sha256,
