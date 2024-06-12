@@ -108,43 +108,27 @@ pub fn get(
 }
 
 pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
-    while (true) {
-        var stats: tls.Stats = .{};
-        var opt: tls.Options = .{
-            //.cipher_suites = &tls.CipherSuite.tls12,
-            // .cipher_suites = &[_]tls.CipherSuite{
-            //     // .RSA_WITH_AES_128_CBC_SHA,
-            //     //.RSA_WITH_AES_128_CBC_SHA256
-            //     //.RSA_WITH_AES_256_CBC_SHA256,
-            // },
-            .stats = &stats,
-        };
+    var stats: tls.Stats = .{};
+    var opt: tls.Options = .{ .stats = &stats };
 
-        if (inList(domain, &noKeyber)) {
-            opt.disable_keyber = true;
-        }
-        get(gpa, domain, null, ca_bundle, false, false, opt) catch |err| switch (err) {
-            error.TemporaryNameServerFailure => {
-                continue;
-            },
-            else => {
-                curl(gpa, domain) catch |curl_err| {
-                    std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
-                    break;
-                };
-                std.debug.print("❌ {s} ERROR {}\n", .{ domain, err });
-                break;
-            },
-        };
-        std.debug.print("✔️ {s} {s} {s} {s} {s}\n", .{
-            domain,
-            if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
-            if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
-            if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
-            if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
-        });
-        break;
+    if (inList(domain, &noKeyber)) {
+        opt.disable_keyber = true;
     }
+    get(gpa, domain, null, ca_bundle, false, false, opt) catch |err| {
+        curl(gpa, domain) catch |curl_err| {
+            std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
+            return;
+        };
+        std.debug.print("❌ {s} ERROR {}\n", .{ domain, err });
+        return;
+    };
+    std.debug.print("✔️ {s} {s} {s} {s} {s}\n", .{
+        domain,
+        if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
+        if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
+        if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
+        if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
+    });
 }
 
 pub fn getTopSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void {
