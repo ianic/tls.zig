@@ -130,14 +130,16 @@ pub fn ClientT(comptime StreamType: type) type {
 
         fn next_(c: *Client) !?struct { tls.ContentType, []const u8 } {
             while (true) {
-                const rec = (try c.reader.next()) orelse return null;
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                const rec = (try c.reader.raw()) orelse return null;
+                //const content_type = RecordReaderType.contentType(rec);
+                const protocol_version = RecordReaderType.protocolVersion(rec);
+                if (protocol_version != .tls_1_2) return error.TlsBadVersion;
 
                 const content_type, const cleartext = try c.cipher.decrypt(
-                    rec.payload,
+                    rec,
                     c.server_sequence,
-                    rec.header,
-                    rec.payload,
+                    rec[0..tls.record_header_len],
+                    rec[tls.record_header_len..],
                 );
                 c.server_sequence += 1;
 
@@ -911,18 +913,24 @@ fn RecordReader(comptime ReaderType: type) type {
         const Self = @This();
 
         pub fn next(self: *Self) !?Record {
-            const buf = (try self.next_()) orelse return null;
-            const content_type: tls.ContentType = @enumFromInt(buf[0]);
-            const protocol_version: tls.ProtocolVersion = @enumFromInt(mem.readInt(u16, buf[1..3], .big));
+            const buf = (try self.raw()) orelse return null;
             return .{
-                .content_type = content_type,
-                .protocol_version = protocol_version,
+                .content_type = contentType(buf),
+                .protocol_version = protocolVersion(buf),
                 .header = buf[0..tls.record_header_len],
                 .payload = buf[tls.record_header_len..],
             };
         }
 
-        fn next_(c: *Self) !?[]u8 {
+        pub fn contentType(buf: []const u8) tls.ContentType {
+            return @enumFromInt(buf[0]);
+        }
+
+        pub fn protocolVersion(buf: []const u8) tls.ProtocolVersion {
+            return @enumFromInt(mem.readInt(u16, buf[1..3], .big));
+        }
+
+        fn raw(c: *Self) !?[]u8 {
             while (true) {
                 const buffer = c.buffer[c.start..c.end];
                 // If we have 5 bytes header.

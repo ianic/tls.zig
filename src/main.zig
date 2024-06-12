@@ -164,14 +164,9 @@ pub fn getTopSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void 
 }
 
 fn readTopSites(gpa: std.mem.Allocator) !std.json.Parsed([]Site) {
-    const data = try std.fs.cwd().readFileAlloc(gpa, "tmp/top-sites.json", 64 * 1024);
-    defer gpa.free(data);
+    const data = @embedFile("testdata/top-sites.json");
     return std.json.parseFromSlice([]Site, gpa, data, .{ .allocate = .alloc_always });
 }
-
-const TopSites = struct {
-    sites: []Site,
-};
 
 const Site = struct {
     rank: usize,
@@ -357,8 +352,7 @@ const YesNo = enum {
 };
 
 fn readBadssl(gpa: std.mem.Allocator) !std.json.Parsed([]BadsslSet) {
-    const data = try std.fs.cwd().readFileAlloc(gpa, "testdata/badssl.json", 64 * 1024);
-    defer gpa.free(data);
+    const data = @embedFile("testdata/badssl.json");
     return std.json.parseFromSlice([]BadsslSet, gpa, data, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
