@@ -75,8 +75,8 @@ pub fn ClientT(comptime StreamType: type) type {
             opt: Options,
         ) !void {
             var h = try Handshake.init(&c.write_buf);
-
             defer if (opt.stats) |s| {
+                // collect stats
                 s.tls_version = h.tls_version;
                 s.cipher_suite_tag = h.cipher_suite_tag;
                 s.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
@@ -86,22 +86,21 @@ pub fn ClientT(comptime StreamType: type) type {
             try h.clientHello(host, &c.stream, opt);
             try h.serverFlight1(&c.reader, ca_bundle, host);
             if (h.tls_version == .tls_1_3) {
+                // tls 1.3 specific handshake part
                 const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
-                h.cipher = try Cipher.initHandshake(h.cipher_suite_tag, shared_key, &h.transcript);
+                h.cipher = try Cipher.init13Handshake(h.cipher_suite_tag, shared_key, &h.transcript);
                 try h.serverFlightTls13(&c.reader, ca_bundle, host);
-                c.cipher = try Cipher.initApplication(h.cipher_suite_tag, &h.transcript);
+                c.cipher = try Cipher.init13Application(h.cipher_suite_tag, &h.transcript);
                 try h.clientFlight2Tls13(c);
-                return;
+            } else {
+                // tls 1.2 specific handshake part
+                if (h.cipher_suite_tag.keyExchange() == .ecdhe)
+                    try h.verifySignature12();
+                try h.generateKeyMaterial();
+                c.cipher = try Cipher.init12(h.cipher_suite_tag, h.key_material, random);
+                try h.clientFlight2(c);
+                try h.serverFlight2(c);
             }
-
-            // continue with tls 1.2
-            if (h.cipher_suite_tag.keyExchange() == .ecdhe)
-                try h.verifySignature12();
-            try h.generateKeyMaterial();
-            c.cipher = try Cipher.init12(h.cipher_suite_tag, h.key_material, random);
-
-            try h.clientFlight2(c);
-            try h.serverFlight2(c);
         }
 
         pub fn write(c: *Client, cleartext: []const u8) !void {
@@ -117,7 +116,7 @@ pub fn ClientT(comptime StreamType: type) type {
         fn write_(c: *Client, content_type: tls.ContentType, cleartext: []const u8) !void {
             assert(cleartext.len <= tls.max_cipertext_inner_record_len);
 
-            const payload = c.encrypt(&c.write_buf, content_type, cleartext);
+            const payload = try c.encrypt(&c.write_buf, content_type, cleartext);
             try c.stream.writeAll(payload);
         }
 
@@ -163,13 +162,13 @@ pub fn ClientT(comptime StreamType: type) type {
             }
         }
 
-        fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) []const u8 {
+        fn encrypt(c: *Client, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) ![]const u8 {
             defer c.client_sequence += 1;
-            return c.cipher.encrypt(buffer, c.client_sequence, content_type, cleartext);
+            return try c.cipher.encrypt(buffer, c.client_sequence, content_type, cleartext);
         }
 
         pub fn close(c: *Client) !void {
-            const msg = c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
+            const msg = try c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
             try c.stream.writeAll(msg);
         }
 
@@ -675,7 +674,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
                     h.transcript.update(&client_finished);
                     // encrypt client_finished into handshake_finished tls record
-                    const handshake_finished = c.encrypt(fbs.buffer[fbs.pos..], .handshake, &client_finished);
+                    const handshake_finished = try c.encrypt(fbs.buffer[fbs.pos..], .handshake, &client_finished);
                     fbs.pos += handshake_finished.len;
                 }
 
@@ -708,7 +707,7 @@ pub fn ClientT(comptime StreamType: type) type {
             fn clientFlight2Tls13(h: *Handshake, c: *Client) !void {
                 var buffer = h.buffer;
                 const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
-                const msg = h.cipher.encrypt(buffer[6..], 0, .handshake, client_finished);
+                const msg = try h.cipher.encrypt(buffer[6..], 0, .handshake, client_finished);
                 buffer[0..6].* = consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{0x01};
                 try c.stream.writeAll(buffer[0 .. 6 + msg.len]);
             }
@@ -911,27 +910,34 @@ fn RecordReader(comptime ReaderType: type) type {
 
         const Self = @This();
 
-        pub fn next(c: *Self) !?Record {
+        pub fn next(self: *Self) !?Record {
+            const buf = (try self.next_()) orelse return null;
+            const content_type: tls.ContentType = @enumFromInt(buf[0]);
+            const protocol_version: tls.ProtocolVersion = @enumFromInt(mem.readInt(u16, buf[1..3], .big));
+            return .{
+                .content_type = content_type,
+                .protocol_version = protocol_version,
+                .header = buf[0..tls.record_header_len],
+                .payload = buf[tls.record_header_len..],
+            };
+        }
+
+        fn next_(c: *Self) !?[]u8 {
             while (true) {
                 const buffer = c.buffer[c.start..c.end];
                 // If we have 5 bytes header.
                 if (buffer.len >= tls.record_header_len) {
                     const record_header = buffer[0..tls.record_header_len];
-                    const content_type: tls.ContentType = @enumFromInt(record_header[0]);
-                    const protocol_version: tls.ProtocolVersion = @enumFromInt(mem.readInt(u16, record_header[1..3], .big));
+                    //const content_type: tls.ContentType = @enumFromInt(record_header[0]);
+                    //const protocol_version: tls.ProtocolVersion = @enumFromInt(mem.readInt(u16, record_header[1..3], .big));
                     const payload_len = mem.readInt(u16, record_header[3..5], .big);
                     if (payload_len > tls.max_ciphertext_len)
                         return error.TlsRecordOverflow;
+                    const record_len = tls.record_header_len + payload_len;
                     // If we have whole record
-                    if (buffer[tls.record_header_len..].len >= payload_len) {
-                        const payload = buffer[tls.record_header_len .. tls.record_header_len + payload_len];
-                        c.start += tls.record_header_len + payload_len;
-                        return .{
-                            .header = record_header,
-                            .content_type = content_type,
-                            .protocol_version = protocol_version,
-                            .payload = payload,
-                        };
+                    if (buffer.len >= record_len) {
+                        c.start += record_len;
+                        return buffer[0..record_len];
                     }
                 }
                 { // Move dirty part to the start of the buffer.
@@ -1368,7 +1374,7 @@ test "tls13 handshake cipher" {
     const shared_key = try dh_kp.preMasterSecret(.x25519, &data13.server_pub_key);
     try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
-    const cipher = try Cipher.initHandshake(cipher_suite_tag, shared_key, &transcript);
+    const cipher = try Cipher.init13Handshake(cipher_suite_tag, shared_key, &transcript);
 
     const c = &cipher.AES_256_GCM_SHA384;
     try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.server_key);
@@ -1382,14 +1388,14 @@ fn exampleHandshakeCipher() !Cipher {
     var transcript = Transcript{};
     transcript.update(data13.client_hello[tls.record_header_len..]);
     transcript.update(data13.server_hello[tls.record_header_len..]);
-    return try Cipher.initHandshake(cipher_suite_tag, &data13.shared_key, &transcript);
+    return try Cipher.init13Handshake(cipher_suite_tag, &data13.shared_key, &transcript);
 }
 
 fn initExampleHandshake(h: *ClientT(TestStream).Handshake) !void {
     h.cipher_suite_tag = .AES_256_GCM_SHA384;
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
-    h.cipher = try Cipher.initHandshake(h.cipher_suite_tag, &data13.shared_key, &h.transcript);
+    h.cipher = try Cipher.init13Handshake(h.cipher_suite_tag, &data13.shared_key, &h.transcript);
     h.tls_version = .tls_1_3;
     h.now_sec = 1714846451;
     h.server_pub_key = &data13.server_pub_key;
@@ -1434,21 +1440,21 @@ test "tls13 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cipher = try Cipher.initApplication(h.cipher_suite_tag, &h.transcript);
+        const cipher = try Cipher.init13Application(h.cipher_suite_tag, &h.transcript);
         const c = &cipher.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &data13.server_application_key, &c.server_key);
         try testing.expectEqualSlices(u8, &data13.client_application_key, &c.client_key);
         try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.server_iv);
         try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.client_iv);
 
-        const encrypted = cipher.encrypt(&buffer, 0, .application_data, "ping");
+        const encrypted = try cipher.encrypt(&buffer, 0, .application_data, "ping");
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
         const client_finished = h.transcript.clientFinished13Msg(.AES_256_GCM_SHA384);
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
 
-        const encrypted = h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
+        const encrypted = try h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
         try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, encrypted);
     }
 }
