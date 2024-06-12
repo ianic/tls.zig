@@ -97,6 +97,7 @@ pub fn get(
     try cli.write(req);
 
     var n: usize = 0;
+    defer if (show_response) std.debug.print("{} bytes read\n", .{n});
     while (try cli.next()) |data| {
         n += data.len;
         if (show_response)
@@ -104,8 +105,6 @@ pub fn get(
         if (std.mem.endsWith(u8, data, "</html>\n")) break;
     }
     try cli.close();
-
-    //std.debug.print("OK {} bytes\n", .{n});
 }
 
 pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
@@ -376,3 +375,24 @@ const BadsslSet = struct {
         port: u16 = 0,
     },
 };
+
+test "localhost tls_server" {
+    if (true) return error.SkipZigTest;
+    // Start server from tls_server folder:
+    // $ cd tls_server && ./run.sh
+    // It will generate certificate and start Go server.
+    // After connecting server will stream a large text file.
+    const gpa = testing.allocator;
+    var ca_bundle = try initCaBundle(gpa);
+    defer ca_bundle.deinit(gpa);
+    // Add server certificate to the bundle.
+    const dir = std.fs.cwd().openDir("../tls_server", .{ .iterate = true }) catch brk: {
+        break :brk try std.fs.cwd().openDir("tls_server", .{ .iterate = true });
+    };
+    try ca_bundle.addCertsFromDir(gpa, dir);
+
+    const domain = "localhost";
+    const port = 8443;
+
+    try get(gpa, domain, port, ca_bundle, true, true, .{});
+}
