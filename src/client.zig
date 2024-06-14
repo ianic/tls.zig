@@ -131,15 +131,17 @@ pub fn ClientT(comptime StreamType: type) type {
         fn next_(c: *Client) !?struct { tls.ContentType, []const u8 } {
             while (true) {
                 const rec = (try c.reader.raw()) orelse return null;
-                //const content_type = RecordReaderType.contentType(rec);
                 const protocol_version = RecordReaderType.protocolVersion(rec);
                 if (protocol_version != .tls_1_2) return error.TlsBadVersion;
 
                 const content_type, const cleartext = try c.cipher.decrypt(
                     rec,
                     c.server_sequence,
-                    rec[0..tls.record_header_len],
-                    rec[tls.record_header_len..],
+                    .{
+                        .header = rec[0..tls.record_header_len],
+                        .payload = rec[tls.record_header_len..],
+                        .content_type = RecordReaderType.contentType(rec),
+                    },
                 );
                 c.server_sequence += 1;
 
@@ -460,7 +462,15 @@ pub fn ClientT(comptime StreamType: type) type {
                         },
                         .application_data => {
                             const content_type, const cleartext = switch (h.cipher) {
-                                inline else => |*p| try p.decrypt(cleartext_buf[cleartext_buf_tail..], sequence, wrap_rec.header, wrap_rec.payload),
+                                inline else => |*p| try p.decrypt(
+                                    cleartext_buf[cleartext_buf_tail..],
+                                    sequence,
+                                    .{
+                                        .header = wrap_rec.header,
+                                        .payload = wrap_rec.payload,
+                                        .content_type = wrap_rec.content_type,
+                                    },
+                                ),
                             };
                             if (content_type != .handshake) return error.TlsUnexpectedMessage;
                             sequence += 1;
@@ -1423,7 +1433,11 @@ test "tls13 decrypt wrapped record" {
         const payload = data13.server_encrypted_extensions_wrapped[tls.record_header_len..];
         const sequence: u64 = 0;
 
-        const content_type, const cleartext = try cipher.decrypt(&buffer, sequence, record_header, payload);
+        const content_type, const cleartext = try cipher.decrypt(
+            &buffer,
+            sequence,
+            .{ .header = record_header, .payload = payload, .content_type = .application_data },
+        );
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_encrypted_extensions, cleartext);
     }
@@ -1431,7 +1445,11 @@ test "tls13 decrypt wrapped record" {
         const record_header = data13.server_certificate_wrapped[0..tls.record_header_len];
         const payload = data13.server_certificate_wrapped[tls.record_header_len..];
         const sequence: u64 = 1;
-        const content_type, const cleartext = try cipher.decrypt(&buffer, sequence, record_header, payload);
+        const content_type, const cleartext = try cipher.decrypt(
+            &buffer,
+            sequence,
+            .{ .header = record_header, .payload = payload, .content_type = .application_data },
+        );
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_certificate, cleartext);
     }
