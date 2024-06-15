@@ -83,7 +83,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 s.signature_scheme = h.signature_scheme;
             };
 
-            try h.clientHello(host, &c.stream, opt);
+            try h.clientHello(host, c, opt);
             try h.serverFlight1(&c.reader, ca_bundle, host);
             if (h.tls_version == .tls_1_3) {
                 // tls 1.3 specific handshake part
@@ -103,32 +103,48 @@ pub fn ClientT(comptime StreamType: type) type {
             }
         }
 
-        pub fn write(c: *Client, cleartext: []const u8) !void {
-            var pos: usize = 0;
-            while (pos < cleartext.len) {
-                const data = cleartext[pos..];
-                const n = @min(data.len, tls.max_cipertext_inner_record_len);
-                try c.write_(.application_data, data[0..n]);
-                pos += n;
+        /// Encrypts cleartext and writes it to the underlaying stream as single
+        /// tls record. Max single tls record payload length is 1<<14 (16K)
+        /// bytes.
+        pub fn write(c: *Client, cleartext: []const u8) !usize {
+            const n = @min(cleartext.len, tls.max_cipertext_inner_record_len);
+            try c.writeRecord(.application_data, cleartext[0..n]);
+            return n;
+        }
+
+        /// Encrypts cleartext and writes it to the underlaying stream. If needed
+        /// splits cleartext into multiple tls record.
+        pub fn writeAll(c: *Client, cleartext: []const u8) !void {
+            var index: usize = 0;
+            while (index < cleartext.len) {
+                index += try c.write(cleartext[index..]);
             }
         }
 
-        fn write_(c: *Client, content_type: tls.ContentType, cleartext: []const u8) !void {
+        /// Encrypts and writes single tls record to the stream.
+        fn writeRecord(c: *Client, content_type: tls.ContentType, cleartext: []const u8) !void {
             assert(cleartext.len <= tls.max_cipertext_inner_record_len);
-
-            const payload = try c.encrypt(&c.write_buf, content_type, cleartext);
-            try c.stream.writeAll(payload);
+            const rec = try c.encrypt(&c.write_buf, content_type, cleartext);
+            try c.streamWriteAll(rec);
         }
 
+        fn streamWriteAll(c: *Client, buf: []const u8) !void {
+            var n: usize = 0;
+            while (n < buf.len) {
+                n += try c.stream.write(buf[n..]);
+            }
+        }
+
+        /// Retruns next record of cleartext data.
         /// Can be used in iterator like loop without memcpy to another buffer:
         ///   while (try client.next()) |buf| { ... }
         pub fn next(c: *Client) !?[]const u8 {
-            const content_type, const data = try c.next_() orelse return null;
+            const content_type, const data = try c.nextRecord() orelse return null;
             if (content_type != .application_data) return error.TlsUnexpectedMessage;
             return data;
         }
 
-        fn next_(c: *Client) !?struct { tls.ContentType, []const u8 } {
+        fn nextRecord(c: *Client) !?struct { tls.ContentType, []const u8 } {
             while (true) {
                 const rec = (try c.reader.raw()) orelse return null;
                 const protocol_version = RecordReaderType.protocolVersion(rec);
@@ -173,7 +189,7 @@ pub fn ClientT(comptime StreamType: type) type {
 
         pub fn close(c: *Client) !void {
             const msg = try c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
-            try c.stream.writeAll(msg);
+            try c.streamWriteAll(msg);
         }
 
         const Handshake = struct {
@@ -218,10 +234,10 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             /// Send client hello message.
-            fn clientHello(h: *Handshake, host: []const u8, stream: *StreamType, opt: Options) !void {
+            fn clientHello(h: *Handshake, host: []const u8, c: *Client, opt: Options) !void {
                 const msg = try h.clientHelloMessage(host, opt);
                 h.transcript.update(msg[tls.record_header_len..]);
-                try stream.writeAll(msg);
+                try c.streamWriteAll(msg);
             }
 
             fn clientHelloMessage(h: *Handshake, host: []const u8, opt: Options) ![]const u8 {
@@ -690,7 +706,7 @@ pub fn ClientT(comptime StreamType: type) type {
                     fbs.pos += handshake_finished.len;
                 }
 
-                try c.stream.writeAll(fbs.getWritten());
+                try c.streamWriteAll(fbs.getWritten());
             }
 
             fn serverFlight2(h: *Handshake, c: *Client) !void {
@@ -706,7 +722,7 @@ pub fn ClientT(comptime StreamType: type) type {
             }
 
             fn serverHandshakeFinished(h: *Handshake, c: *Client) !void {
-                const content_type, const server_finished = try c.next_() orelse return error.EndOfStream;
+                const content_type, const server_finished = try c.nextRecord() orelse return error.EndOfStream;
                 if (content_type != .handshake) return error.TlsUnexpectedMessage;
 
                 const expected_server_finished = h.transcript.serverFinished(h.cipher_suite_tag, &h.master_secret);
@@ -721,7 +737,7 @@ pub fn ClientT(comptime StreamType: type) type {
                 const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
                 const msg = try h.cipher.encrypt(buffer[6..], 0, .handshake, client_finished);
                 buffer[0..6].* = consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{0x01};
-                try c.stream.writeAll(buffer[0 .. 6 + msg.len]);
+                try c.streamWriteAll(buffer[0 .. 6 + msg.len]);
             }
         };
     };
@@ -770,7 +786,7 @@ test "Client encrypt decrypt" {
     { // encrypt verify data from example
         c.client_sequence = 0; //
         _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
-        try c.write_(.handshake, &data12.client_finished);
+        try c.writeRecord(.handshake, &data12.client_finished);
         try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, c.stream.output.getWritten());
     }
 
@@ -780,7 +796,7 @@ test "Client encrypt decrypt" {
         _ = testu.random(0); // sets iv to 00, 01, ... 0f
         c.client_sequence = 1;
 
-        try c.write(cleartext);
+        try c.writeAll(cleartext);
         try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, c.stream.output.getWritten());
     }
     { // descrypt server pong message
@@ -826,8 +842,8 @@ const TestStream = struct {
         };
     }
 
-    pub fn writeAll(self: *TestStream, buf: []const u8) !void {
-        try self.output.writer().writeAll(buf);
+    pub fn write(self: *TestStream, buf: []const u8) !usize {
+        return try self.output.writer().write(buf);
     }
 
     pub fn read(self: *TestStream, buffer: []u8) !usize {
@@ -1488,16 +1504,14 @@ test "tls13 process server flight" {
 test "Handshake client hello" {
     random = testu.random(0);
 
-    var output: [2048]u8 = undefined;
-    var stream = TestStream.init("", &output);
     var buffer: [tls.max_ciphertext_record_len]u8 = undefined;
     var h = try ClientT(TestStream).Handshake.init(&buffer);
-    try h.clientHello("google.com", &stream, .{
+    const actual = try h.clientHelloMessage("google.com", .{
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
         .disable_keyber = true,
     });
 
-    const expected_hello = testu.hexStr3(
+    const expected = testu.hexStr3(
         "16 03 03 00 7c " ++ // record header
             "01 00 00 78 " ++ // handshake header
             "03 03 " ++ // protocol version
@@ -1514,5 +1528,5 @@ test "Handshake client hello" {
             "00 0a 00 08 00 06 00 1d 00 17 00 18 " ++ // named groups extension
             "00 00 00 0f 00 0d 00 00 0a 67 6f 6f 67 6c 65 2e 63 6f 6d ", // server name extension
     );
-    try testing.expectEqualSlices(u8, &expected_hello, stream.output.getWritten());
+    try testing.expectEqualSlices(u8, &expected, actual);
 }

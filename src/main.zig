@@ -94,7 +94,7 @@ pub fn get(
 
     var buf: [64]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
-    try cli.write(req);
+    try cli.writeAll(req);
 
     var n: usize = 0;
     defer if (show_response) std.debug.print("{} bytes read\n", .{n});
