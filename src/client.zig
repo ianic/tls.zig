@@ -70,14 +70,14 @@ pub fn Client(comptime Stream: type) type {
                 try c.send(try h.clientFlight2Tls12());
                 { // parse server flight 2
                     try h.serverChangeCipherSpec();
-                    // Read encrypted server hadndshake finished message.
+                    // Read encrypted server handshake finished message.
                     const content_type, const cleartext = try c.nextRecord() orelse return error.EndOfStream;
                     try h.verifyServerHandshakeFinished(content_type, cleartext);
                 }
             }
         }
 
-        /// Encrypts cleartext and writes it to the underlaying stream as single
+        /// Encrypts cleartext and writes it to the underlying stream as single
         /// tls record. Max single tls record payload length is 1<<14 (16K)
         /// bytes.
         pub fn write(c: *ClientT, cleartext: []const u8) !usize {
@@ -86,7 +86,7 @@ pub fn Client(comptime Stream: type) type {
             return n;
         }
 
-        /// Encrypts cleartext and writes it to the underlaying stream. If needed
+        /// Encrypts cleartext and writes it to the underlying stream. If needed
         /// splits cleartext into multiple tls record.
         pub fn writeAll(c: *ClientT, cleartext: []const u8) !void {
             var index: usize = 0;
@@ -197,7 +197,7 @@ test "Client encrypt decrypt" {
         try c.writeAll(cleartext);
         try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, c.stream.output.getWritten());
     }
-    { // descrypt server pong message
+    { // decrypt server pong message
         c.server_sequence = 1;
         try testing.expectEqualStrings("pong", (try c.next()).?);
     }

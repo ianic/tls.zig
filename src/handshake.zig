@@ -29,8 +29,8 @@ pub const Options = struct {
     // Some sites are not working when sending keyber public key: godaddy.com, secureserver.net
     // That key is making hello message big ~1655 bytes instead of 360
     // Both have header "Server: ATS/9.2.3"
-    // In Wireshark I got window update then tcp retransmissions of 1440 bytes without ack.
-    // After 17sec and 6 retransmissions connection is broken.
+    // In Wireshark I got window update then tcp re-transmissions of 1440 bytes without ack.
+    // After 17sec and 6 re-transmissions connection is broken.
     disable_keyber: bool = false,
 
     // Collect stats from handshake.
@@ -407,7 +407,7 @@ pub fn Handshake(comptime Stream: type) type {
             }
         }
 
-        /// Create verify data and verify server singature for tls 1.2.
+        /// Create verify data and verify server signature for tls 1.2.
         pub fn verifySignature12(h: *HandshakeT) !void {
             if (h.cipher_suite_tag.keyExchange() != .ecdhe) return;
             const verify_bytes = brk: {
@@ -506,7 +506,7 @@ pub fn Handshake(comptime Stream: type) type {
             };
         }
 
-        /// Genereate tls 1.2 pre master secret, master secret and key material.
+        /// Generate tls 1.2 pre master secret, master secret and key material.
         pub fn generateKeyMaterial(h: *HandshakeT) !void {
             const pre_master_secret = if (h.named_group) |named_group|
                 try h.dh_kp.preMasterSecret(named_group, h.server_pub_key)
@@ -527,7 +527,7 @@ pub fn Handshake(comptime Stream: type) type {
             ));
         }
 
-        /// Creates client key exchange, change chiper spec and handshake
+        /// Creates client key exchange, change cipher spec and handshake
         /// finished messages for tls 1.2.
         pub fn clientFlight2Tls12(h: *HandshakeT) ![]u8 {
             var fbs = std.io.fixedBufferStream(h.buffer);
