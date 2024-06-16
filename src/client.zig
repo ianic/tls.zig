@@ -18,11 +18,12 @@ const consts = @import("consts.zig");
 const Cipher = @import("cipher.zig").Cipher;
 pub const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
+const record = @import("record.zig");
 
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{
         .stream = stream,
-        .reader = recordReader(stream),
+        .reader = record.reader(stream),
     };
 }
 
@@ -56,7 +57,7 @@ pub const Stats = struct {
 var random = crypto.random;
 
 pub fn Client(comptime Stream: type) type {
-    const RecordReaderT = RecordReader(Stream);
+    const RecordReaderT = record.Reader(Stream);
     const HandshakeT = Handshake(Stream);
     return struct {
         stream: Stream,
@@ -158,17 +159,16 @@ pub fn Client(comptime Stream: type) type {
 
         fn nextRecord(c: *ClientT) !?struct { tls.ContentType, []const u8 } {
             while (true) {
-                const rec = (try c.reader.raw()) orelse return null;
-                const protocol_version = RecordReaderT.protocolVersion(rec);
-                if (protocol_version != .tls_1_2) return error.TlsBadVersion;
+                const rec = (try c.reader.next()) orelse return null;
+                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
                 const content_type, const cleartext = try c.cipher.decrypt(
-                    rec,
+                    rec.payload,
                     c.server_sequence,
                     .{
-                        .header = rec[0..tls.record_header_len],
-                        .payload = rec[tls.record_header_len..],
-                        .content_type = RecordReaderT.contentType(rec),
+                        .header = rec.header,
+                        .payload = rec.payload,
+                        .content_type = rec.content_type,
                     },
                 );
                 c.server_sequence += 1;
@@ -207,7 +207,7 @@ pub fn Client(comptime Stream: type) type {
 }
 
 fn Handshake(comptime Stream: type) type {
-    const RecordReaderT = RecordReader(Stream);
+    const RecordReaderT = record.Reader(Stream);
     return struct {
         client_random: [32]u8,
         server_random: [32]u8 = undefined,
@@ -321,45 +321,45 @@ fn Handshake(comptime Stream: type) type {
         }
 
         /// Parse server hello message.
-        fn serverHello(h: *HandshakeT, rec: *Record, length: u24) !void {
-            if (try rec.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
+        fn serverHello(h: *HandshakeT, d: *record.Decoder, length: u24) !void {
+            if (try d.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
                 return error.TlsBadVersion;
-            h.server_random = (try rec.array(32)).*;
+            h.server_random = (try d.array(32)).*;
             if (consts.isServerHelloRetryRequest(&h.server_random))
                 return error.TlsServerHelloRetryRequest;
 
-            const session_id_len = try rec.decode(u8);
+            const session_id_len = try d.decode(u8);
             if (session_id_len > 32) return error.TlsIllegalParameter;
-            try rec.skip(session_id_len);
+            try d.skip(session_id_len);
 
-            h.cipher_suite_tag = try rec.decode(CipherSuite);
+            h.cipher_suite_tag = try d.decode(CipherSuite);
             try h.cipher_suite_tag.validate();
-            try rec.skip(1); // skip compression method
+            try d.skip(1); // skip compression method
 
             const extensions_present = length > 2 + 32 + session_id_len + 2 + 1;
             if (extensions_present) {
-                const exs_len = try rec.decode(u16);
+                const exs_len = try d.decode(u16);
                 var l: usize = 0;
                 while (l < exs_len) {
-                    const typ = try rec.decode(tls.ExtensionType);
-                    const len = try rec.decode(u16);
+                    const typ = try d.decode(tls.ExtensionType);
+                    const len = try d.decode(u16);
                     defer l += len + 4;
 
                     switch (typ) {
                         .supported_versions => {
-                            switch (try rec.decode(tls.ProtocolVersion)) {
+                            switch (try d.decode(tls.ProtocolVersion)) {
                                 .tls_1_2, .tls_1_3 => |v| h.tls_version = v,
                                 else => return error.TlsIllegalParameter,
                             }
                             if (len != 2) return error.TlsIllegalParameter;
                         },
                         .key_share => {
-                            h.named_group = try rec.decode(tls.NamedGroup);
-                            h.server_pub_key = try dupe(&h.server_pub_key_buf, try rec.slice(try rec.decode(u16)));
+                            h.named_group = try d.decode(tls.NamedGroup);
+                            h.server_pub_key = try dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
                             if (len != h.server_pub_key.len + 4) return error.TlsIllegalParameter;
                         },
                         else => {
-                            try rec.skip(len);
+                            try d.skip(len);
                         },
                     }
                 }
@@ -367,19 +367,19 @@ fn Handshake(comptime Stream: type) type {
         }
 
         /// Parse server certificate message.
-        fn serverCertificate(h: *HandshakeT, rec: *Record, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
+        fn serverCertificate(h: *HandshakeT, d: *record.Decoder, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
             var trust_chain_established = false;
             var last_cert: ?Certificate.Parsed = null;
-            const certs_len = try rec.decode(u24);
+            const certs_len = try d.decode(u24);
 
-            const start_idx = rec.idx;
-            while (rec.idx - start_idx < certs_len) {
-                const cert_len = try rec.decode(u24);
+            const start_idx = d.idx;
+            while (d.idx - start_idx < certs_len) {
+                const cert_len = try d.decode(u24);
                 // std.debug.print("=> {} {} {} {}\n", .{ certs_len, rec.idx, cert_len, rec.payload.len });
-                const cert = try rec.slice(cert_len);
+                const cert = try d.slice(cert_len);
                 if (h.tls_version == .tls_1_3) {
                     // certificate extensions present in tls 1.3
-                    try rec.skip(try rec.decode(u16));
+                    try d.skip(try d.decode(u16));
                 }
                 if (trust_chain_established)
                     continue;
@@ -416,12 +416,12 @@ fn Handshake(comptime Stream: type) type {
         }
 
         /// Parse server key exchange message.
-        fn serverKeyExchange(h: *HandshakeT, rec: *Record) !void {
-            const curve_type = try rec.decode(consts.CurveType);
-            h.named_group = try rec.decode(tls.NamedGroup);
-            h.server_pub_key = try dupe(&h.server_pub_key_buf, try rec.slice(try rec.decode(u8)));
-            h.signature_scheme = try rec.decode(tls.SignatureScheme);
-            h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
+        fn serverKeyExchange(h: *HandshakeT, d: *record.Decoder) !void {
+            const curve_type = try d.decode(consts.CurveType);
+            h.named_group = try d.decode(tls.NamedGroup);
+            h.server_pub_key = try dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
+            h.signature_scheme = try d.decode(tls.SignatureScheme);
+            h.signature = try dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
             if (curve_type != .named_curve) return error.TlsIllegalParameter;
         }
 
@@ -433,39 +433,38 @@ fn Handshake(comptime Stream: type) type {
             var handshake_state = consts.HandshakeType.server_hello;
 
             while (true) {
-                var rec = (try h.reader.next()) orelse return error.EndOfStream;
-                try rec.expectContentType(.handshake);
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                var d = try h.reader.nextDecoder();
+                try d.expectContentType(.handshake);
 
-                h.transcript.update(rec.payload);
+                h.transcript.update(d.payload);
 
                 // Multiple handshake messages can be packed in single tls record.
-                while (!rec.eof()) {
-                    const handshake_type = try rec.decode(consts.HandshakeType);
+                while (!d.eof()) {
+                    const handshake_type = try d.decode(consts.HandshakeType);
                     if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
-                    const length = try rec.decode(u24);
+                    const length = try d.decode(u24);
                     if (length > tls.max_cipertext_inner_record_len)
                         return error.TlsUnsupportedFragmentedHandshakeMessage;
 
                     switch (handshake_type) {
                         .server_hello => { // server hello, ref: https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.3
-                            try h.serverHello(&rec, length);
+                            try h.serverHello(&d, length);
                             if (h.tls_version == .tls_1_3) {
-                                if (!rec.eof()) return error.TlsIllegalParameter;
+                                if (!d.eof()) return error.TlsIllegalParameter;
                                 return;
                             }
                             handshake_state = .certificate;
                         },
                         .certificate => {
-                            try h.serverCertificate(&rec, ca_bundle, host);
+                            try h.serverCertificate(&d, ca_bundle, host);
                             handshake_state = if (h.cipher_suite_tag.keyExchange() == .rsa)
                                 .server_hello_done
                             else
                                 .server_key_exchange;
                         },
                         .server_key_exchange => {
-                            try h.serverKeyExchange(&rec);
+                            try h.serverKeyExchange(&d);
                             handshake_state = .server_hello_done;
                         },
                         .server_hello_done => {
@@ -493,22 +492,21 @@ fn Handshake(comptime Stream: type) type {
             var handshake_state: tls.HandshakeType = .encrypted_extensions;
 
             outer: while (true) {
-                var wrap_rec = (try h.reader.next()) orelse return error.TlsUnexpectedMessage;
-                if (wrap_rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                // wrapped record decoder
+                const rec = (try h.reader.next() orelse return error.EndOfStream);
+                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
                 //std.debug.print("serverFlightTls13 {} {}\n", .{ wrap_rec.content_type, wrap_rec.payload.len });
-                switch (wrap_rec.content_type) {
-                    .change_cipher_spec => {
-                        try wrap_rec.skip(wrap_rec.payload.len);
-                    },
+                switch (rec.content_type) {
+                    .change_cipher_spec => {},
                     .application_data => {
                         const content_type, const cleartext = switch (h.cipher) {
                             inline else => |*p| try p.decrypt(
                                 cleartext_buf[cleartext_buf_tail..],
                                 sequence,
                                 .{
-                                    .header = wrap_rec.header,
-                                    .payload = wrap_rec.payload,
-                                    .content_type = wrap_rec.content_type,
+                                    .header = rec.header,
+                                    .payload = rec.payload,
+                                    .content_type = rec.content_type,
                                 },
                             ),
                         };
@@ -516,23 +514,20 @@ fn Handshake(comptime Stream: type) type {
                         sequence += 1;
                         cleartext_buf_tail += cleartext.len;
 
-                        var rec = Record{
-                            .content_type = content_type,
-                            .payload = cleartext_buf[cleartext_buf_head..cleartext_buf_tail],
-                        };
-                        while (!rec.eof()) {
-                            const start_idx = rec.idx;
-                            const handshake_type = try rec.decode(tls.HandshakeType);
-                            const length = try rec.decode(u24);
+                        var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
+                        while (!d.eof()) {
+                            const start_idx = d.idx;
+                            const handshake_type = try d.decode(tls.HandshakeType);
+                            const length = try d.decode(u24);
 
                             // std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
                             if (length > tls.max_cipertext_inner_record_len)
                                 return error.TlsUnsupportedFragmentedHandshakeMessage;
-                            if (length > rec.payload.len - 4)
+                            if (length > d.payload.len - 4)
                                 continue :outer; // fragmented handshake into multiple records
 
                             defer {
-                                const handshake_payload = rec.payload[start_idx..rec.idx];
+                                const handshake_payload = d.payload[start_idx..d.idx];
                                 h.transcript.update(handshake_payload);
                                 cleartext_buf_head += handshake_payload.len;
                             }
@@ -540,23 +535,23 @@ fn Handshake(comptime Stream: type) type {
                             if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                             switch (handshake_type) {
                                 .encrypted_extensions => {
-                                    try rec.skip(length);
+                                    try d.skip(length);
                                     handshake_state = .certificate;
                                 },
                                 .certificate => {
-                                    const request_context = try rec.decode(u8);
+                                    const request_context = try d.decode(u8);
                                     if (request_context != 0) return error.TlsIllegalParameter;
-                                    try h.serverCertificate(&rec, ca_bundle, host);
+                                    try h.serverCertificate(&d, ca_bundle, host);
                                     handshake_state = .certificate_verify;
                                 },
                                 .certificate_verify => {
-                                    h.signature_scheme = try rec.decode(tls.SignatureScheme);
-                                    h.signature = try dupe(&h.signature_buf, try rec.slice(try rec.decode(u16)));
+                                    h.signature_scheme = try d.decode(tls.SignatureScheme);
+                                    h.signature = try dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
                                     try h.verifySignature(h.transcript.verifyBytes13(h.cipher_suite_tag));
                                     handshake_state = .finished;
                                 },
                                 .finished => {
-                                    const actual = try rec.slice(length);
+                                    const actual = try d.slice(length);
                                     const expected = h.transcript.serverFinished13(h.cipher_suite_tag);
                                     if (!mem.eql(u8, expected, actual))
                                         return error.TlsDecryptError;
@@ -739,9 +734,8 @@ fn Handshake(comptime Stream: type) type {
 
         /// Read server change cipher spec message.
         fn serverChangeCipherSpec(h: *HandshakeT) !void {
-            var rec = (try h.reader.next()) orelse return error.EndOfStream;
-            try rec.expectContentType(.change_cipher_spec);
-            if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+            var d = try h.reader.nextDecoder();
+            try d.expectContentType(.change_cipher_spec);
         }
 
         /// Verify that body of server handshake finished is built from a
@@ -875,204 +869,9 @@ const TestStream = struct {
     }
 };
 
-const Record = struct {
-    content_type: tls.ContentType,
-    protocol_version: tls.ProtocolVersion = @enumFromInt(0x0000),
-    header: []u8 = "",
-    payload: []u8,
-    idx: usize = 0,
-
-    pub fn decode(r: *Record, comptime T: type) !T {
-        switch (@typeInfo(T)) {
-            .Int => |info| switch (info.bits) {
-                8 => {
-                    try skip(r, 1);
-                    return r.payload[r.idx - 1];
-                },
-                16 => {
-                    try skip(r, 2);
-                    const b0: u16 = r.payload[r.idx - 2];
-                    const b1: u16 = r.payload[r.idx - 1];
-                    return (b0 << 8) | b1;
-                },
-                24 => {
-                    try skip(r, 3);
-                    const b0: u24 = r.payload[r.idx - 3];
-                    const b1: u24 = r.payload[r.idx - 2];
-                    const b2: u24 = r.payload[r.idx - 1];
-                    return (b0 << 16) | (b1 << 8) | b2;
-                },
-                else => @compileError("unsupported int type: " ++ @typeName(T)),
-            },
-            .Enum => |info| {
-                const int = try r.decode(info.tag_type);
-                if (info.is_exhaustive) @compileError("exhaustive enum cannot be used");
-                return @as(T, @enumFromInt(int));
-            },
-            else => @compileError("unsupported type: " ++ @typeName(T)),
-        }
-    }
-
-    pub fn array(r: *Record, comptime len: usize) !*[len]u8 {
-        try r.skip(len);
-        return r.payload[r.idx - len ..][0..len];
-    }
-
-    pub fn slice(r: *Record, len: usize) ![]u8 {
-        try r.skip(len);
-        return r.payload[r.idx - len ..][0..len];
-    }
-
-    pub fn skip(r: *Record, amt: usize) !void {
-        if (r.idx + amt > r.payload.len) return error.TlsDecodeError;
-        r.idx += amt;
-    }
-
-    pub fn rest(r: Record) []u8 {
-        return r.payload[r.idx..];
-    }
-
-    pub fn eof(r: Record) bool {
-        return r.idx == r.payload.len;
-    }
-
-    pub fn expectContentType(rec: *Record, content_type: tls.ContentType) !void {
-        if (rec.content_type == content_type) return;
-
-        switch (rec.content_type) {
-            .alert => {
-                const level = try rec.decode(tls.AlertLevel);
-                const desc = try rec.decode(tls.AlertDescription);
-                _ = level;
-                try desc.toError();
-                return error.TlsServerSideClosure;
-            },
-            else => return error.TlsUnexpectedMessage,
-        }
-    }
-};
-
-fn RecordReader(comptime ReaderT: type) type {
-    return struct {
-        inner_reader: ReaderT,
-
-        buffer: [tls.max_ciphertext_record_len]u8 = undefined,
-        start: usize = 0,
-        end: usize = 0,
-
-        const Self = @This();
-
-        pub fn next(self: *Self) !?Record {
-            const buf = (try self.raw()) orelse return null;
-            return .{
-                .content_type = contentType(buf),
-                .protocol_version = protocolVersion(buf),
-                .header = buf[0..tls.record_header_len],
-                .payload = buf[tls.record_header_len..],
-            };
-        }
-
-        pub fn contentType(buf: []const u8) tls.ContentType {
-            return @enumFromInt(buf[0]);
-        }
-
-        pub fn protocolVersion(buf: []const u8) tls.ProtocolVersion {
-            return @enumFromInt(mem.readInt(u16, buf[1..3], .big));
-        }
-
-        fn raw(c: *Self) !?[]u8 {
-            while (true) {
-                const buffer = c.buffer[c.start..c.end];
-                // If we have 5 bytes header.
-                if (buffer.len >= tls.record_header_len) {
-                    const record_header = buffer[0..tls.record_header_len];
-                    const payload_len = mem.readInt(u16, record_header[3..5], .big);
-                    if (payload_len > tls.max_ciphertext_len)
-                        return error.TlsRecordOverflow;
-                    const record_len = tls.record_header_len + payload_len;
-                    // If we have whole record
-                    if (buffer.len >= record_len) {
-                        c.start += record_len;
-                        return buffer[0..record_len];
-                    }
-                }
-                { // Move dirty part to the start of the buffer.
-                    const n = c.end - c.start;
-                    if (n > 0 and c.start > 0) {
-                        if (c.start > n) {
-                            @memcpy(c.buffer[0..n], c.buffer[c.start..][0..n]);
-                        } else {
-                            mem.copyForwards(u8, c.buffer[0..n], c.buffer[c.start..][0..n]);
-                        }
-                    }
-                    c.start = 0;
-                    c.end = n;
-                }
-                { // Read more from inner_reader.
-                    const n = try c.inner_reader.read(c.buffer[c.end..]);
-                    if (n == 0) return null;
-                    c.end += n;
-                }
-            }
-        }
-    };
-}
-
-pub fn recordReader(reader: anytype) RecordReader(@TypeOf(reader)) {
-    return .{ .inner_reader = reader };
-}
-
-test "RecordReader" {
-    var fbs = std.io.fixedBufferStream(&data12.server_responses);
-    var rdr = recordReader(fbs.reader());
-
-    const expected = [_]struct {
-        content_type: tls.ContentType,
-        payload_len: usize,
-    }{
-        .{ .content_type = .handshake, .payload_len = 49 },
-        .{ .content_type = .handshake, .payload_len = 815 },
-        .{ .content_type = .handshake, .payload_len = 300 },
-        .{ .content_type = .handshake, .payload_len = 4 },
-        .{ .content_type = .change_cipher_spec, .payload_len = 1 },
-        .{ .content_type = .handshake, .payload_len = 64 },
-    };
-    var i: usize = 0;
-    while (try rdr.next()) |rec| {
-        const e = expected[i];
-        i += 1;
-        try testing.expectEqual(e.content_type, rec.content_type);
-        try testing.expectEqual(e.payload_len, rec.payload.len);
-        try testing.expectEqual(.tls_1_2, rec.protocol_version);
-    }
-}
-
-test "Record decoder" {
-    var fbs = std.io.fixedBufferStream(&data12.server_responses);
-    var rdr = recordReader(fbs.reader());
-
-    var rec = (try rdr.next()).?;
-    try testing.expectEqual(.handshake, rec.content_type);
-
-    try testing.expectEqual(.server_hello, try rec.decode(consts.HandshakeType));
-    try testing.expectEqual(45, try rec.decode(u24)); // length
-    try testing.expectEqual(.tls_1_2, try rec.decode(tls.ProtocolVersion));
-    try testing.expectEqualStrings(
-        &testu.hexStr2("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
-        try rec.array(32),
-    ); // server random
-    try testing.expectEqual(0, try rec.decode(u8)); // session id len
-    try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, try rec.decode(CipherSuite));
-    try testing.expectEqual(0, try rec.decode(u8)); // compression method
-    try testing.expectEqual(5, try rec.decode(u16)); // extension length
-    try testing.expectEqual(5, rec.rest().len);
-    try rec.skip(5);
-    try testing.expect(rec.eof());
-}
-
 test "verify google.com certificate" {
     const stream = TestStream.init(@embedFile("testdata/google.com/server_hello"), "");
-    var reader = recordReader(stream);
+    var reader = record.reader(stream);
 
     var buffer: [1024]u8 = undefined;
     var h = try Handshake(TestStream).init(&buffer, &reader);
@@ -1395,16 +1194,16 @@ pub fn verifyRsa(
 
 test "tls13 server hello" {
     var fbs = std.io.fixedBufferStream(&data13.server_hello);
-    var rdr = recordReader(fbs.reader());
-    var rec = (try rdr.next()).?;
+    var rdr = record.reader(fbs.reader());
+    var d = (try rdr.nextDecoder());
 
-    const handshake_type = try rec.decode(consts.HandshakeType);
-    const length = try rec.decode(u24);
+    const handshake_type = try d.decode(consts.HandshakeType);
+    const length = try d.decode(u24);
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);
 
     var h = try Handshake(TestStream).init(undefined, undefined);
-    try h.serverHello(&rec, length);
+    try h.serverHello(&d, length);
 
     try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite_tag);
     try testing.expectEqualSlices(u8, &data13.server_random, &h.server_random);
@@ -1493,7 +1292,7 @@ test "tls13 decrypt wrapped record" {
 
 test "tls13 process server flight" {
     const stream = TestStream.init(&data13.server_flight, "");
-    var reader = recordReader(stream);
+    var reader = record.reader(stream);
     var buffer: [1024]u8 = undefined;
     var h = try Handshake(TestStream).init(&buffer, &reader);
     try initExampleHandshake(&h);
