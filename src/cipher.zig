@@ -7,8 +7,9 @@ const Sha1 = crypto.hash.Sha1;
 const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 
-const recordHeader = @import("consts.zig").recordHeader;
+const Record = @import("record.zig").Record;
 const Transcript = @import("transcript.zig").Transcript;
+const recordHeader = @import("consts.zig").recordHeader;
 const Aes128Cbc = @import("cbc.zig").Aes128Cbc;
 const Aes256Cbc = @import("cbc.zig").Aes256Cbc;
 
@@ -173,12 +174,6 @@ pub const Cipher = union(CipherSuite) {
             inline else => |*cipher| try cipher.decrypt(buf, sequence, rec),
         };
     }
-};
-
-pub const Record = struct {
-    content_type: tls.ContentType,
-    header: []const u8,
-    payload: []const u8,
 };
 
 fn Aead12Type(comptime AeadType: type) type {

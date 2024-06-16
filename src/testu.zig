@@ -75,3 +75,23 @@ pub fn random(seed: u8) std.Random {
     random_seed =  seed;
     return random_instance;
 }
+
+pub const Stream = struct {
+    output: std.io.FixedBufferStream([]u8) = undefined,
+    input: std.io.FixedBufferStream([]const u8) = undefined,
+
+    pub fn init(input: []const u8, output: []u8) Stream {
+        return .{
+            .input = std.io.fixedBufferStream(input),
+            .output = std.io.fixedBufferStream(output),
+        };
+    }
+
+    pub fn write(self: *Stream, buf: []const u8) !usize {
+        return try self.output.writer().write(buf);
+    }
+
+    pub fn read(self: *Stream, buffer: []u8) !usize {
+        return self.input.read(buffer);
+    }
+};

@@ -78,14 +78,14 @@ pub fn Reader(comptime InnerReader: type) type {
 
 pub const Record = struct {
     content_type: tls.ContentType,
-    protocol_version: tls.ProtocolVersion,
-    header: []u8,
-    payload: []u8,
+    protocol_version: tls.ProtocolVersion = .tls_1_2,
+    header: []const u8,
+    payload: []const u8,
 };
 
 pub const Decoder = struct {
     content_type: tls.ContentType,
-    payload: []u8,
+    payload: []const u8,
     idx: usize = 0,
 
     pub fn init(content_type: tls.ContentType, payload: []u8) Decoder {
@@ -126,12 +126,12 @@ pub const Decoder = struct {
         }
     }
 
-    pub fn array(d: *Decoder, comptime len: usize) !*[len]u8 {
+    pub fn array(d: *Decoder, comptime len: usize) !*const [len]u8 {
         try d.skip(len);
         return d.payload[d.idx - len ..][0..len];
     }
 
-    pub fn slice(d: *Decoder, len: usize) ![]u8 {
+    pub fn slice(d: *Decoder, len: usize) ![]const u8 {
         try d.skip(len);
         return d.payload[d.idx - len ..][0..len];
     }
@@ -141,7 +141,7 @@ pub const Decoder = struct {
         d.idx += amt;
     }
 
-    pub fn rest(d: Decoder) []u8 {
+    pub fn rest(d: Decoder) []const u8 {
         return d.payload[d.idx..];
     }
 
