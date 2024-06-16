@@ -1,7 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const crypto = std.crypto;
-const posix = std.posix;
 const mem = std.mem;
 const tls = crypto.tls;
 
@@ -16,7 +15,7 @@ const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 
 const consts = @import("consts.zig");
 const Cipher = @import("cipher.zig").Cipher;
-pub const CipherSuite = @import("cipher.zig").CipherSuite;
+const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 

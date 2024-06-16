@@ -7,12 +7,10 @@ const Certificate = crypto.Certificate;
 const consts = @import("consts.zig");
 const record = @import("record.zig");
 const Cipher = @import("cipher.zig").Cipher;
+const Handshake = @import("handshake.zig").Handshake;
+pub const Options = @import("handshake.zig").Options;
+pub const Stats = @import("handshake.zig").Stats;
 pub const CipherSuite = @import("cipher.zig").CipherSuite;
-
-const hsk = @import("handshake.zig");
-const Handshake = hsk.Handshake;
-pub const Options = hsk.Options;
-pub const Stats = hsk.Stats;
 
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{
