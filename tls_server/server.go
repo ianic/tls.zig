@@ -40,28 +40,14 @@ func main() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	r := bufio.NewReader(conn)
-	//for {
-	msg, err := r.ReadString('\n')
-	if err != nil {
-		log.Println(err)
-		return
-	}
 
-	println(msg)
-
-	// for i := 0; i < 1024; i++ {
-	// 	var b bytes.Buffer
-	// 	for j := 0; j < i*10; j++ {
-	// 		b.WriteString("0123456789")
-	// 	}
-
-	// 	n, err := conn.Write(b.Bytes())
-	// 	if err != nil {
-	// 		log.Println(n, err)
-	// 		return
-	// 	}
+	// r := bufio.NewReader(conn)
+	// msg, err := r.ReadString('\n')
+	// if err != nil {
+	// 	log.Println(err)
+	// 	return
 	// }
+	// println(msg)
 
 	f, err := os.Open("pg2600.txt")
 	if err != nil {
@@ -88,5 +74,4 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 	}
-	//time.Sleep(1 * time.Second)
 }

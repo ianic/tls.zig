@@ -15,6 +15,31 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const tls_module = b.addModule("tls", .{
+        .root_source_file = b.path("src/client.zig"),
+    });
+
+    {
+        const exe = b.addExecutable(.{
+            .name = "http_get",
+            .root_source_file = b.path("example/http_get.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("tls", tls_module);
+        setupExample(b, exe, "http_get");
+    }
+    {
+        const exe = b.addExecutable(.{
+            .name = "tls_client",
+            .root_source_file = b.path("example/tls_client.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("tls", tls_module);
+        setupExample(b, exe, "tls_client");
+    }
+
     const lib = b.addStaticLibrary(.{
         .name = "tls12",
         // In this case the main source file is merely a path, however, in more
@@ -88,4 +113,16 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+}
+
+fn setupExample(b: *std.Build, exe: *std.Build.Step.Compile, comptime name: []const u8) void {
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+    const run_step = b.step("example_" ++ name, "Run the " ++ name ++ " example");
+    run_step.dependOn(&run_cmd.step);
 }
