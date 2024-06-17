@@ -1,7 +1,7 @@
 const std = @import("std");
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
-const showStats = @import("common.zig").showStats;
+const cmn = @import("common.zig");
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -79,7 +79,7 @@ pub fn get(
             opt.stats = &stats;
         }
     }
-    defer if (show_handshake_stat) showStats(opt.stats.?, domain);
+    defer if (show_handshake_stat) cmn.showStats(opt.stats.?, domain);
 
     var cli = tls.client(tcp);
     try cli.handshake(host, ca_bundle, opt);
@@ -99,7 +99,7 @@ pub fn get(
     try cli.close();
 }
 
-pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle) void {
+pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle, counter: *cmn.Counter) void {
     var stats: tls.Stats = .{};
     var opt: tls.Options = .{ .stats = &stats };
 
@@ -109,11 +109,14 @@ pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate
     get(gpa, domain, null, ca_bundle, false, false, opt) catch |err| {
         curl(gpa, domain) catch |curl_err| {
             std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
+            counter.add(.err);
             return;
         };
         std.debug.print("❌ {s} ERROR {}\n", .{ domain, err });
+        counter.add(.fail);
         return;
     };
+    counter.add(.success);
     std.debug.print("✔️ {s} {s} {s} {s} {s}\n", .{
         domain,
         if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
@@ -124,32 +127,24 @@ pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate
 }
 
 fn topSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void {
-    const top_sites_parsed = try readTopSites(gpa);
-    defer top_sites_parsed.deinit();
-    const top_sites = top_sites_parsed.value;
+    const top_sites = try cmn.topSites(gpa);
+    defer top_sites.deinit();
 
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = gpa, .n_jobs = 32 });
-    defer pool.deinit();
 
-    for (top_sites) |site| {
+    var counter: cmn.Counter = .{};
+    for (top_sites.value) |site| {
         const domain = site.rootDomain;
-        if (skipDomain(domain)) continue;
-        try pool.spawn(getTop, .{ gpa, domain, ca_bundle });
+        if (skipDomain(domain)) {
+            counter.add(.skip);
+            continue;
+        }
+        try pool.spawn(getTop, .{ gpa, domain, ca_bundle, &counter });
     }
+    pool.deinit();
+    counter.show();
 }
-
-fn readTopSites(gpa: std.mem.Allocator) !std.json.Parsed([]Site) {
-    const data = @embedFile("top-sites.json");
-    return std.json.parseFromSlice([]Site, gpa, data, .{ .allocate = .alloc_always });
-}
-
-const Site = struct {
-    rank: usize,
-    rootDomain: []const u8,
-    linkingRootDomains: usize,
-    domainAuthority: usize,
-};
 
 fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     var url_buf: [128]u8 = undefined;

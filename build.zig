@@ -39,6 +39,16 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("tls", tls_module);
         setupExample(b, exe, "tls_client");
     }
+    {
+        const exe = b.addExecutable(.{
+            .name = "std_top_sites",
+            .root_source_file = b.path("example/std_top_sites.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("tls", tls_module);
+        setupExample(b, exe, "std_top_sites");
+    }
 
     const lib = b.addStaticLibrary(.{
         .name = "tls12",
@@ -115,6 +125,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
 }
 
+// Copied from: https://github.com/karlseguin/mqttz/blob/master/build.zig
 fn setupExample(b: *std.Build, exe: *std.Build.Step.Compile, comptime name: []const u8) void {
     b.installArtifact(exe);
 
