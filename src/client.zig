@@ -11,6 +11,7 @@ const Handshake = @import("handshake.zig").Handshake;
 pub const Options = @import("handshake.zig").Options;
 pub const Stats = @import("handshake.zig").Stats;
 pub const CipherSuite = @import("cipher.zig").CipherSuite;
+const VecPut = @import("std_copy.zig").VecPut;
 
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{
@@ -30,6 +31,7 @@ pub fn Client(comptime Stream: type) type {
         client_sequence: usize = 0,
         server_sequence: usize = 0,
         write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
+        read_buf: []const u8 = "",
 
         const ClientT = @This();
 
@@ -80,25 +82,25 @@ pub fn Client(comptime Stream: type) type {
         /// Encrypts cleartext and writes it to the underlying stream as single
         /// tls record. Max single tls record payload length is 1<<14 (16K)
         /// bytes.
-        pub fn write(c: *ClientT, cleartext: []const u8) !usize {
-            const n = @min(cleartext.len, tls.max_cipertext_inner_record_len);
-            try c.writeRecord(.application_data, cleartext[0..n]);
+        pub fn write(c: *ClientT, bytes: []const u8) !usize {
+            const n = @min(bytes.len, tls.max_cipertext_inner_record_len);
+            try c.writeRecord(.application_data, bytes[0..n]);
             return n;
         }
 
         /// Encrypts cleartext and writes it to the underlying stream. If needed
         /// splits cleartext into multiple tls record.
-        pub fn writeAll(c: *ClientT, cleartext: []const u8) !void {
+        pub fn writeAll(c: *ClientT, bytes: []const u8) !void {
             var index: usize = 0;
-            while (index < cleartext.len) {
-                index += try c.write(cleartext[index..]);
+            while (index < bytes.len) {
+                index += try c.write(bytes[index..]);
             }
         }
 
         /// Encrypts and writes single tls record to the stream.
-        fn writeRecord(c: *ClientT, content_type: tls.ContentType, cleartext: []const u8) !void {
-            assert(cleartext.len <= tls.max_cipertext_inner_record_len);
-            const rec = try c.encrypt(&c.write_buf, content_type, cleartext);
+        fn writeRecord(c: *ClientT, content_type: tls.ContentType, bytes: []const u8) !void {
+            assert(bytes.len <= tls.max_cipertext_inner_record_len);
+            const rec = try c.encrypt(&c.write_buf, content_type, bytes);
             try c.send(rec);
         }
 
@@ -108,6 +110,21 @@ pub fn Client(comptime Stream: type) type {
             while (n < buffer.len) {
                 n += try c.stream.write(buffer[n..]);
             }
+        }
+
+        /// Returns the number of bytes read. If the number read is less than
+        /// the space provided it means the stream reached the end.
+        pub fn readv(c: *ClientT, iovecs: []std.posix.iovec) !usize {
+            var vp: VecPut = .{ .iovecs = iovecs };
+            while (true) {
+                if (c.read_buf.len == 0) {
+                    c.read_buf = try c.next() orelse break;
+                }
+                const n = vp.put(c.read_buf);
+                c.read_buf = c.read_buf[n..];
+                if (n < c.read_buf.len) break;
+            }
+            return vp.total;
         }
 
         /// Returns next record of cleartext data.
@@ -199,7 +216,17 @@ test "Client encrypt decrypt" {
     }
     { // decrypt server pong message
         c.server_sequence = 1;
-        try testing.expectEqualStrings("pong", (try c.next()).?);
+        //try testing.expectEqualStrings("pong", (try c.next()).?);
+
+        var buffer: [9]u8 = undefined;
+        var iovecs = [_]std.posix.iovec{
+            .{ .base = &buffer, .len = 3 },
+            .{ .base = buffer[3..], .len = 3 },
+            .{ .base = buffer[6..], .len = 3 },
+        };
+        const n = try c.readv(iovecs[0..]);
+        try testing.expectEqual(4, n);
+        try testing.expectEqualStrings("pong", buffer[0..n]);
     }
 }
 

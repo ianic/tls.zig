@@ -19,6 +19,9 @@ const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 
+const rsaEncrypt = @import("std_copy.zig").rsaEncrypt;
+const verifyRsa = @import("std_copy.zig").verifyRsa;
+
 pub const Options = struct {
     // To use just tls 1.2 cipher suites:
     //   .cipher_suites = &tls.CipherSuite.tls12,
@@ -725,91 +728,6 @@ test "DhKeyPair.x25519" {
 
     const kp = try DhKeyPair.init(seed[0..64].*);
     try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
-}
-
-// This is copy of the private method encrypt from std.crypto.Certificate.rsa
-// If that method can be make public this can be removed.
-pub fn rsaEncrypt(comptime modulus_len: usize, msg: [modulus_len]u8, public_key: rsa.PublicKey) ![modulus_len]u8 {
-    const max_modulus_bits = 4096;
-    const Modulus = std.crypto.ff.Modulus(max_modulus_bits);
-    const Fe = Modulus.Fe;
-
-    const m = Fe.fromBytes(public_key.n, &msg, .big) catch return error.MessageTooLong;
-    const e = public_key.n.powPublic(m, public_key.e) catch unreachable;
-    var res: [modulus_len]u8 = undefined;
-    e.toBytes(&res, .big) catch unreachable;
-    return res;
-}
-
-// This is copy of the private method verifyRsa from std.crypto.Certificate
-pub fn verifyRsa(
-    comptime Hash: type,
-    message: []const u8,
-    sig: []const u8,
-    pub_key_algo: Certificate.Parsed.PubKeyAlgo,
-    pub_key: []const u8,
-) !void {
-    if (pub_key_algo != .rsaEncryption) return error.CertificateSignatureAlgorithmMismatch;
-    const pk_components = try rsa.PublicKey.parseDer(pub_key);
-    const exponent = pk_components.exponent;
-    const modulus = pk_components.modulus;
-    if (exponent.len > modulus.len) return error.CertificatePublicKeyInvalid;
-    if (sig.len != modulus.len) return error.CertificateSignatureInvalidLength;
-
-    const hash_der = switch (Hash) {
-        crypto.hash.Sha1 => [_]u8{
-            0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
-            0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
-        },
-        crypto.hash.sha2.Sha224 => [_]u8{
-            0x30, 0x2d, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
-            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04, 0x05,
-            0x00, 0x04, 0x1c,
-        },
-        crypto.hash.sha2.Sha256 => [_]u8{
-            0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
-            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
-            0x00, 0x04, 0x20,
-        },
-        crypto.hash.sha2.Sha384 => [_]u8{
-            0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
-            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05,
-            0x00, 0x04, 0x30,
-        },
-        crypto.hash.sha2.Sha512 => [_]u8{
-            0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
-            0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05,
-            0x00, 0x04, 0x40,
-        },
-        else => @compileError("unreachable"),
-    };
-
-    var msg_hashed: [Hash.digest_length]u8 = undefined;
-    Hash.hash(message, &msg_hashed, .{});
-
-    switch (modulus.len) {
-        inline 128, 256, 384, 512 => |modulus_len| {
-            const ps_len = modulus_len - (hash_der.len + msg_hashed.len) - 3;
-            const em: [modulus_len]u8 =
-                [2]u8{ 0, 1 } ++
-                ([1]u8{0xff} ** ps_len) ++
-                [1]u8{0} ++
-                hash_der ++
-                msg_hashed;
-
-            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch return error.CertificateSignatureInvalid;
-            const em_dec = rsaEncrypt(modulus_len, sig[0..modulus_len].*, public_key) catch |err| switch (err) {
-                error.MessageTooLong => unreachable,
-            };
-
-            if (!mem.eql(u8, &em, &em_dec)) {
-                return error.CertificateSignatureInvalid;
-            }
-        },
-        else => {
-            return error.CertificateSignatureUnsupportedBitCount;
-        },
-    }
 }
 
 fn dupe(buf: []u8, data: []const u8) ![]u8 {

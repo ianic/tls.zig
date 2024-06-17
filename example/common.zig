@@ -4,7 +4,7 @@ const Certificate = std.crypto.Certificate;
 
 pub fn showStats(stats: *tls.Stats, domain: []const u8) void {
     std.debug.print(
-        "\n{s}\n\ttls version: {s}\n\tchipher: {s}\n\tnamed group: {s}\n\tsignature scheme: {s}\n",
+        "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n",
         .{
             domain,
             if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
@@ -66,7 +66,7 @@ pub const Counter = struct {
 
     pub fn show(self: @This()) void {
         std.debug.print(
-            "stats:\n\ttotal: {}\n\tsuccess: {}\n\tfail: {}\n\terror: {}\n\tskip: {}\n",
+            "stats:\n\t total: {}\n\t success: {}\n\t fail: {}\n\terror: {}\n\t skip: {}\n",
             .{ self.total(), self.success, self.fail, self.err, self.skip },
         );
     }
