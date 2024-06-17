@@ -15,12 +15,11 @@ pub fn main() !void {
 
     var counter: cmn.Counter = .{};
     for (top_sites.value) |site| {
-        if (site.rank == 194) {
+        const domain = site.rootDomain;
+        if (cmn.inList(domain, &(cmn.domainsToSkip ++ cmn.domainsWithErrors))) {
             counter.add(.skip);
             continue;
         }
-        const domain = site.rootDomain;
-
         try pool.spawn(getTop, .{ gpa, domain, &counter });
     }
     pool.deinit();

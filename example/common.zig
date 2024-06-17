@@ -33,6 +33,44 @@ pub const Site = struct {
     domainAuthority: usize,
 };
 
+pub fn skipDomain(domain: []const u8) bool {
+    for (domainsToSkip) |d| {
+        if (std.mem.eql(u8, d, domain)) return true;
+    }
+    return false;
+}
+
+pub const domainsToSkip = [_][]const u8{
+    "dw.com", // timeout after long time, fine on www.dw.com
+    "alicdn.com",
+    "usnews.com",
+    "canada.ca", // SSL certificate problem: unable to get local issuer certificate
+};
+
+pub const domainsWithErrors = [_][]const u8{
+    // certificate subject name no match
+    "list-manage.com",
+    // certificate expired or unable to get issuer
+    "windows.net",
+    "youronlinechoices.com",
+    "canada.ca",
+    // should disable keyber
+    "godaddy.com",
+    "secureserver.net",
+};
+
+pub fn inList(domain: []const u8, list: []const []const u8) bool {
+    for (list) |d| {
+        if (std.mem.eql(u8, d, domain)) return true;
+    }
+    return false;
+}
+
+pub const noKeyber = [_][]const u8{
+    "secureserver.net",
+    "godaddy.com",
+};
+
 pub const Counter = struct {
     const Result = enum {
         success,
@@ -66,7 +104,7 @@ pub const Counter = struct {
 
     pub fn show(self: @This()) void {
         std.debug.print(
-            "stats:\n\t total: {}\n\t success: {}\n\t fail: {}\n\terror: {}\n\t skip: {}\n",
+            "stats:\n\t total: {}\n\t success: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n",
             .{ self.total(), self.success, self.fail, self.err, self.skip },
         );
     }

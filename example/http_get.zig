@@ -103,7 +103,7 @@ pub fn getTop(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate
     var stats: tls.Stats = .{};
     var opt: tls.Options = .{ .stats = &stats };
 
-    if (inList(domain, &noKeyber)) {
+    if (cmn.inList(domain, &cmn.noKeyber)) {
         opt.disable_keyber = true;
     }
     get(gpa, domain, null, ca_bundle, false, false, opt) catch |err| {
@@ -136,7 +136,7 @@ fn topSites(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle) !void {
     var counter: cmn.Counter = .{};
     for (top_sites.value) |site| {
         const domain = site.rootDomain;
-        if (skipDomain(domain)) {
+        if (cmn.skipDomain(domain)) {
             counter.add(.skip);
             continue;
         }
@@ -182,31 +182,6 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     return error.CurlFailed;
 }
 
-fn skipDomain(domain: []const u8) bool {
-    for (domainsToSkip) |d| {
-        if (std.mem.eql(u8, d, domain)) return true;
-    }
-    return false;
-}
-
-const domainsToSkip = [_][]const u8{
-    "dw.com", // timeout after long time, fine on www.dw.com
-    "alicdn.com",
-    "usnews.com",
-};
-
-fn inList(domain: []const u8, list: []const []const u8) bool {
-    for (list) |d| {
-        if (std.mem.eql(u8, d, domain)) return true;
-    }
-    return false;
-}
-
-const noKeyber = [_][]const u8{
-    "secureserver.net",
-    "godaddy.com",
-};
-
 const testing = std.testing;
 
 test "find domain for cipher" {
@@ -217,12 +192,11 @@ test "find domain for cipher" {
     var ca_bundle = try initCaBundle(gpa);
     defer ca_bundle.deinit(gpa);
 
-    const top_sites_parsed = try readTopSites(gpa);
-    defer top_sites_parsed.deinit();
-    const top_sites = top_sites_parsed.value;
+    const top_sites = try cmn.topSites(gpa);
+    defer top_sites.deinit();
 
     for (tls.CipherSuite.all) |cs| loop: {
-        for (top_sites) |ts| {
+        for (top_sites.value) |ts| {
             const domain = ts.rootDomain;
             get(gpa, domain, null, ca_bundle, false, false, .{
                 .cipher_suites = &[_]tls.CipherSuite{cs},
