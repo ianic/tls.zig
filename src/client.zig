@@ -113,16 +113,21 @@ pub fn Client(comptime Stream: type) type {
         }
 
         /// Returns the number of bytes read. If the number read is less than
-        /// the space provided it means the stream reached the end.
+        /// the space provided it means the stream reached the end. Reaching the
+        /// end of the stream is not an error condition.
         pub fn readv(c: *ClientT, iovecs: []std.posix.iovec) !usize {
             var vp: VecPut = .{ .iovecs = iovecs };
+
             while (true) {
                 if (c.read_buf.len == 0) {
                     c.read_buf = try c.next() orelse break;
                 }
                 const n = vp.put(c.read_buf);
+                const read_buf_len = c.read_buf.len;
                 c.read_buf = c.read_buf[n..];
-                if (n < c.read_buf.len) break;
+                if ((n < read_buf_len) or
+                    (n == read_buf_len and !c.reader.hasMore()))
+                    break;
             }
             return vp.total;
         }

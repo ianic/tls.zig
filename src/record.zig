@@ -14,10 +14,10 @@ pub fn Reader(comptime InnerReader: type) type {
         start: usize = 0,
         end: usize = 0,
 
-        const Self = @This();
+        const ReaderT = @This();
 
-        pub fn nextDecoder(self: *Self) !Decoder {
-            const rec = (try self.next()) orelse return error.EndOfStream;
+        pub fn nextDecoder(r: *ReaderT) !Decoder {
+            const rec = (try r.next()) orelse return error.EndOfStream;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
             return .{
                 .content_type = rec.content_type,
@@ -33,9 +33,9 @@ pub fn Reader(comptime InnerReader: type) type {
             return @enumFromInt(mem.readInt(u16, buf[1..3], .big));
         }
 
-        pub fn next(c: *Self) !?Record {
+        pub fn next(r: *ReaderT) !?Record {
             while (true) {
-                const buffer = c.buffer[c.start..c.end];
+                const buffer = r.buffer[r.start..r.end];
                 // If we have 5 bytes header.
                 if (buffer.len >= tls.record_header_len) {
                     const record_header = buffer[0..tls.record_header_len];
@@ -45,7 +45,7 @@ pub fn Reader(comptime InnerReader: type) type {
                     const record_len = tls.record_header_len + payload_len;
                     // If we have whole record
                     if (buffer.len >= record_len) {
-                        c.start += record_len;
+                        r.start += record_len;
                         return .{
                             .content_type = @enumFromInt(record_header[0]),
                             .protocol_version = @enumFromInt(mem.readInt(u16, record_header[1..3], .big)),
@@ -55,23 +55,27 @@ pub fn Reader(comptime InnerReader: type) type {
                     }
                 }
                 { // Move dirty part to the start of the buffer.
-                    const n = c.end - c.start;
-                    if (n > 0 and c.start > 0) {
-                        if (c.start > n) {
-                            @memcpy(c.buffer[0..n], c.buffer[c.start..][0..n]);
+                    const n = r.end - r.start;
+                    if (n > 0 and r.start > 0) {
+                        if (r.start > n) {
+                            @memcpy(r.buffer[0..n], r.buffer[r.start..][0..n]);
                         } else {
-                            mem.copyForwards(u8, c.buffer[0..n], c.buffer[c.start..][0..n]);
+                            mem.copyForwards(u8, r.buffer[0..n], r.buffer[r.start..][0..n]);
                         }
                     }
-                    c.start = 0;
-                    c.end = n;
+                    r.start = 0;
+                    r.end = n;
                 }
                 { // Read more from inner_reader.
-                    const n = try c.inner_reader.read(c.buffer[c.end..]);
+                    const n = try r.inner_reader.read(r.buffer[r.end..]);
                     if (n == 0) return null;
-                    c.end += n;
+                    r.end += n;
                 }
             }
+        }
+
+        pub fn hasMore(r: *ReaderT) bool {
+            return r.end > r.start;
         }
     };
 }
