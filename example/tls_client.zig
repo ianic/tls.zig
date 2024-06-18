@@ -3,9 +3,13 @@ const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 const showStats = @import("common.zig").showStats;
 
-// Start server from tls_server folder:
-// $ cd tls_server && ./run.sh
+// Start server from go_tls_server folder:
+// $ cd example/go_tls_server && ./run.sh
 // It will generate certificate and start Go server.
+// Then run example:
+//   zig build example_tls_client
+//   or
+//   zig-out/bin/tls_client
 // After connecting server will stream a large text file.
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -13,9 +17,8 @@ pub fn main() !void {
     // Init certificate bundle with server certificate
     var ca_bundle: Certificate.Bundle = .{};
     defer ca_bundle.deinit(gpa);
-    const dir = std.fs.cwd().openDir("../tls_server", .{ .iterate = true }) catch brk: {
-        break :brk try std.fs.cwd().openDir("tls_server", .{ .iterate = true });
-    };
+    // assuming we are running binary from project root
+    const dir = try std.fs.cwd().openDir("example/go_tls_server", .{ .iterate = true });
     try ca_bundle.addCertsFromDir(gpa, dir);
 
     // Make tcp connection
