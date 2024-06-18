@@ -257,7 +257,7 @@ fn Aead12Type(comptime AeadType: type) type {
             const iv = self.server_iv ++ explicit_iv.*;
             const ad = additionalData(sequence, rec.content_type, cleartext_len);
             const cleartext = buf[0..cleartext_len];
-            try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.server_key);
+            AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.server_key) catch return error.TlsDecryptError;
 
             return .{ rec.content_type, cleartext };
         }
@@ -336,7 +336,7 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
 
             const ad = additionalData(sequence, rec.content_type, cleartext_len);
             const iv = ivWithSeq(nonce_len, self.server_iv, sequence);
-            try AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.server_key);
+            AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.server_key) catch return error.TlsDecryptError;
             return .{ rec.content_type, cleartext };
         }
     };
@@ -408,7 +408,7 @@ fn Aead13Type(comptime AeadType: type) type {
             const auth_tag = rec.payload[ciphertext_len..][0..auth_tag_len];
 
             const iv = ivWithSeq(nonce_len, self.server_iv, sequence);
-            try AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.server_key);
+            AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.server_key) catch return error.TlsDecryptError;
 
             const cleartext = buf[0 .. ciphertext_len - 1];
             const content_type: tls.ContentType = @enumFromInt(buf[ciphertext_len - 1]);
@@ -528,7 +528,7 @@ fn CbcType(comptime CBC: type, comptime HashType: type) type {
             // ad | cleartext | mac | padding
             const plaintext = buf[additional_data_len..][0..ciphertext.len];
             // decrypt ciphertext -> plaintext
-            try CBC.init(self.server_key).decrypt(plaintext, ciphertext, iv[0..iv_len].*);
+            CBC.init(self.server_key).decrypt(plaintext, ciphertext, iv[0..iv_len].*) catch return error.TlsDecryptError;
 
             // get padding len from last padding byte
             const padding_len = plaintext[plaintext.len - 1] + 1;
