@@ -20,7 +20,7 @@ pub fn main() !void {
             counter.add(.skip);
             continue;
         }
-        try pool.spawn(getTop, .{ gpa, domain, &counter });
+        try pool.spawn(run, .{ gpa, domain, &counter });
     }
     pool.deinit();
     counter.show();
@@ -28,7 +28,7 @@ pub fn main() !void {
 
 const header_buffer_size = 16 * 1024;
 
-fn getTop(gpa: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) void {
+fn run(gpa: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) void {
     get(gpa, domain) catch |err| {
         switch (err) {
             error.TlsInitializationFailed => {

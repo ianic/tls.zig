@@ -19,35 +19,24 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/client.zig"),
     });
 
-    {
+    const examples = [_][]const u8{
+        "http_get",
+        "tls_client",
+        "top_sites",
+        "badssl",
+        "std_top_sites",
+        "all_ciphers",
+    };
+    inline for (examples) |name| {
+        const source_file = "example/" ++ name ++ ".zig";
         const exe = b.addExecutable(.{
-            .name = "http_get",
-            .root_source_file = b.path("example/http_get.zig"),
+            .name = name,
+            .root_source_file = b.path(source_file),
             .target = target,
             .optimize = optimize,
         });
         exe.root_module.addImport("tls", tls_module);
-        setupExample(b, exe, "http_get");
-    }
-    {
-        const exe = b.addExecutable(.{
-            .name = "tls_client",
-            .root_source_file = b.path("example/tls_client.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        exe.root_module.addImport("tls", tls_module);
-        setupExample(b, exe, "tls_client");
-    }
-    {
-        const exe = b.addExecutable(.{
-            .name = "std_top_sites",
-            .root_source_file = b.path("example/std_top_sites.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        exe.root_module.addImport("tls", tls_module);
-        setupExample(b, exe, "std_top_sites");
+        setupExample(b, exe, name);
     }
 
     const lib = b.addStaticLibrary(.{

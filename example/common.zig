@@ -109,3 +109,69 @@ pub const Counter = struct {
         );
     }
 };
+
+pub fn get(
+    gpa: std.mem.Allocator,
+    domain: []const u8,
+    port: ?u16,
+    ca_bundle: Certificate.Bundle,
+    show_handshake_stat: bool,
+    show_response: bool,
+    opt_: tls.Options,
+) !void {
+    var opt = opt_;
+
+    // Add https:// prefix if needed
+    const url = brk: {
+        const scheme = "https://";
+        if (domain.len >= scheme.len and std.mem.eql(u8, domain[0..scheme.len], scheme))
+            break :brk domain;
+
+        var url_buf: [128]u8 = undefined;
+        break :brk try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
+    };
+    const uri = try std.Uri.parse(url);
+    const host = uri.host.?.percent_encoded;
+
+    // Establish tcp connection
+    var tcp = try std.net.tcpConnectToHost(gpa, host, if (port) |p| p else 443);
+    defer tcp.close();
+    // Set socket timeout
+    const read_timeout: std.posix.timeval = .{ .tv_sec = 10, .tv_usec = 0 };
+    try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
+
+    // Prepare and show handshake stats
+    if (show_handshake_stat and opt.stats == null) {
+        var stats: tls.Stats = .{};
+        opt.stats = &stats;
+    }
+    defer if (show_handshake_stat) showStats(opt.stats.?, domain);
+
+    // Upgrade tcp connection to tls
+    var cli = tls.client(tcp);
+    try cli.handshake(host, ca_bundle, opt);
+
+    // Send http GET request
+    var buf: [64]u8 = undefined;
+    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    try cli.writeAll(req);
+
+    // Read and print http response
+    var n: usize = 0;
+    defer if (show_response) std.debug.print("{} bytes read\n", .{n});
+    while (try cli.next()) |data| {
+        n += data.len;
+        if (show_response) std.debug.print("{s}", .{data});
+        if (std.mem.endsWith(u8, data, "</html>\n")) break;
+    }
+
+    try cli.close();
+}
+
+fn hasPrefix(str: []const u8, prefixes: []const []const u8) bool {
+    for (prefixes) |prefix|
+        if (str.len >= prefix.len and std.mem.eql(u8, str[0..prefix.len], prefix))
+            return true;
+
+    return false;
+}
