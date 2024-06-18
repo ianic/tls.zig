@@ -60,19 +60,18 @@ pub fn bufPrint(var_name: []const u8, buf: []const u8) void {
     std.debug.print("\"\n", .{});
 }
 
-
 const random_instance = std.Random{ .ptr = undefined, .fillFn = randomFillFn };
 var random_seed: u8 = 0;
 
 pub fn randomFillFn(_: *anyopaque, buf: []u8) void {
     for (buf) |*v| {
-        v.* =  random_seed;
+        v.* = random_seed;
         random_seed +%= 1;
     }
 }
 
 pub fn random(seed: u8) std.Random {
-    random_seed =  seed;
+    random_seed = seed;
     return random_instance;
 }
 
@@ -86,6 +85,9 @@ pub const Stream = struct {
             .output = std.io.fixedBufferStream(output),
         };
     }
+
+    pub const ReadError = error{};
+    pub const WriteError = error{NoSpaceLeft};
 
     pub fn write(self: *Stream, buf: []const u8) !usize {
         return try self.output.writer().write(buf);

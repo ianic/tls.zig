@@ -16,16 +16,20 @@ const VecPut = @import("std_copy.zig").VecPut;
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{
         .stream = stream,
-        .reader = record.reader(stream),
+        .rec_rdr = record.reader(stream),
     };
 }
 
+/// tls 1.2 and tls 1.3 client.
+///
+/// Stream must have read and write function, ReaderError and WriteError public
+/// error sets.
 pub fn Client(comptime Stream: type) type {
     const RecordReaderT = record.Reader(Stream);
     const HandshakeT = Handshake(Stream);
     return struct {
-        stream: Stream,
-        reader: RecordReaderT,
+        stream: Stream, // underlying stream
+        rec_rdr: RecordReaderT, // reads tls record from underlying stream
 
         cipher: Cipher = undefined,
         client_sequence: usize = 0,
@@ -36,9 +40,23 @@ pub fn Client(comptime Stream: type) type {
         const ClientT = @This();
 
         fn initHandshake(c: *ClientT) !HandshakeT {
-            return try HandshakeT.init(&c.write_buf, &c.reader);
+            return try HandshakeT.init(&c.write_buf, &c.rec_rdr);
         }
 
+        /// Handshake upgrades stream to tls connection.
+        ///
+        /// tls 1.2 messages:
+        ///   client flight 1: client hello
+        ///   server flight 1: server hello, certificate, key exchange, hello done
+        ///   client flight 2: client key exchange, change cipher spec, handshake finished
+        ///   server flight 2: server change cipher spec, handshake finished
+        ///
+        /// tls 1.3 messages:
+        ///   client flight 1: client hello
+        ///   server flight 1: server hello
+        ///         encrypted: server change cipher spec, certificate, certificate verify, handshake finished
+        ///   client flight 2: client change cipher spec, handshake finished
+        ///
         pub fn handshake(
             c: *ClientT,
             host: []const u8,
@@ -79,24 +97,6 @@ pub fn Client(comptime Stream: type) type {
             }
         }
 
-        /// Encrypts cleartext and writes it to the underlying stream as single
-        /// tls record. Max single tls record payload length is 1<<14 (16K)
-        /// bytes.
-        pub fn write(c: *ClientT, bytes: []const u8) !usize {
-            const n = @min(bytes.len, tls.max_cipertext_inner_record_len);
-            try c.writeRecord(.application_data, bytes[0..n]);
-            return n;
-        }
-
-        /// Encrypts cleartext and writes it to the underlying stream. If needed
-        /// splits cleartext into multiple tls record.
-        pub fn writeAll(c: *ClientT, bytes: []const u8) !void {
-            var index: usize = 0;
-            while (index < bytes.len) {
-                index += try c.write(bytes[index..]);
-            }
-        }
-
         /// Encrypts and writes single tls record to the stream.
         fn writeRecord(c: *ClientT, content_type: tls.ContentType, bytes: []const u8) !void {
             assert(bytes.len <= tls.max_cipertext_inner_record_len);
@@ -112,26 +112,6 @@ pub fn Client(comptime Stream: type) type {
             }
         }
 
-        /// Returns the number of bytes read. If the number read is less than
-        /// the space provided it means the stream reached the end. Reaching the
-        /// end of the stream is not an error condition.
-        pub fn readv(c: *ClientT, iovecs: []std.posix.iovec) !usize {
-            var vp: VecPut = .{ .iovecs = iovecs };
-
-            while (true) {
-                if (c.read_buf.len == 0) {
-                    c.read_buf = try c.next() orelse break;
-                }
-                const n = vp.put(c.read_buf);
-                const read_buf_len = c.read_buf.len;
-                c.read_buf = c.read_buf[n..];
-                if ((n < read_buf_len) or
-                    (n == read_buf_len and !c.reader.hasMore()))
-                    break;
-            }
-            return vp.total;
-        }
-
         /// Returns next record of cleartext data.
         /// Can be used in iterator like loop without memcpy to another buffer:
         ///   while (try client.next()) |buf| { ... }
@@ -143,7 +123,7 @@ pub fn Client(comptime Stream: type) type {
 
         fn nextRecord(c: *ClientT) !?struct { tls.ContentType, []const u8 } {
             while (true) {
-                const rec = (try c.reader.next()) orelse return null;
+                const rec = (try c.rec_rdr.next()) orelse return null;
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
                 const content_type, const cleartext = try c.cipher.decrypt(
@@ -153,7 +133,7 @@ pub fn Client(comptime Stream: type) type {
                     // block, cleartext has less length then ciphertext,
                     // cleartext starts from the beginning of the buffer, so
                     // ciphertext is always ahead of cleartext.
-                    c.reader.buffer[0..c.reader.start],
+                    c.rec_rdr.buffer[0..c.rec_rdr.start],
                     c.server_sequence,
                     rec,
                 );
@@ -172,6 +152,7 @@ pub fn Client(comptime Stream: type) type {
                         const desc: tls.AlertDescription = @enumFromInt(cleartext[1]);
                         _ = level;
                         try desc.toError();
+                        // TODO: close notify received
                         return null; // (level == .warning and desc == .close_notify)
                     },
                     else => return error.TlsUnexpectedMessage,
@@ -189,6 +170,98 @@ pub fn Client(comptime Stream: type) type {
             const msg = try c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
             try c.send(msg);
         }
+
+        // read, write interface
+
+        pub const ReadError = Stream.ReadError || tls.AlertDescription.Error ||
+            error{
+            TlsBadVersion,
+            TlsUnexpectedMessage,
+            TlsRecordOverflow,
+            TlsDecryptError,
+            TlsBadRecordMac,
+            BufferOverflow,
+        };
+        pub const WriteError = Stream.WriteError ||
+            error{BufferOverflow};
+
+        pub const Reader = std.io.Reader(*ClientT, ReadError, read);
+        pub const Writer = std.io.Writer(*ClientT, WriteError, write);
+
+        pub fn reader(c: *ClientT) Reader {
+            return .{ .context = c };
+        }
+
+        pub fn writer(c: *ClientT) Writer {
+            return .{ .context = c };
+        }
+
+        /// Encrypts cleartext and writes it to the underlying stream as single
+        /// tls record. Max single tls record payload length is 1<<14 (16K)
+        /// bytes.
+        pub fn write(c: *ClientT, bytes: []const u8) WriteError!usize {
+            const n = @min(bytes.len, tls.max_cipertext_inner_record_len);
+            try c.writeRecord(.application_data, bytes[0..n]);
+            return n;
+        }
+
+        /// Encrypts cleartext and writes it to the underlying stream. If needed
+        /// splits cleartext into multiple tls record.
+        pub fn writeAll(c: *ClientT, bytes: []const u8) WriteError!void {
+            var index: usize = 0;
+            while (index < bytes.len) {
+                index += try c.write(bytes[index..]);
+            }
+        }
+
+        pub fn read(c: *ClientT, buffer: []u8) ReadError!usize {
+            if (c.read_buf.len == 0) {
+                c.read_buf = try c.next() orelse return 0;
+            }
+            const n = @min(c.read_buf.len, buffer.len);
+            @memcpy(buffer[0..n], c.read_buf[0..n]);
+            c.read_buf = c.read_buf[n..];
+            return n;
+        }
+
+        /// Returns the number of bytes read. If the number read is smaller than
+        /// `buffer.len`, it means the stream reached the end.
+        pub fn readAll(c: *ClientT, buffer: []u8) ReadError!usize {
+            return c.readAtLeast(buffer, buffer.len);
+        }
+
+        /// Returns the number of bytes read, calling the underlying read function
+        /// the minimal number of times until the buffer has at least `len` bytes
+        /// filled. If the number read is less than `len` it means the stream
+        /// reached the end.
+        pub fn readAtLeast(c: *ClientT, buffer: []u8, len: usize) ReadError!usize {
+            assert(len <= buffer.len);
+            var index: usize = 0;
+            while (index < len) {
+                const amt = try c.read(buffer[index..]);
+                if (amt == 0) break;
+                index += amt;
+            }
+            return index;
+        }
+
+        /// Returns the number of bytes read. If the number read is less than
+        /// the space provided it means the stream reached the end.
+        pub fn readv(c: *ClientT, iovecs: []std.posix.iovec) !usize {
+            var vp: VecPut = .{ .iovecs = iovecs };
+            while (true) {
+                if (c.read_buf.len == 0) {
+                    c.read_buf = try c.next() orelse break;
+                }
+                const n = vp.put(c.read_buf);
+                const read_buf_len = c.read_buf.len;
+                c.read_buf = c.read_buf[n..];
+                if ((n < read_buf_len) or
+                    (n == read_buf_len and !c.rec_rdr.hasMore()))
+                    break;
+            }
+            return vp.total;
+        }
     };
 }
 
@@ -198,7 +271,7 @@ const testu = @import("testu.zig");
 
 test "Client encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
-    const stream = testu.Stream.init(&data12.server_pong, &output_buf);
+    const stream = testu.Stream.init(&(data12.server_pong ** 3), &output_buf);
     var c = client(stream);
     c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0));
 
@@ -221,8 +294,17 @@ test "Client encrypt decrypt" {
     }
     { // decrypt server pong message
         c.server_sequence = 1;
-        //try testing.expectEqualStrings("pong", (try c.next()).?);
-
+        try testing.expectEqualStrings("pong", (try c.next()).?);
+    }
+    { // test reader interface
+        c.server_sequence = 1;
+        var rdr = c.reader();
+        var buffer: [4]u8 = undefined;
+        const n = try rdr.readAll(&buffer);
+        try testing.expectEqualStrings("pong", buffer[0..n]);
+    }
+    { // test readv interface
+        c.server_sequence = 1;
         var buffer: [9]u8 = undefined;
         var iovecs = [_]std.posix.iovec{
             .{ .base = &buffer, .len = 3 },
