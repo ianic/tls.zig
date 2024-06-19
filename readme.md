@@ -1,13 +1,212 @@
 # tls.zig
 
+Zig library which implements tls 1.2 and tls 1.3 protocol.
 
+[Here](https://github.com/ianic/tls.zig/blob/main/demo/src/main.zig) is simple example of how to use library.   
+To upgrade existing tcp connection to the tls connection:
+```zig
+    var cli = tls.client(tcp);
+    try cli.handshake(host, ca_bundle, .{});
+```
+After that you can use `cli` read/write methods as on plain tcp connection.
 
 # Examples
 
-# std lib usage
+## Top sites
+
+Uses [list](https://github.com/Kikobeats/top-sites/blob/master/top-sites.json) of top 500 domains and pages on the web. , based on [Moz Top 500](https://moz.com/top500). Tries to establish https connection to each site. If the connection fails runs curl on the same domain, if curl can't connect it is count as error, if curl connect counts as fail.   
+
+```
+$ zig-out/bin/top_sites
+stats:
+         total: 500
+         success: 483
+         fail: 0
+         error: 14
+         skip: 3
+```
+Domains on which we fail to establish tls connection are also failing when using curl. Errors are: 7 UnknownHostName, 4 ConnectionRefused, 2 CertificateHostMismatch, 1 CertificateIssuerNotFound.
+    
+### top sites with std lib 
+
+Tls implementation in Zig standard library is currently tls 1.3 only. Trying to connect to all top 500 domains gives:
+```
+$ zig-out/bin/std_top_sites
+stats:
+         total: 500
+         success: 360
+         fail: 120
+         error: 12
+         skip: 8
+```
+
+If we change standard library tls implementation to the one which uses this tls library we can connect to tls 1.2 sites also:
+```
+$ zig build --zig-lib-dir ../zig/lib 
+$ zig-out/bin/std_top_sites
+stats:
+         total: 500
+         success: 480
+         fail: 5
+         error: 12
+         skip: 3
+```
+
+## badssl
+
+Uses urls from [badssl.com](https://badssl.com/dashboard/) to test client implementation.
+
+```
+$ zig-out/bin/badssl 
+
+Certificate Validation (High Risk)
+If your browser connects to one of these sites, it could be very easy for an attacker to see and modify everything on web sites that you visit.
+        ✅ expired.badssl.com error.CertificateExpired
+        ✅ wrong.host.badssl.com error.CertificateHostMismatch
+        ✅ self-signed.badssl.com error.CertificateIssuerNotFound
+        ✅ untrusted-root.badssl.com error.CertificateIssuerNotFound
+
+Interception Certificates (High Risk)
+If your browser connects to one of these sites, it could be very easy for an attacker to see and modify everything on web sites that you visit. This may be due to interception software installed on your device.
+        ✅ superfish.badssl.com error.CertificateIssuerNotFound
+        ✅ edellroot.badssl.com error.CertificateIssuerNotFound
+        ✅ dsdtestprovider.badssl.com error.CertificateIssuerNotFound
+        ✅ preact-cli.badssl.com error.CertificateIssuerNotFound
+        ✅ webpack-dev-server.badssl.com error.CertificateIssuerNotFound
+
+Broken Cryptography (Medium Risk)
+If your browser connects to one of these sites, an attacker with enough resources may be able to see and/or modify everything on web sites that you visit. This is because your browser supports connections settings that are outdated and known to have significant security flaws.
+        ✅ rc4.badssl.com error.TlsAlertHandshakeFailure
+        ✅ rc4-md5.badssl.com error.TlsAlertHandshakeFailure
+        ✅ dh480.badssl.com error.TlsAlertHandshakeFailure
+        ✅ dh512.badssl.com error.TlsAlertHandshakeFailure
+        ✅ dh1024.badssl.com error.TlsAlertHandshakeFailure
+        ✅ null.badssl.com error.TlsAlertHandshakeFailure
+
+Legacy Cryptography (Moderate Risk)
+If your browser connects to one of these sites, your web traffic is probably safe from attackers in the near future. However, your connections to some sites might not be using the strongest possible security. Your browser may use these settings in order to connect to some older sites.
+        ✅ tls-v1-0.badssl.com error.TlsBadVersion
+        ✅ tls-v1-1.badssl.com error.TlsBadVersion
+        🆗 cbc.badssl.com
+        ✅ 3des.badssl.com error.TlsAlertHandshakeFailure
+        ✅ dh2048.badssl.com error.TlsAlertHandshakeFailure
+
+Domain Security Policies
+These are special tests for some specific browsers. These tests may be able to tell whether your browser uses advanced domain security policy mechanisms (HSTS, HPKP, SCT) to detect illegitimate certificates.
+        🆗 revoked.badssl.com
+        🆗 pinning-test.badssl.com
+        ✅ no-sct.badssl.com error.CertificateIssuerNotFound
+
+Secure (Uncommon)
+These settings are secure. However, they are less common and even if your browser doesn't support them you probably won't have issues with most sites.
+        🆗 1000-sans.badssl.com error.TlsUnsupportedFragmentedHandshakeMessage
+        🆗 10000-sans.badssl.com error.TlsUnsupportedFragmentedHandshakeMessage
+        🆗 sha384.badssl.com error.CertificateExpired
+        🆗 sha512.badssl.com error.CertificateExpired
+        🆗 rsa8192.badssl.com error.BufferOverflow
+        🆗 no-subject.badssl.com error.CertificateExpired
+        🆗 no-common-name.badssl.com error.CertificateExpired
+        🆗 incomplete-chain.badssl.com error.CertificateIssuerNotFound
+
+Secure (Common)
+These settings are secure and commonly used by sites. Your browser will need to support most of these in order to connect to sites securely.
+        ✅ tls-v1-2.badssl.com
+        ✅ sha256.badssl.com
+        ✅ rsa2048.badssl.com
+        ✅ ecc256.badssl.com
+        ✅ ecc384.badssl.com
+        ✅ mozilla-modern.badssl.com
+```
 
 
 
+## All ciphers
+
+Tries all supported ciphers on some domain. 
+```
+$ zig-out/bin/all_ciphers cloudflare.com
+✔️ AES_128_GCM_SHA256 cloudflare.com
+✔️ AES_256_GCM_SHA384 cloudflare.com
+✔️ CHACHA20_POLY1305_SHA256 cloudflare.com
+✔️ ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 cloudflare.com
+✔️ ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 cloudflare.com
+✔️ ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 cloudflare.com
+✔️ ECDHE_RSA_WITH_AES_128_GCM_SHA256 cloudflare.com
+✔️ ECDHE_RSA_WITH_AES_256_GCM_SHA384 cloudflare.com
+✔️ ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 cloudflare.com
+✔️ ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 cloudflare.com
+✔️ ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 cloudflare.com
+✔️ ECDHE_ECDSA_WITH_AES_128_CBC_SHA cloudflare.com
+✔️ ECDHE_RSA_WITH_AES_128_CBC_SHA256 cloudflare.com
+✔️ ECDHE_RSA_WITH_AES_256_CBC_SHA384 cloudflare.com
+✔️ ECDHE_RSA_WITH_AES_128_CBC_SHA cloudflare.com
+✔️ RSA_WITH_AES_128_CBC_SHA256 cloudflare.com
+✔️ RSA_WITH_AES_128_CBC_SHA cloudflare.com
+```
+Using cloudflare.com as example because it supports all implemented ciphers.
+
+## http get
+
+This example will connect to the domain, show response and tls statistic. You
+can change tls options to force tls version or specific cipher.
+
+```
+$ zig-out/bin/http_get google.com    
+HTTP/1.0 301 Moved Permanently
+
+832 bytes read
+
+google.com
+         tls version: tls_1_3
+         cipher: AES_128_GCM_SHA256
+         named group: x25519_kyber768d00
+         signature scheme: ecdsa_secp256r1_sha256
+```
+
+
+## testing with Go tls server
+
+Start server from go_tls_server folder:
+```
+ $ cd example/go_tls_server && ./run.sh
+```
+That will generate certificate, download a text file and start Go server.  
+Then run example:
+```
+$ zig-out/bin/tls_client
+```
+After connecting server will stream a large text file.
+
+# Usage with standard library http.Client
+
+This library is only tls protocol implementation. Standard library has great
+http client. We can replace standard library tls implementation with this one
+and get http client with both tls 1.2 and 1.3 capability.
+[Here](https://github.com/ziglang/zig/compare/master...ianic:zig:tls23) are
+required changes, assuming that this library is available at
+`lib/std/crypt/tls23` path.
+
+This script will checkout tls.zig library, an fork of the zig repository and
+link tls.zig to the required path. After that we can point to that standard
+library copy while building zig project with `--zig-lib-dir` switch.
+
+
+```
+git clone https://github.com/ianic/tls.zig        
+git clone -b tls23 https://github.com/ianic/zig
+ln -s $(pwd)/tls.zig/src zig/lib/std/crypto/tls23
+
+cd tls.zig
+zig build --zig-lib-dir ../zig/lib
+zig-out/bin/std_top_sites 
+```
+
+
+# Tests
+
+Tests are created using examples from [The Illustrated TLS 1.2 Connection](https://tls12.xargs.org/) and [The Illustrated TLS 1.3 Connection](https://tls13.xargs.org/). Those are really useful in understanding what each byte means. 
+
+<!--
 ### Notes
 
 Decrypt curl TLS messages in Wireshark: https://daniel.haxx.se/blog/2018/01/15/inspect-curls-tls-traffic/
@@ -40,3 +239,11 @@ list of ciphers is here:  https://github.com/curl/curl/blob/cf337d851ae0120ec5ed
 
 ChaCha in tls 1.2 has different iv:
 https://datatracker.ietf.org/doc/rfc7905/
+
+
+Script to rebase branch tls23 to master.
+
+zig-merge-upstream.sh && git checkout tls23 && git rebase master && git push
+-->
+
+

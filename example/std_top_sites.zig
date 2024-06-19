@@ -16,7 +16,7 @@ pub fn main() !void {
     var counter: cmn.Counter = .{};
     for (top_sites.value) |site| {
         const domain = site.rootDomain;
-        if (cmn.inList(domain, &(cmn.domainsToSkip ++ cmn.domainsWithErrors))) {
+        if (cmn.inList(domain, &(cmn.domainsToSkip))) {
             counter.add(.skip);
             continue;
         }

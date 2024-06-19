@@ -66,6 +66,8 @@ const BadsslSet = struct {
     },
 };
 
+// badssl.json is based on from https://badssl.com/dashboard/sets.js
+// file used on https://badssl.com/dashboard/ browser test
 fn readBadssl(gpa: std.mem.Allocator) !std.json.Parsed([]BadsslSet) {
     const data = @embedFile("badssl.json");
     return std.json.parseFromSlice([]BadsslSet, gpa, data, .{
