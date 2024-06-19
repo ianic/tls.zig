@@ -46,12 +46,7 @@ pub fn Reader(comptime InnerReader: type) type {
                     // If we have whole record
                     if (buffer.len >= record_len) {
                         r.start += record_len;
-                        return .{
-                            .content_type = @enumFromInt(record_header[0]),
-                            .protocol_version = @enumFromInt(mem.readInt(u16, record_header[1..3], .big)),
-                            .header = record_header,
-                            .payload = buffer[tls.record_header_len..record_len],
-                        };
+                        return Record.init(buffer[0..record_len]);
                     }
                 }
                 { // Move dirty part to the start of the buffer.
@@ -85,6 +80,15 @@ pub const Record = struct {
     protocol_version: tls.ProtocolVersion = .tls_1_2,
     header: []const u8,
     payload: []const u8,
+
+    pub fn init(buffer: []const u8) Record {
+        return .{
+            .content_type = @enumFromInt(buffer[0]),
+            .protocol_version = @enumFromInt(mem.readInt(u16, buffer[1..3], .big)),
+            .header = buffer[0..tls.record_header_len],
+            .payload = buffer[tls.record_header_len..],
+        };
+    }
 };
 
 pub const Decoder = struct {

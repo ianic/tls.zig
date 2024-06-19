@@ -22,11 +22,11 @@ pub fn client(stream: anytype) Client(@TypeOf(stream)) {
 
 /// tls 1.2 and tls 1.3 client.
 ///
-/// Stream must have read and write function, ReaderError and WriteError public
-/// error sets.
+/// Stream must have read and write function, ReaderError and WriteError error
+/// sets.
 pub fn Client(comptime Stream: type) type {
     const RecordReaderT = record.Reader(Stream);
-    const HandshakeT = Handshake(Stream);
+    const HandshakeT = Handshake(RecordReaderT);
     return struct {
         stream: Stream, // underlying stream
         rec_rdr: RecordReaderT, // reads tls record from underlying stream
@@ -36,6 +36,7 @@ pub fn Client(comptime Stream: type) type {
         server_sequence: usize = 0,
         write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
         read_buf: []const u8 = "",
+        received_close_notify: bool = false,
 
         const ClientT = @This();
 
@@ -64,13 +65,7 @@ pub fn Client(comptime Stream: type) type {
             opt: Options,
         ) !void {
             var h = try c.initHandshake();
-            defer if (opt.stats) |stats| {
-                // collect stats
-                stats.tls_version = h.tls_version;
-                stats.cipher_suite_tag = h.cipher_suite_tag;
-                stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
-                stats.signature_scheme = h.signature_scheme;
-            };
+            defer if (opt.stats) |stats| stats.update(&h);
 
             try c.send(try h.clientHello(host, opt));
             try h.serverFlight1(ca_bundle, host);
@@ -115,13 +110,14 @@ pub fn Client(comptime Stream: type) type {
         /// Returns next record of cleartext data.
         /// Can be used in iterator like loop without memcpy to another buffer:
         ///   while (try client.next()) |buf| { ... }
-        pub fn next(c: *ClientT) !?[]const u8 {
+        pub fn next(c: *ClientT) ReadError!?[]const u8 {
             const content_type, const data = try c.nextRecord() orelse return null;
             if (content_type != .application_data) return error.TlsUnexpectedMessage;
             return data;
         }
 
-        fn nextRecord(c: *ClientT) !?struct { tls.ContentType, []const u8 } {
+        fn nextRecord(c: *ClientT) ReadError!?struct { tls.ContentType, []const u8 } {
+            if (c.eof()) return null;
             while (true) {
                 const rec = (try c.rec_rdr.next()) orelse return null;
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
@@ -152,8 +148,8 @@ pub fn Client(comptime Stream: type) type {
                         const desc: tls.AlertDescription = @enumFromInt(cleartext[1]);
                         _ = level;
                         try desc.toError();
-                        // TODO: close notify received
-                        return null; // (level == .warning and desc == .close_notify)
+                        c.received_close_notify = true;
+                        return null;
                     },
                     else => return error.TlsUnexpectedMessage,
                 }
@@ -166,7 +162,12 @@ pub fn Client(comptime Stream: type) type {
             return try c.cipher.encrypt(buffer, c.client_sequence, content_type, cleartext);
         }
 
+        pub fn eof(c: *ClientT) bool {
+            return c.received_close_notify and c.read_buf.len == 0;
+        }
+
         pub fn close(c: *ClientT) !void {
+            if (c.received_close_notify) return;
             const msg = try c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
             try c.send(msg);
         }
@@ -269,7 +270,7 @@ const testing = std.testing;
 const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
 
-test "Client encrypt decrypt" {
+test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = testu.Stream.init(&(data12.server_pong ** 3), &output_buf);
     var c = client(stream);
@@ -317,7 +318,7 @@ test "Client encrypt decrypt" {
     }
 }
 
-test "Handshake.verifyData" {
+test "handshake verify server finished message" {
     var output_buf: [1024]u8 = undefined;
     const stream = testu.Stream.init(&data12.server_handshake_finished_msgs, &output_buf);
     var c = client(stream);

@@ -26,14 +26,18 @@ pub const Options = struct {
     // To use just tls 1.2 cipher suites:
     //   .cipher_suites = &tls.CipherSuite.tls12,
     // To select particular cipher suite:
-    //   .cipher_suites = &[_]CipherSuite{CipherSuite.CHACHA20_POLY1305_SHA256},
+    //   .cipher_suites = &[_]tls.CipherSuite{tls.CipherSuite.CHACHA20_POLY1305_SHA256},
     cipher_suites: []const CipherSuite = &CipherSuite.all,
 
-    // Some sites are not working when sending keyber public key: godaddy.com, secureserver.net
-    // That key is making hello message big ~1655 bytes instead of 360
-    // Both have header "Server: ATS/9.2.3"
+    // Some sites are not working when sending keyber public key: godaddy.com,
+    // secureserver.net (both have "Server: ATS/9.2.3"). That key is making
+    // hello message big ~1655 bytes instead of 360
+    //
     // In Wireshark I got window update then tcp re-transmissions of 1440 bytes without ack.
     // After 17sec and 6 re-transmissions connection is broken.
+    //
+    // This flag disables sending long keyber public key making connection
+    // possible to those sites.
     disable_keyber: bool = false,
 
     // Collect stats from handshake.
@@ -45,10 +49,16 @@ pub const Stats = struct {
     cipher_suite_tag: CipherSuite = @enumFromInt(0),
     named_group: tls.NamedGroup = @enumFromInt(0),
     signature_scheme: tls.SignatureScheme = @enumFromInt(0),
+
+    pub fn update(stats: *Stats, h: anytype) void {
+        stats.tls_version = h.tls_version;
+        stats.cipher_suite_tag = h.cipher_suite_tag;
+        stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
+        stats.signature_scheme = h.signature_scheme;
+    }
 };
 
-pub fn Handshake(comptime Stream: type) type {
-    const RecordReaderT = record.Reader(Stream);
+pub fn Handshake(comptime RecordReaderT: type) type {
     return struct {
         client_random: [32]u8,
         server_random: [32]u8 = undefined,
@@ -75,7 +85,7 @@ pub fn Handshake(comptime Stream: type) type {
         signature_buf: [1024]u8 = undefined,
         signature: []const u8 = undefined,
 
-        reader: *RecordReaderT, // tls record reader
+        rec_rdr: *RecordReaderT, // tls record reader
         buffer: []u8, // scratch buffer used in all messages creation
 
         const HandshakeT = @This();
@@ -88,14 +98,14 @@ pub fn Handshake(comptime Stream: type) type {
 
         const init_random_buf_len = 32 + 64 + 46;
 
-        fn init_(buf: []u8, reader: *RecordReaderT, random_buf: [init_random_buf_len]u8) !HandshakeT {
+        fn init_(buf: []u8, rec_rdr: *RecordReaderT, random_buf: [init_random_buf_len]u8) !HandshakeT {
             return .{
                 .client_random = random_buf[0..32].*,
                 .dh_kp = try DhKeyPair.init(random_buf[32..][0..64].*),
                 .rsa_kp = RsaKeyPair.init(random_buf[32 + 64 ..][0..46].*),
                 .now_sec = std.time.timestamp(),
                 .buffer = buf,
-                .reader = reader,
+                .rec_rdr = rec_rdr,
             };
         }
 
@@ -279,7 +289,7 @@ pub fn Handshake(comptime Stream: type) type {
             var handshake_state = consts.HandshakeType.server_hello;
 
             while (true) {
-                var d = try h.reader.nextDecoder();
+                var d = try h.rec_rdr.nextDecoder();
                 try d.expectContentType(.handshake);
 
                 h.transcript.update(d.payload);
@@ -339,7 +349,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             outer: while (true) {
                 // wrapped record decoder
-                const rec = (try h.reader.next() orelse return error.EndOfStream);
+                const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
                 //std.debug.print("serverFlightTls13 {} {}\n", .{ wrap_rec.content_type, wrap_rec.payload.len });
                 switch (rec.content_type) {
@@ -576,7 +586,7 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Read server change cipher spec message.
         pub fn serverChangeCipherSpec(h: *HandshakeT) !void {
-            var d = try h.reader.nextDecoder();
+            var d = try h.rec_rdr.nextDecoder();
             try d.expectContentType(.change_cipher_spec);
         }
 
@@ -830,12 +840,15 @@ const testing = std.testing;
 const data12 = @import("testdata/tls12.zig");
 const data13 = @import("testdata/tls13.zig");
 const testu = @import("testu.zig");
+const HandshakeTestT = Handshake(record.Reader(testu.Stream));
 
-test "Handshake.serverHello" {
-    const stream = testu.Stream.init(&data12.server_hello_responses, "");
-    var reader = record.reader(stream);
-    var buffer: [1024]u8 = undefined;
-    var h = try Handshake(testu.Stream).init(&buffer, &reader);
+test "parse tls 1.2 server hello" {
+    var h = brk: {
+        const stream = testu.Stream.init(&data12.server_hello_responses, "");
+        var rec_rdr = record.reader(stream);
+        var buffer: [1024]u8 = undefined;
+        break :brk try HandshakeTestT.init(&buffer, &rec_rdr);
+    };
 
     // Set to known instead of random
     h.client_random = data12.client_random;
@@ -861,10 +874,12 @@ test "Handshake.serverHello" {
 }
 
 test "verify google.com certificate" {
-    const stream = testu.Stream.init(@embedFile("testdata/google.com/server_hello"), "");
-    var reader = record.reader(stream);
-    var buffer: [1024]u8 = undefined;
-    var h = try Handshake(testu.Stream).init(&buffer, &reader);
+    var h = brk: {
+        const stream = testu.Stream.init(@embedFile("testdata/google.com/server_hello"), "");
+        var rec_rdr = record.reader(stream);
+        var buffer: [1024]u8 = undefined;
+        break :brk try HandshakeTestT.init(&buffer, &rec_rdr);
+    };
     h.now_sec = 1714846451;
     h.client_random = @embedFile("testdata/google.com/client_random").*;
 
@@ -876,17 +891,17 @@ test "verify google.com certificate" {
     try h.verifySignature12();
 }
 
-test "tls13 server hello" {
+test "parse tls 1.3 server hello" {
     var fbs = std.io.fixedBufferStream(&data13.server_hello);
-    var rdr = record.reader(fbs.reader());
-    var d = (try rdr.nextDecoder());
+    var rec_rdr = record.reader(fbs.reader());
+    var d = (try rec_rdr.nextDecoder());
 
     const handshake_type = try d.decode(consts.HandshakeType);
     const length = try d.decode(u24);
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);
 
-    var h = try Handshake(testu.Stream).init(undefined, undefined);
+    var h = try HandshakeTestT.init(undefined, undefined);
     try h.serverHello(&d, length);
 
     try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite_tag);
@@ -896,7 +911,7 @@ test "tls13 server hello" {
     try testing.expectEqualSlices(u8, &data13.server_pub_key, h.server_pub_key);
 }
 
-test "tls13 handshake cipher" {
+test "init tls 1.3 handshake cipher" {
     const cipher_suite_tag: CipherSuite = .AES_256_GCM_SHA384;
 
     var transcript = Transcript{};
@@ -921,7 +936,7 @@ test "tls13 handshake cipher" {
     try testing.expectEqualSlices(u8, &data13.client_handshake_iv, &c.client_iv);
 }
 
-fn initExampleHandshake(h: *Handshake(testu.Stream)) !void {
+fn initExampleHandshake(h: *HandshakeTestT) !void {
     h.cipher_suite_tag = .AES_256_GCM_SHA384;
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
@@ -931,46 +946,40 @@ fn initExampleHandshake(h: *Handshake(testu.Stream)) !void {
     h.server_pub_key = &data13.server_pub_key;
 }
 
-test "tls13 decrypt wrapped record" {
+test "tls 1.3 decrypt wrapped record" {
     var cipher = brk: {
-        var h = try Handshake(testu.Stream).init(undefined, undefined);
+        var h = try HandshakeTestT.init(undefined, undefined);
         try initExampleHandshake(&h);
         break :brk h.cipher;
     };
 
-    var buffer: [1024]u8 = undefined;
+    var cleartext_buf: [1024]u8 = undefined;
     {
-        const record_header = data13.server_encrypted_extensions_wrapped[0..tls.record_header_len];
-        const payload = data13.server_encrypted_extensions_wrapped[tls.record_header_len..];
+        const rec = record.Record.init(&data13.server_encrypted_extensions_wrapped);
         const sequence: u64 = 0;
 
-        const content_type, const cleartext = try cipher.decrypt(
-            &buffer,
-            sequence,
-            .{ .header = record_header, .payload = payload, .content_type = .application_data },
-        );
+        const content_type, const cleartext = try cipher.decrypt(&cleartext_buf, sequence, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_encrypted_extensions, cleartext);
     }
     {
-        const record_header = data13.server_certificate_wrapped[0..tls.record_header_len];
-        const payload = data13.server_certificate_wrapped[tls.record_header_len..];
+        const rec = record.Record.init(&data13.server_certificate_wrapped);
         const sequence: u64 = 1;
-        const content_type, const cleartext = try cipher.decrypt(
-            &buffer,
-            sequence,
-            .{ .header = record_header, .payload = payload, .content_type = .application_data },
-        );
+
+        const content_type, const cleartext = try cipher.decrypt(&cleartext_buf, sequence, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_certificate, cleartext);
     }
 }
 
-test "tls13 process server flight" {
-    const stream = testu.Stream.init(&data13.server_flight, "");
-    var reader = record.reader(stream);
+test "tls 1.3 process server flight" {
     var buffer: [1024]u8 = undefined;
-    var h = try Handshake(testu.Stream).init(&buffer, &reader);
+    var h = brk: {
+        const stream = testu.Stream.init(&data13.server_flight, "");
+        var rec_rdr = record.reader(stream);
+        break :brk try HandshakeTestT.init(&buffer, &rec_rdr);
+    };
+
     try initExampleHandshake(&h);
     try h.serverEncryptedFlight1(null, "example.ulfheim.net");
 
@@ -996,13 +1005,15 @@ test "tls13 process server flight" {
     }
 }
 
-test "Handshake client hello" {
-    const HandshakeT = Handshake(testu.Stream);
-    var random_buf: [HandshakeT.init_random_buf_len]u8 = undefined;
-    testu.random(0).bytes(&random_buf);
+test "create client hello" {
+    var h = brk: {
+        // init with predictable random data
+        var random_buf: [HandshakeTestT.init_random_buf_len]u8 = undefined;
+        testu.random(0).bytes(&random_buf);
+        var buffer: [1024]u8 = undefined;
+        break :brk try HandshakeTestT.init_(&buffer, undefined, random_buf);
+    };
 
-    var buffer: [1024]u8 = undefined;
-    var h = try HandshakeT.init_(&buffer, undefined, random_buf);
     const actual = try h.clientHello("google.com", .{
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
         .disable_keyber = true,
