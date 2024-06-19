@@ -10,6 +10,23 @@ To upgrade existing tcp connection to the tls connection:
 ```
 After that you can use `cli` read/write methods as on plain tcp connection.
 
+## Options
+
+Third parameter in calling handshake are [tls.Options](https://github.com/ianic/tls.zig/blob/8e06c80a86aa9b50546e652ed7241608113ac734/src/handshake.zig#L25-L45) they can be used to force subset of implemented ciphers. For example to use just ciphers which are graded secure or recommended on  https://ciphersuite.info:
+```zig
+    var cli = tls.client(tcp);
+    try cli.handshake(host, ca_bundle, .{.cipher_suites = &tls.CipherSuite.secure})
+```
+That can be used to force tls 1.3 only or tls 1.2 only ciphers. Or to reorder cipher preferences.
+
+Stats can be used to inspect which cipher suite and other handshake parameters were chosen by the server:
+```zig
+    var cli = tls.client(tcp);
+    var stats: tls.Stats = .{};
+    try cli.handshake(host, ca_bundle, .{.stats = &stats})
+    // inspect stats
+```
+
 # Examples
 
 ## Top sites
