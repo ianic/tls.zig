@@ -58,6 +58,10 @@ pub const Stats = struct {
     }
 };
 
+/// Handshake parses tls server message and creates client messages. Collects
+/// tls attributes: server random, cipher suite and so on. Client messages are
+/// created using provided buffer. Provided record reader is used to get tls
+/// record when needed.
 pub fn Handshake(comptime RecordReaderT: type) type {
     return struct {
         client_random: [32]u8,

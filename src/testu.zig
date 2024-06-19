@@ -75,6 +75,15 @@ pub fn random(seed: u8) std.Random {
     return random_instance;
 }
 
+// Fill buf with 0,1,..ff,0,...
+pub fn fill(buf: []u8) void {
+    var i: u8 = 0;
+    for (buf) |*v| {
+        v.* = i;
+        i +%= 1;
+    }
+}
+
 pub const Stream = struct {
     output: std.io.FixedBufferStream([]u8) = undefined,
     input: std.io.FixedBufferStream([]const u8) = undefined,

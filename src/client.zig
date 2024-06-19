@@ -20,9 +20,9 @@ pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     };
 }
 
-/// tls 1.2 and tls 1.3 client.
+/// Tls 1.2 and 1.3 client.
 ///
-/// Stream must have read and write function, ReaderError and WriteError error
+/// Stream must have read/write functions, and ReaderError/WriteError error
 /// sets.
 pub fn Client(comptime Stream: type) type {
     const RecordReaderT = record.Reader(Stream);
@@ -32,8 +32,9 @@ pub fn Client(comptime Stream: type) type {
         rec_rdr: RecordReaderT, // reads tls record from underlying stream
 
         cipher: Cipher = undefined,
-        client_sequence: usize = 0,
-        server_sequence: usize = 0,
+        cipher_client_seq: usize = 0,
+        cipher_server_seq: usize = 0,
+
         write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
         read_buf: []const u8 = "",
         received_close_notify: bool = false,
@@ -80,7 +81,7 @@ pub fn Client(comptime Stream: type) type {
                 {
                     h.cipher = try Cipher.init12(h.cipher_suite_tag, h.key_material, crypto.random);
                     c.cipher = h.cipher;
-                    c.client_sequence = 1;
+                    c.cipher_client_seq = 1;
                 }
                 try c.send(try h.clientFlight2Tls12());
                 { // parse server flight 2
@@ -95,7 +96,8 @@ pub fn Client(comptime Stream: type) type {
         /// Encrypts and writes single tls record to the stream.
         fn writeRecord(c: *ClientT, content_type: tls.ContentType, bytes: []const u8) !void {
             assert(bytes.len <= tls.max_cipertext_inner_record_len);
-            const rec = try c.encrypt(&c.write_buf, content_type, bytes);
+            const rec = try c.cipher.encrypt(&c.write_buf, c.cipher_client_seq, content_type, bytes);
+            c.cipher_client_seq += 1;
             try c.send(rec);
         }
 
@@ -130,10 +132,10 @@ pub fn Client(comptime Stream: type) type {
                     // cleartext starts from the beginning of the buffer, so
                     // ciphertext is always ahead of cleartext.
                     c.rec_rdr.buffer[0..c.rec_rdr.start],
-                    c.server_sequence,
+                    c.cipher_server_seq,
                     rec,
                 );
-                c.server_sequence += 1;
+                c.cipher_server_seq += 1;
 
                 switch (content_type) {
                     .application_data => {},
@@ -157,19 +159,13 @@ pub fn Client(comptime Stream: type) type {
             }
         }
 
-        fn encrypt(c: *ClientT, buffer: []u8, content_type: tls.ContentType, cleartext: []const u8) ![]const u8 {
-            defer c.client_sequence += 1;
-            return try c.cipher.encrypt(buffer, c.client_sequence, content_type, cleartext);
-        }
-
         pub fn eof(c: *ClientT) bool {
             return c.received_close_notify and c.read_buf.len == 0;
         }
 
         pub fn close(c: *ClientT) !void {
             if (c.received_close_notify) return;
-            const msg = try c.encrypt(&c.write_buf, .alert, &consts.close_notify_alert);
-            try c.send(msg);
+            try c.writeRecord(.alert, &consts.close_notify_alert);
         }
 
         // read, write interface
@@ -278,7 +274,7 @@ test "encrypt decrypt" {
 
     c.stream.output.reset();
     { // encrypt verify data from example
-        c.client_sequence = 0; //
+        c.cipher_client_seq = 0; //
         _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
         try c.writeRecord(.handshake, &data12.client_finished);
         try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, c.stream.output.getWritten());
@@ -288,24 +284,24 @@ test "encrypt decrypt" {
     { // encrypt ping
         const cleartext = "ping";
         _ = testu.random(0); // sets iv to 00, 01, ... 0f
-        c.client_sequence = 1;
+        c.cipher_client_seq = 1;
 
         try c.writeAll(cleartext);
         try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, c.stream.output.getWritten());
     }
     { // decrypt server pong message
-        c.server_sequence = 1;
+        c.cipher_server_seq = 1;
         try testing.expectEqualStrings("pong", (try c.next()).?);
     }
     { // test reader interface
-        c.server_sequence = 1;
+        c.cipher_server_seq = 1;
         var rdr = c.reader();
         var buffer: [4]u8 = undefined;
         const n = try rdr.readAll(&buffer);
         try testing.expectEqualStrings("pong", buffer[0..n]);
     }
     { // test readv interface
-        c.server_sequence = 1;
+        c.cipher_server_seq = 1;
         var buffer: [9]u8 = undefined;
         var iovecs = [_]std.posix.iovec{
             .{ .base = &buffer, .len = 3 },
