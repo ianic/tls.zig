@@ -223,6 +223,14 @@ zig-out/bin/std_top_sites
 
 Tests are created using examples from [The Illustrated TLS 1.2 Connection](https://tls12.xargs.org/) and [The Illustrated TLS 1.3 Connection](https://tls13.xargs.org/). Those are really useful in understanding what each byte means. 
 
+# Memory usage
+
+[handshake](https://github.com/ianic/tls.zig/blob/53885147af325852a4c33c5975e99f5298241aa6/src/client.zig#L62) requires stable pointer to Client type. [Client](https://github.com/ianic/tls.zig/blob/53885147af325852a4c33c5975e99f5298241aa6/src/client.zig#L27) is comptime created over Stream type. From Stream type is required to implement classic read/write methods and ReaderError/WriterError error sets.  
+Client uses two 16K buffers. One in record reader and another for writing output messages. When created over std.net.Stream it statically allocates 33544 bytes.
+
+
+
+
 <!--
 ### Notes
 
