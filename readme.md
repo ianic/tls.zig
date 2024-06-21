@@ -268,7 +268,7 @@ https://datatracker.ietf.org/doc/rfc7905/
 
 Script to rebase branch tls23 to master.
 
-zig-merge-upstream.sh && git checkout tls23 && git rebase master && git push
+cd ~/Code/zig && zig-merge-upstream.sh && git checkout tls23 && git rebase master && git push -f
 -->
 
 
