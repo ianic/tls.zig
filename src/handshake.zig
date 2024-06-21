@@ -303,6 +303,8 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 // Multiple handshake messages can be packed in single tls record.
                 while (!d.eof()) {
                     const handshake_type = try d.decode(consts.HandshakeType);
+                    if (handshake_state == .certificate_request and handshake_type == .server_hello_done)
+                        handshake_state = .server_hello_done; // certificate request is optional
                     if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
                     const length = try d.decode(u24);
@@ -314,7 +316,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                             try h.serverHello(&d, length);
                             if (h.tls_version == .tls_1_3) {
                                 if (!d.eof()) return error.TlsIllegalParameter;
-                                return;
+                                return; // end of tls 1.3 server flight 1
                             }
                             handshake_state = .certificate;
                         },
@@ -327,6 +329,11 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                         },
                         .server_key_exchange => {
                             try h.serverKeyExchange(&d);
+                            handshake_state = .certificate_request;
+                        },
+                        .certificate_request => {
+                            h.client_certificate_requested = true;
+                            try d.skip(length);
                             handshake_state = .server_hello_done;
                         },
                         .server_hello_done => {
@@ -391,7 +398,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                             }
 
                             if (handshake_state == .certificate_request and handshake_type == .certificate)
-                                handshake_state = .certificate;
+                                handshake_state = .certificate; // certificate request is optional
                             if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                             switch (handshake_type) {
                                 .encrypted_extensions => {
@@ -558,6 +565,13 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         pub fn clientFlight2Tls12(h: *HandshakeT) ![]u8 {
             var fbs = std.io.fixedBufferStream(h.buffer);
 
+            // client certificate message
+            if (h.client_certificate_requested) {
+                const msg = &consts.handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
+                _ = try fbs.write(msg);
+                h.transcript.update(msg[tls.record_header_len..]);
+            }
+
             // client key exchange message
             {
                 const key: []const u8 = if (h.named_group) |named_group|
@@ -575,7 +589,8 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 _ = try fbs.write(header);
                 _ = try fbs.write(key);
 
-                h.transcript.update(fbs.getWritten()[tls.record_header_len..]);
+                h.transcript.update(header[tls.record_header_len..]);
+                h.transcript.update(key);
             }
 
             // client change cipher spec message
