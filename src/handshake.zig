@@ -89,6 +89,8 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         signature_buf: [1024]u8 = undefined,
         signature: []const u8 = undefined,
 
+        client_certificate_requested: bool = false,
+
         rec_rdr: *RecordReaderT, // tls record reader
         buffer: []u8, // scratch buffer used in all messages creation
 
@@ -388,9 +390,16 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                                 cleartext_buf_head += handshake_payload.len;
                             }
 
+                            if (handshake_state == .certificate_request and handshake_type == .certificate)
+                                handshake_state = .certificate;
                             if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
                             switch (handshake_type) {
                                 .encrypted_extensions => {
+                                    try d.skip(length);
+                                    handshake_state = .certificate_request;
+                                },
+                                .certificate_request => {
+                                    h.client_certificate_requested = true;
                                     try d.skip(length);
                                     handshake_state = .certificate;
                                 },
@@ -605,12 +614,29 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
         // Create client change cipher spec and handshake finished messages
         // for tls 1.3.
-        pub fn clientFlight2Tls13(h: *HandshakeT) ![]u8 {
-            var buffer = h.buffer;
-            const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
-            const msg = try h.cipher.encrypt(buffer[6..], 0, .handshake, client_finished);
-            buffer[0..6].* = consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{0x01};
-            return buffer[0 .. 6 + msg.len];
+        pub fn clientFlight2Tls13(h: *HandshakeT) ![]const u8 {
+            var w = BufWriter{ .buf = h.buffer };
+            var seq: u64 = 0;
+
+            // change cipher spec
+            try w.write(&consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{1});
+            // client certificate
+            if (h.client_certificate_requested) {
+                const client_certificate = &consts.empty_client_certificate;
+                const msg = try h.cipher.encrypt(w.getFree(), seq, .handshake, client_certificate);
+                w.pos += msg.len;
+                seq += 1;
+                h.transcript.update(client_certificate);
+            }
+            { // client finished
+                const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
+                const msg = try h.cipher.encrypt(w.getFree(), seq, .handshake, client_finished);
+                w.pos += msg.len;
+                seq += 1;
+                h.transcript.update(client_finished);
+            }
+
+            return w.getWritten();
         }
 
         pub inline fn sharedKey(h: *HandshakeT) ![]const u8 {
@@ -774,6 +800,10 @@ const BufWriter = struct {
 
     pub fn getWritten(self: *BufWriter) []const u8 {
         return self.buf[0..self.pos];
+    }
+
+    pub fn getFree(self: *BufWriter) []u8 {
+        return self.buf[self.pos..];
     }
 
     pub fn writeEnumArray(self: *BufWriter, comptime E: type, tags: []const E) !void {

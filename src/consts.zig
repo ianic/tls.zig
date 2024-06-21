@@ -105,3 +105,5 @@ const hello_retry_request_magic = "\xCF\x21\xAD\x74\xE5\x9A\x61\x11\xBE\x1D\x8C\
 pub fn isServerHelloRetryRequest(server_random: []const u8) bool {
     return std.mem.eql(u8, server_random, hello_retry_request_magic);
 }
+
+pub const empty_client_certificate = [_]u8{ 0x0b, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00 };

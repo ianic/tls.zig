@@ -18,7 +18,9 @@ pub fn main() !void {
     var ca_bundle: Certificate.Bundle = .{};
     defer ca_bundle.deinit(gpa);
     // assuming we are running binary from project root
-    const dir = try std.fs.cwd().openDir("example/go_tls_server", .{ .iterate = true });
+    var dir = try std.fs.cwd().openDir("example/go_tls_server", .{ .iterate = true });
+    try ca_bundle.addCertsFromDir(gpa, dir);
+    dir = try std.fs.cwd().openDir("example/go_client_server", .{ .iterate = true });
     try ca_bundle.addCertsFromDir(gpa, dir);
 
     // Make tcp connection
