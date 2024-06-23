@@ -13,6 +13,8 @@ pub const Stats = @import("handshake.zig").Stats;
 pub const CipherSuite = @import("cipher.zig").CipherSuite;
 const VecPut = @import("std_copy.zig").VecPut;
 
+pub const PrivateKey = @import("PrivateKey.zig");
+
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{
         .stream = stream,
@@ -74,7 +76,7 @@ pub fn Client(comptime Stream: type) type {
                 h.cipher = try Cipher.init13Handshake(h.cipher_suite_tag, try h.sharedKey(), &h.transcript);
                 try h.serverEncryptedFlight1(ca_bundle, host);
                 c.cipher = try Cipher.init13Application(h.cipher_suite_tag, &h.transcript);
-                try c.send(try h.clientFlight2Tls13());
+                try c.send(try h.clientFlight2Tls13(opt.auth));
             } else { // tls 1.2 specific handshake part
                 try h.verifySignature12();
                 try h.generateKeyMaterial();

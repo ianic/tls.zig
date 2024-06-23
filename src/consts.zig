@@ -78,10 +78,13 @@ pub const hello = struct {
     pub const protocol_version = int2e(tls.ProtocolVersion.tls_1_2);
 };
 
-pub inline fn handshakeHeader(handshake_type: HandshakeType, payload_len: usize) [9]u8 {
+pub inline fn handshakeRecordHeader(handshake_type: HandshakeType, payload_len: usize) [9]u8 {
     return recordHeader(.handshake, 4 + payload_len) ++
-        int1e(handshake_type) ++
-        int3(@intCast(payload_len));
+        handshakeHeader(handshake_type, payload_len);
+}
+
+pub inline fn handshakeHeader(handshake_type: HandshakeType, payload_len: usize) [4]u8 {
+    return int1e(handshake_type) ++ int3(@intCast(payload_len));
 }
 
 pub inline fn recordHeader(content_type: tls.ContentType, payload_len: usize) [5]u8 {

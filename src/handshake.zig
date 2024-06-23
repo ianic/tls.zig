@@ -22,6 +22,8 @@ const record = @import("record.zig");
 const rsaEncrypt = @import("std_copy.zig").rsaEncrypt;
 const verifyRsa = @import("std_copy.zig").verifyRsa;
 
+const PrivateKey = @import("PrivateKey.zig");
+
 pub const Options = struct {
     // To use just tls 1.2 cipher suites:
     //   .cipher_suites = &tls.CipherSuite.tls12,
@@ -47,8 +49,9 @@ pub const Options = struct {
 
     const Auth = struct {
         certificates: Certificate.Bundle,
-        private_key: []const u8,
-        signature_scheme: tls.SignatureScheme,
+        private_key: PrivateKey,
+        // private_key: []const u8,
+        // signature_scheme: tls.SignatureScheme,
     };
 };
 
@@ -87,6 +90,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         now_sec: i64 = 0,
         tls_version: tls.ProtocolVersion = .tls_1_2,
         cipher: Cipher = undefined,
+        write_seq: u64 = 0,
 
         cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
         cert_pub_key_buf: [600]u8 = undefined,
@@ -96,9 +100,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         server_pub_key: []const u8 = undefined,
         signature_buf: [1024]u8 = undefined,
         signature: []const u8 = undefined,
-
         client_certificate_requested: bool = false,
-        auth: ?*const Options.Auth = null,
 
         rec_rdr: *RecordReaderT, // tls record reader
         buffer: []u8, // scratch buffer used in all messages creation
@@ -126,9 +128,6 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
         /// Create client hello message.
         pub fn clientHello(h: *HandshakeT, host: []const u8, opt: Options) ![]const u8 {
-            if (opt.auth) |*a| {
-                h.auth = a;
-            }
             // Buffer will have this parts:
             // | header | payload | extensions |
             //
@@ -187,7 +186,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
             // Extensions length at the end of the payload.
             try payload.writeInt(@as(u16, @intCast(ext.pos)));
             // Header at the start of the buffer.
-            buffer[0..header_len].* = consts.handshakeHeader(.client_hello, payload.pos + ext.pos);
+            buffer[0..header_len].* = consts.handshakeRecordHeader(.client_hello, payload.pos + ext.pos);
 
             const msg = buffer[0 .. header_len + payload.pos + ext.pos];
             h.transcript.update(msg[tls.record_header_len..]);
@@ -527,6 +526,34 @@ pub fn Handshake(comptime RecordReaderT: type) type {
             }
         }
 
+        /// Creates signature for client certificate signature message.
+        /// Returns signature bytes and signature scheme.
+        inline fn createSignature(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
+            const verify_bytes = h.transcript.clientVerifyBytes13(h.cipher_suite_tag);
+            const pk = auth.private_key;
+
+            switch (pk.algo) {
+                .X9_62_id_ecPublicKey => |named_curve| {
+                    switch (named_curve) {
+                        .secp384r1 => {
+                            const Ecdsa = EcdsaP384Sha384;
+                            const key_len = Ecdsa.SecretKey.encoded_length;
+                            if (pk.bytes.len < key_len) return error.TlsPrivateKey;
+                            const secret_key = try Ecdsa.SecretKey.fromBytes(pk.bytes[0..key_len].*);
+                            const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
+                            var signer = try key_pair.signer(null);
+                            signer.update(verify_bytes);
+                            const signature = try signer.finalize();
+                            var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
+                            return .{ signature.toDer(&buf), .ecdsa_secp384r1_sha384 };
+                        },
+                        else => return error.TlsPrivateKeyNamedCurve,
+                    }
+                },
+                else => return error.TlsPrivateKeyAlgorithm,
+            }
+        }
+
         fn SchemeEcdsa(comptime scheme: tls.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
             return switch (scheme) {
                 .ecdsa_secp256r1_sha256 => switch (cert_named_curve) {
@@ -579,7 +606,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
             // client certificate message
             if (h.client_certificate_requested) {
-                const msg = &consts.handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
+                const msg = &consts.handshakeRecordHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
                 _ = try fbs.write(msg);
                 h.transcript.update(msg[tls.record_header_len..]);
             }
@@ -592,10 +619,10 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     try h.rsa_kp.publicKey(h.cert_pub_key_algo, h.cert_pub_key);
 
                 const header = if (h.named_group != null)
-                    &consts.handshakeHeader(.client_key_exchange, 1 + key.len) ++
+                    &consts.handshakeRecordHeader(.client_key_exchange, 1 + key.len) ++
                         consts.int1(@intCast(key.len))
                 else
-                    &consts.handshakeHeader(.client_key_exchange, 2 + key.len) ++
+                    &consts.handshakeRecordHeader(.client_key_exchange, 2 + key.len) ++
                         consts.int2(@intCast(key.len));
 
                 _ = try fbs.write(header);
@@ -639,94 +666,78 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 return error.TlsBadRecordMac;
         }
 
-        // Create client change cipher spec and handshake finished messages
-        // for tls 1.3.
-        pub fn clientFlight2Tls13(h: *HandshakeT) ![]const u8 {
+        // Create client change cipher spec and handshake finished messages for
+        // tls 1.3. If the client certificate is requested by the server and
+        // client is configured with certificates and private key then client
+        // certificate and client certificate verify messages are also created.
+        // If the server has requested certificate but the client is not
+        // configured empty certificate message is sent, as is required by rfc.
+        pub fn clientFlight2Tls13(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
-            var seq: u64 = 0;
-
             // change cipher spec
-            try w.write(&consts.recordHeader(.change_cipher_spec, 1) ++ [1]u8{1});
+            try w.write(&consts.recordHeader(.change_cipher_spec, 1) ++ [_]u8{1});
 
             if (h.client_certificate_requested) {
-                // client certificate
-                var client_certificate: []const u8 = &consts.empty_client_certificate;
-                if (h.auth) |auth| {
-                    // TODO which buffer to use
-                    var cw = BufWriter{ .buf = h.buffer[h.buffer.len / 2 ..] };
-
-                    const certs = auth.certificates.bytes.items;
-                    const certs_count = auth.certificates.map.size;
-                    // overhead per each certificate:
-                    // length 3 bytes, empty extensions length 2 bytes = 5 bytes
-                    const certs_len = certs.len + 5 * certs_count;
-
-                    // handshake header, content length (0), certificates length
-                    try cw.write(&consts.int1e(consts.HandshakeType.certificate) ++
-                        consts.int3(@intCast(certs_len + 4)) ++
-                        [_]u8{0} ++
-                        consts.int3(@intCast(certs_len)));
-                    // write each certificate
-                    var index: u32 = 0;
-                    while (index < certs.len) {
-                        const e = try Certificate.der.Element.parse(certs, index);
-                        const cert = certs[index..e.slice.end];
-                        try cw.write(&consts.int3(@intCast(cert.len))); // certificate length
-                        try cw.write(cert); // certificate
-                        try cw.write(&[_]u8{ 0, 0 }); // extensions length
-                        index = e.slice.end;
-                    }
-                    client_certificate = cw.getWritten();
-                }
-                {
-                    const msg = try h.cipher.encrypt(w.getFree(), seq, .handshake, client_certificate);
-                    w.pos += msg.len;
-                    seq += 1;
-                    h.transcript.update(client_certificate);
-                }
-
-                // client certificate verify
-                if (h.auth) |auth| {
-                    const signature = brk: {
-                        const verify_data = h.transcript.clientVerifyBytes13(h.cipher_suite_tag);
-
-                        // TODO: switch by signature scheme
-                        const Ecdsa = EcdsaP384Sha384;
-                        const secret_key = try Ecdsa.SecretKey.fromBytes(auth.private_key[0..Ecdsa.SecretKey.encoded_length].*);
-                        const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
-                        var signer = try key_pair.signer(null);
-                        signer.update(verify_data);
-                        const sig = try signer.finalize();
-                        var sig_buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
-                        break :brk sig.toDer(&sig_buf);
-                    };
-
-                    // TODO which buffer to use
-                    var cw = BufWriter{ .buf = h.buffer[h.buffer.len / 2 ..] };
-
-                    // handshake header, signature scheme, signature len
-                    try cw.write(&consts.int1e(consts.HandshakeType.certificate_verify) ++
-                        consts.int3(@intCast(signature.len + 4)) ++
-                        consts.int2e(auth.signature_scheme) ++
-                        consts.int2(@intCast(signature.len)));
-                    try cw.write(signature);
-                    const certificate_verify = cw.getWritten();
-
-                    const msg = try h.cipher.encrypt(w.getFree(), seq, .handshake, certificate_verify);
-                    w.pos += msg.len;
-                    seq += 1;
-                    h.transcript.update(certificate_verify);
+                if (auth) |a| { // client certificate and client certificate verify
+                    var buffer: [tls.max_cipertext_inner_record_len]u8 = undefined;
+                    try h.encryptHandshake(&w, try clientCertificate(&buffer, a));
+                    try h.encryptHandshake(&w, try h.clientCertificateVerify(&buffer, a));
+                } else {
+                    // empty certificate message and no certificate verify message
+                    try w.write(&consts.handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 });
                 }
             }
             { // client finished
                 const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
-                const msg = try h.cipher.encrypt(w.getFree(), seq, .handshake, client_finished);
-                w.pos += msg.len;
-                seq += 1;
-                h.transcript.update(client_finished);
+                try h.encryptHandshake(&w, client_finished);
             }
 
             return w.getWritten();
+        }
+
+        fn clientCertificate(buffer: []u8, auth: Options.Auth) ![]const u8 {
+            var w = BufWriter{ .buf = buffer };
+
+            const certs = auth.certificates.bytes.items;
+            const certs_count = auth.certificates.map.size;
+            // overhead per each certificate:
+            // length 3 bytes, empty extensions 2 bytes = 5 bytes
+            const certs_len = certs.len + 5 * certs_count;
+
+            // handshake header, content length (0), certificates length
+            try w.write(&consts.handshakeHeader(.certificate, certs_len + 4) ++
+                [_]u8{0} ++
+                consts.int3(@intCast(certs_len)));
+            // write each certificate
+            var index: u32 = 0;
+            while (index < certs.len) {
+                const e = try Certificate.der.Element.parse(certs, index);
+                const cert = certs[index..e.slice.end];
+                try w.write(&consts.int3(@intCast(cert.len))); // certificate length
+                try w.write(cert); // certificate
+                try w.write(&[_]u8{ 0, 0 }); // extensions length
+                index = e.slice.end;
+            }
+            return w.getWritten();
+        }
+
+        fn clientCertificateVerify(h: *HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
+            const signature, const signature_scheme = try h.createSignature(auth);
+            var w = BufWriter{ .buf = buffer };
+            // handshake header, signature scheme, signature len
+            try w.write(&consts.handshakeHeader(.certificate_verify, signature.len + 4) ++
+                consts.int2e(signature_scheme) ++
+                consts.int2(@intCast(signature.len)));
+            try w.write(signature);
+            return w.getWritten();
+        }
+
+        /// Write encrypted handshake message into `w`
+        fn encryptHandshake(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
+            const ciphertext = try h.cipher.encrypt(w.getFree(), h.write_seq, .handshake, cleartext);
+            w.pos += ciphertext.len;
+            h.write_seq += 1;
+            h.transcript.update(cleartext);
         }
 
         pub inline fn sharedKey(h: *HandshakeT) ![]const u8 {

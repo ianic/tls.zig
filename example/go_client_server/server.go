@@ -21,8 +21,8 @@ func main() {
 	}
 
 	config := &tls.Config{
-		ClientAuth: tls.RequestClientCert,
-		//ClientAuth:   tls.RequireAndVerifyClientCert,
+		//ClientAuth: tls.RequestClientCert,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    cp,
 		Certificates: []tls.Certificate{cer},
 	}
