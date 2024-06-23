@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 const crypto = std.crypto;
 const tls = crypto.tls;
 pub const int2 = tls.int2;
-const int3 = tls.int3;
+pub const int3 = tls.int3;
 
 // tls.HandshakeType is missing server_key_exchange, server_hello_done
 pub const HandshakeType = enum(u8) {

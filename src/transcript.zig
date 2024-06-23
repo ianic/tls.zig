@@ -66,6 +66,13 @@ pub const Transcript = struct {
         };
     }
 
+    pub inline fn clientVerifyBytes13(self: *Transcript, cs: CipherSuite) []const u8 {
+        return switch (cs.hash()) {
+            .sha256 => &self.sha256.clientVerifyBytes13(),
+            .sha384 => &self.sha384.clientVerifyBytes13(),
+        };
+    }
+
     pub inline fn serverFinished13(self: *Transcript, cs: CipherSuite) []const u8 {
         return switch (cs.hash()) {
             .sha256 => &self.sha256.serverFinished13(),
@@ -128,6 +135,13 @@ fn TranscriptT(comptime HashType: type) type {
         fn verifyBytes13(c: *Self) [64 + 34 + Hash.digest_length]u8 {
             return ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, server CertificateVerify\x00".* ++
+                c.hash.peek();
+        }
+
+        // ref: https://www.rfc-editor.org/rfc/rfc8446#section-4.4.3
+        fn clientVerifyBytes13(c: Self) [64 + 34 + Hash.digest_length]u8 {
+            return ([1]u8{0x20} ** 64) ++
+                "TLS 1.3, client CertificateVerify\x00".* ++
                 c.hash.peek();
         }
 
