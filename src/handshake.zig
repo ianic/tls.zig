@@ -550,6 +550,23 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                         else => return error.TlsPrivateKeyNamedCurve,
                     }
                 },
+                .rsaEncryption => {
+                    const rsa2 = @import("rsa/rsa.zig");
+                    const public_key = try rsa2.PublicKey.fromBytes(pk.modulus, pk.public_exponent);
+                    const secret_key = try rsa2.SecretKey.fromBytes(public_key.modulus, pk.private_exponent);
+                    const kp = rsa2.KeyPair{ .public = public_key, .secret = secret_key };
+
+                    const modulus_len = std.math.divCeil(usize, kp.public.modulus.bits(), 8) catch unreachable;
+                    switch (modulus_len) {
+                        inline 256, 384, 512 => |comptime_modulus_len| {
+                            const Hash, const signature_scheme = try ModulusHash(comptime_modulus_len);
+                            var buf: [comptime_modulus_len]u8 = undefined;
+                            const signature = try kp.signOaep(Hash, verify_bytes, null, &buf);
+                            return .{ signature.bytes, signature_scheme };
+                        },
+                        else => return error.TlsBadRsaSignatureBitCount,
+                    }
+                },
                 else => return error.TlsPrivateKeyAlgorithm,
             }
         }
@@ -575,6 +592,15 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 .rsa_pss_rsae_sha384, .rsa_pkcs1_sha384 => crypto.hash.sha2.Sha384,
                 .rsa_pss_rsae_sha512, .rsa_pkcs1_sha512 => crypto.hash.sha2.Sha512,
                 else => @compileError("bad scheme"),
+            };
+        }
+
+        fn ModulusHash(comptime modulus_len: usize) !struct { type, tls.SignatureScheme } {
+            return switch (modulus_len) {
+                256 => .{ crypto.hash.sha2.Sha256, .rsa_pss_rsae_sha256 },
+                384 => .{ crypto.hash.sha2.Sha384, .rsa_pss_rsae_sha384 },
+                512 => .{ crypto.hash.sha2.Sha512, .rsa_pss_rsae_sha512 },
+                else => @compileError("bad modulus len"),
             };
         }
 

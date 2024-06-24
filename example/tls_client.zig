@@ -35,10 +35,14 @@ pub fn main() !void {
     defer tcp.close();
 
     var certs: Certificate.Bundle = .{};
-    try certs.addCertsFromFilePathAbsolute(gpa, "/home/ianic/Code/tls.zig/example/go_client_server/client-cert.pem");
-    try certs.addCertsFromFilePathAbsolute(gpa, "/home/ianic/Code/tls.zig/example/go_client_server/minica.pem");
+    //try certs.addCertsFromFilePathAbsolute(gpa, "/home/ianic/Code/tls.zig/example/go_client_server/client-cert.pem");
+    //try certs.addCertsFromFilePathAbsolute(gpa, "/home/ianic/Code/go/minica/localhost/cert.pem");
+    try certs.addCertsFromFilePathAbsolute(gpa, "/home/ianic/Code/go/minica/localhost-rsa/cert.pem");
+    //try certs.addCertsFromFilePathAbsolute(gpa, "/home/ianic/Code/tls.zig/example/go_client_server/minica.pem");
 
-    var file = try std.fs.openFileAbsolute("/home/ianic/Code/tls.zig/example/go_client_server/client-key.pem", .{});
+    //var file = try std.fs.openFileAbsolute("/home/ianic/Code/tls.zig/example/go_client_server/client-key.pem", .{});
+    //var file = try std.fs.openFileAbsolute("/home/ianic/Code/go/minica/localhost/key.pem", .{});
+    var file = try std.fs.openFileAbsolute("/home/ianic/Code/go/minica/localhost-rsa/key.pem", .{});
     defer file.close();
     const private_key = try tls.PrivateKey.fromFile(gpa, file);
 
