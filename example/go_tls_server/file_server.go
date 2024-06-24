@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
+	"log"
 	"net"
 	"os"
 )
@@ -21,20 +24,22 @@ func main() {
 	}
 
 	config := &tls.Config{
-		ClientAuth:   tls.RequireAndVerifyClientCert, // or tls.RequestClientCert,
+		// ClientAuth:  tls.RequestClientCert,
 		ClientCAs:    cp,
 		Certificates: []tls.Certificate{cer},
 	}
+
 	ln, err := tls.Listen("tcp", ":8443", config)
 	if err != nil {
-		panic(err)
+		log.Println(err)
+		return
 	}
 	defer ln.Close()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			println(err)
+			log.Println(err)
 			continue
 		}
 		go handleConnection(conn)
@@ -44,8 +49,29 @@ func main() {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	_, err := conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\nhello\r\n"))
+	f, err := os.Open("pg2600.txt")
 	if err != nil {
-		println(err.Error())
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	chunk_size := 1024*32 + 1
+	buf := make([]byte, chunk_size)
+
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				log.Fatal(err)
+			}
+			break
+		}
+
+		n, err = conn.Write(buf[0:n])
+		if err != nil {
+			log.Println(n, err)
+			return
+		}
 	}
 }

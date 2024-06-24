@@ -6,17 +6,17 @@ import (
 	"os"
 )
 
-// curl https://localhost:8443 --cacert minica.pem --cert client-cert.pem --key client-key.pem
+// curl https://localhost:8443 --cacert ../cert/minica.pem --cert ../cert/client-ec/cert.pem --key ../cert/client-ec/key.pem
 
 func main() {
 	cp := x509.NewCertPool()
-	data, err := os.ReadFile("minica.pem")
+	data, err := os.ReadFile("../cert/minica.pem")
 	if err != nil {
 		panic(err)
 	}
 	cp.AppendCertsFromPEM(data)
 
-	cer, err := tls.LoadX509KeyPair("client-cert.pem", "client-key.pem")
+	cer, err := tls.LoadX509KeyPair("../cert/client-ec/cert.pem", "../cert/client-ec/key.pem")
 	if err != nil {
 		panic(err)
 	}

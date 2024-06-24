@@ -18,3 +18,4 @@ zig-out/
 /docgen_tmp/
 tmp/
 .zig-cache/
+/example/cert/
