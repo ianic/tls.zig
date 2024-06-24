@@ -3,14 +3,14 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
+	"os"
 )
 
 // curl https://localhost:8443 --cacert minica.pem --cert client-cert.pem --key client-key.pem
 
 func main() {
 	cp := x509.NewCertPool()
-	data, err := ioutil.ReadFile("minica.pem")
+	data, err := os.ReadFile("minica.pem")
 	if err != nil {
 		panic(err)
 	}
@@ -37,7 +37,6 @@ func main() {
 	n, err := conn.Read(buf)
 	if err != nil {
 		panic(err)
-		return
 	}
 
 	println(string(buf[:n]))

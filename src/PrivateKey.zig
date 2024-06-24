@@ -3,14 +3,27 @@ const Allocator = std.mem.Allocator;
 const Certificate = std.crypto.Certificate;
 const der = Certificate.der;
 const KeyAlgo = Certificate.Parsed.PubKeyAlgo;
-
-bytes: []const u8,
-algo: KeyAlgo,
-modulus: []const u8,
-private_exponent: []const u8,
-public_exponent: []const u8,
+const AlgorithmCategory = Certificate.AlgorithmCategory;
+const NamedCurve = Certificate.NamedCurve;
 
 allocated_bytes: ?[]const u8 = null,
+algorithm: Algorithm,
+
+pub const Algorithm = union(AlgorithmCategory) {
+    rsaEncryption: Rsa,
+    X9_62_id_ecPublicKey: X9_62,
+    curveEd25519: void,
+
+    const Rsa = struct {
+        modulus: []const u8,
+        private_exponent: []const u8,
+        public_exponent: []const u8,
+    };
+    const X9_62 = struct {
+        named_curve: NamedCurve,
+        secret_key: []const u8,
+    };
+};
 
 const PrivateKey = @This();
 
@@ -44,44 +57,36 @@ pub fn parseDer(buf: []const u8) !PrivateKey {
     const algo_seq = try der.Element.parse(buf, version.slice.end);
     const algo_cat = try der.Element.parse(buf, algo_seq.slice.start);
     const category = try Certificate.parseAlgorithmCategory(buf, algo_cat);
-    const key_algo: KeyAlgo = switch (category) {
-        .rsaEncryption => .{ .rsaEncryption = {} },
-
-        .X9_62_id_ecPublicKey => brk: {
-            const algo_param = try der.Element.parse(buf, algo_cat.slice.end);
-            const named_curve = try Certificate.parseNamedCurve(buf, algo_param);
-            break :brk .{ .X9_62_id_ecPublicKey = named_curve };
-        },
-        .curveEd25519 => .{ .curveEd25519 = {} },
-    };
 
     const key_str = try der.Element.parse(buf, algo_seq.slice.end);
     const key_seq = try der.Element.parse(buf, key_str.slice.start);
     const key_int = try der.Element.parse(buf, key_seq.slice.start);
 
-    const empty = buf[0..0];
     switch (category) {
         .rsaEncryption => {
             const modulus = try der.Element.parse(buf, key_int.slice.end);
             const public_exponent = try der.Element.parse(buf, modulus.slice.end);
             const private_exponent = try der.Element.parse(buf, public_exponent.slice.end);
-
             return .{
-                .bytes = empty,
-                .modulus = buf[modulus.slice.start..modulus.slice.end],
-                .public_exponent = buf[public_exponent.slice.start..public_exponent.slice.end],
-                .private_exponent = buf[private_exponent.slice.start..private_exponent.slice.end],
-                .algo = key_algo,
+                .algorithm = .{
+                    .rsaEncryption = .{
+                        .modulus = buf[modulus.slice.start..modulus.slice.end],
+                        .public_exponent = buf[public_exponent.slice.start..public_exponent.slice.end],
+                        .private_exponent = buf[private_exponent.slice.start..private_exponent.slice.end],
+                    },
+                },
             };
         },
         .X9_62_id_ecPublicKey => {
             const key = try der.Element.parse(buf, key_int.slice.end);
+            const algo_param = try der.Element.parse(buf, algo_cat.slice.end);
             return .{
-                .bytes = buf[key.slice.start..key.slice.end],
-                .modulus = empty,
-                .public_exponent = empty,
-                .private_exponent = empty,
-                .algo = key_algo,
+                .algorithm = .{
+                    .X9_62_id_ecPublicKey = .{
+                        .named_curve = try Certificate.parseNamedCurve(buf, algo_param),
+                        .secret_key = buf[key.slice.start..key.slice.end],
+                    },
+                },
             };
         },
         else => unreachable,
@@ -112,8 +117,9 @@ test "parse ec pem" {
 
     const priv_key = "10 35 3d ca 1b 15 1d 06 aa 71 b8 ef f3 19 22 43 78 f3 20 98 1e b1 2f 2b 64 7e 71 d0 30 2a 90 aa e5 eb 99 c3 90 65 3d c1 26 19 be 3f 08 20 9b 01 ";
 
-    try testing.expectEqualSlices(u8, &testu.hexStr3(priv_key), pk.bytes);
-    try testing.expectEqual(KeyAlgo{ .X9_62_id_ecPublicKey = .secp384r1 }, pk.algo);
+    const k = pk.algorithm.X9_62_id_ecPublicKey;
+    try testing.expectEqualSlices(u8, &testu.hexStr3(priv_key), k.secret_key);
+    try testing.expectEqual(.secp384r1, k.named_curve);
 }
 
 test "parse rsa pem" {
@@ -165,29 +171,8 @@ test "parse rsa pem" {
         "f2:04:70:3e:d9:a6:28:17:c2:2d:74:e9:25:40:02:" ++
         "49:";
 
-    try testing.expectEqualSlices(u8, &testu.hexStr3(modulus), pk.modulus);
-    try testing.expectEqualSlices(u8, &testu.hexStr3(public_exponent), pk.public_exponent);
-    try testing.expectEqualSlices(u8, &testu.hexStr3(private_exponent), pk.private_exponent);
-}
-
-test "rsa create signature" {
-    const gpa = testing.allocator;
-
-    const data = @embedFile("testdata/rsa_private_key.pem");
-    var pk = try parsePem(gpa, data);
-    defer pk.deinit(gpa);
-
-    const rsa = @import("rsa/rsa.zig");
-    const public_key = try rsa.PublicKey.fromBytes(pk.modulus, pk.public_exponent);
-    const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, pk.private_exponent);
-
-    const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
-
-    const msg = "iso medo u ducan nije reko dobar dan";
-    var out: [1024]u8 = undefined;
-
-    //const signature = try kp.signOaep(std.crypto.hash.sha2.Sha256, msg, null, &out);
-    const signature = try kp.signPkcsv1_5(std.crypto.hash.sha2.Sha256, msg, &out);
-    testu.bufPrint("signature", signature.bytes);
-    std.debug.print("len: {}\n", .{signature.bytes.len});
+    const k = pk.algorithm.rsaEncryption;
+    try testing.expectEqualSlices(u8, &testu.hexStr3(modulus), k.modulus);
+    try testing.expectEqualSlices(u8, &testu.hexStr3(public_exponent), k.public_exponent);
+    try testing.expectEqualSlices(u8, &testu.hexStr3(private_exponent), k.private_exponent);
 }

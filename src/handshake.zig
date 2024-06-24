@@ -9,9 +9,10 @@ const rsa = Certificate.rsa;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-const EcdsaP384Sha256 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
-const EcdsaP256Sha384 = crypto.sign.ecdsa.Ecdsa(crypto.ecc.P256, crypto.hash.sha2.Sha384);
 const Kyber768 = crypto.kem.kyber_d00.Kyber768;
+const Sha256 = crypto.hash.sha2.Sha256;
+const Sha384 = crypto.hash.sha2.Sha384;
+const Sha512 = crypto.hash.sha2.Sha512;
 
 const consts = @import("consts.zig");
 const Cipher = @import("cipher.zig").Cipher;
@@ -25,8 +26,8 @@ const verifyRsa = @import("std_copy.zig").verifyRsa;
 const PrivateKey = @import("PrivateKey.zig");
 
 pub const Options = struct {
-    // To use just tls 1.2 cipher suites:
-    //   .cipher_suites = &tls.CipherSuite.tls12,
+    // To use just tls 1.3 cipher suites:
+    //   .cipher_suites = &tls.CipherSuite.tls13,
     // To select particular cipher suite:
     //   .cipher_suites = &[_]tls.CipherSuite{tls.CipherSuite.CHACHA20_POLY1305_SHA256},
     cipher_suites: []const CipherSuite = &CipherSuite.all,
@@ -45,13 +46,15 @@ pub const Options = struct {
     // Collect stats from handshake.
     stats: ?*Stats = null,
 
+    // Client authentication
     auth: ?Auth = null,
 
     const Auth = struct {
+        // Certificate chain to send to the server if server requests client authentication.
         certificates: Certificate.Bundle,
+        // Private key of the first certificate in bundle.
+        // Used for creating signature in certificate signature message.
         private_key: PrivateKey,
-        // private_key: []const u8,
-        // signature_scheme: tls.SignatureScheme,
     };
 };
 
@@ -299,7 +302,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         }
 
         /// Process first flight of the messages from the server.
-        /// Read server hello message. If tls 1.3 is choosen in server hello
+        /// Read server hello message. If tls 1.3 is chosen in server hello
         /// return. For tls 1.2 continue and read certificate, key_exchange
         /// and hello done messages.
         pub fn serverFlight1(h: *HandshakeT, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
@@ -476,16 +479,16 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     if (h.cert_pub_key_algo != .X9_62_id_ecPublicKey) return error.TlsBadSignatureScheme;
                     const cert_named_curve = h.cert_pub_key_algo.X9_62_id_ecPublicKey;
                     switch (cert_named_curve) {
-                        inline else => |comptime_cert_named_curve| {
+                        inline .secp384r1, .X9_62_prime256v1 => |comptime_cert_named_curve| {
                             const Ecdsa = SchemeEcdsa(comptime_scheme, comptime_cert_named_curve);
                             const key = try Ecdsa.PublicKey.fromSec1(h.cert_pub_key);
                             const sig = try Ecdsa.Signature.fromDer(h.signature);
                             try sig.verify(verify_bytes, key);
                         },
+                        else => return error.TlsUnknownSignatureScheme,
                     }
                 },
-
-                inline .ed25519 => {
+                .ed25519 => {
                     if (h.cert_pub_key_algo != .curveEd25519) return error.TlsBadSignatureScheme;
                     const Eddsa = crypto.sign.Ed25519;
                     if (h.signature.len != Eddsa.Signature.encoded_length) return error.InvalidEncoding;
@@ -494,7 +497,6 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     const key = try Eddsa.PublicKey.fromBytes(h.cert_pub_key[0..Eddsa.PublicKey.encoded_length].*);
                     try sig.verify(verify_bytes, key);
                 },
-
                 inline .rsa_pss_rsae_sha256,
                 .rsa_pss_rsae_sha384,
                 .rsa_pss_rsae_sha512,
@@ -530,30 +532,32 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         /// Returns signature bytes and signature scheme.
         inline fn createSignature(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
             const verify_bytes = h.transcript.clientVerifyBytes13(h.cipher_suite_tag);
-            const pk = auth.private_key;
-
-            switch (pk.algo) {
-                .X9_62_id_ecPublicKey => |named_curve| {
-                    switch (named_curve) {
-                        .secp384r1 => {
-                            const Ecdsa = EcdsaP384Sha384;
+            switch (auth.private_key.algorithm) {
+                .X9_62_id_ecPublicKey => |k| {
+                    switch (k.named_curve) {
+                        inline .secp384r1, .X9_62_prime256v1 => |comptime_named_curve| {
+                            const Ecdsa, const signature_scheme = switch (comptime_named_curve) {
+                                .secp384r1 => .{ EcdsaP384Sha384, .ecdsa_secp384r1_sha384 },
+                                .X9_62_prime256v1 => .{ EcdsaP256Sha256, .ecdsa_secp256r1_sha256 },
+                                else => unreachable,
+                            };
                             const key_len = Ecdsa.SecretKey.encoded_length;
-                            if (pk.bytes.len < key_len) return error.TlsPrivateKey;
-                            const secret_key = try Ecdsa.SecretKey.fromBytes(pk.bytes[0..key_len].*);
+                            if (k.secret_key.len < key_len) return error.TlsPrivateKey;
+                            const secret_key = try Ecdsa.SecretKey.fromBytes(k.secret_key[0..key_len].*);
                             const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
                             var signer = try key_pair.signer(null);
                             signer.update(verify_bytes);
                             const signature = try signer.finalize();
                             var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
-                            return .{ signature.toDer(&buf), .ecdsa_secp384r1_sha384 };
+                            return .{ signature.toDer(&buf), signature_scheme };
                         },
-                        else => return error.TlsPrivateKeyNamedCurve,
+                        else => return error.TlsUnsupportedPrivateKeyNamedCurve,
                     }
                 },
-                .rsaEncryption => {
+                .rsaEncryption => |k| {
                     const rsa2 = @import("rsa/rsa.zig");
-                    const public_key = try rsa2.PublicKey.fromBytes(pk.modulus, pk.public_exponent);
-                    const secret_key = try rsa2.SecretKey.fromBytes(public_key.modulus, pk.private_exponent);
+                    const public_key = try rsa2.PublicKey.fromBytes(k.modulus, k.public_exponent);
+                    const secret_key = try rsa2.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
                     const kp = rsa2.KeyPair{ .public = public_key, .secret = secret_key };
 
                     const modulus_len = std.math.divCeil(usize, kp.public.modulus.bits(), 8) catch unreachable;
@@ -567,20 +571,14 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                         else => return error.TlsBadRsaSignatureBitCount,
                     }
                 },
-                else => return error.TlsPrivateKeyAlgorithm,
+                else => return error.TlsUnsupportedPrivateKeyAlgorithm,
             }
         }
 
         fn SchemeEcdsa(comptime scheme: tls.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
             return switch (scheme) {
-                .ecdsa_secp256r1_sha256 => switch (cert_named_curve) {
-                    .secp384r1 => EcdsaP384Sha256,
-                    else => EcdsaP256Sha256,
-                },
-                .ecdsa_secp384r1_sha384 => switch (cert_named_curve) {
-                    .X9_62_prime256v1 => EcdsaP256Sha384,
-                    else => EcdsaP384Sha384,
-                },
+                .ecdsa_secp256r1_sha256 => crypto.sign.ecdsa.Ecdsa(cert_named_curve.Curve(), Sha256),
+                .ecdsa_secp384r1_sha384 => crypto.sign.ecdsa.Ecdsa(cert_named_curve.Curve(), Sha384),
                 else => @compileError("bad scheme"),
             };
         }
@@ -588,18 +586,18 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
             return switch (scheme) {
                 .rsa_pkcs1_sha1 => crypto.hash.Sha1,
-                .rsa_pss_rsae_sha256, .rsa_pkcs1_sha256 => crypto.hash.sha2.Sha256,
-                .rsa_pss_rsae_sha384, .rsa_pkcs1_sha384 => crypto.hash.sha2.Sha384,
-                .rsa_pss_rsae_sha512, .rsa_pkcs1_sha512 => crypto.hash.sha2.Sha512,
+                .rsa_pss_rsae_sha256, .rsa_pkcs1_sha256 => Sha256,
+                .rsa_pss_rsae_sha384, .rsa_pkcs1_sha384 => Sha384,
+                .rsa_pss_rsae_sha512, .rsa_pkcs1_sha512 => Sha512,
                 else => @compileError("bad scheme"),
             };
         }
 
         fn ModulusHash(comptime modulus_len: usize) !struct { type, tls.SignatureScheme } {
             return switch (modulus_len) {
-                256 => .{ crypto.hash.sha2.Sha256, .rsa_pss_rsae_sha256 },
-                384 => .{ crypto.hash.sha2.Sha384, .rsa_pss_rsae_sha384 },
-                512 => .{ crypto.hash.sha2.Sha512, .rsa_pss_rsae_sha512 },
+                256 => .{ Sha256, .rsa_pss_rsae_sha256 },
+                384 => .{ Sha384, .rsa_pss_rsae_sha384 },
+                512 => .{ Sha512, .rsa_pss_rsae_sha512 },
                 else => @compileError("bad modulus len"),
             };
         }
