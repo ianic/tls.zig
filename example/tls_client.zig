@@ -31,11 +31,11 @@ pub fn main() !void {
     defer tcp.close();
 
     // Prepare client authentication
-    var certs: Certificate.Bundle = .{};
-    try certs.addCertsFromFilePath(gpa, dir, "client-rsa/cert.pem");
+    var client_certificates: Certificate.Bundle = .{};
+    try client_certificates.addCertsFromFilePath(gpa, dir, "client-rsa/cert.pem");
     const file = try dir.openFile("client-rsa/key.pem", .{});
     defer file.close();
-    const pk = try tls.PrivateKey.fromFile(gpa, file);
+    const client_private_key = try tls.PrivateKey.fromFile(gpa, file);
 
     // Upgrade tcp connection to tls client
     var cli = tls.client(tcp);
@@ -43,8 +43,8 @@ pub fn main() !void {
     try cli.handshake(host, ca_bundle, .{
         .stats = &stats,
         .auth = .{
-            .certificates = certs,
-            .private_key = pk,
+            .certificates = client_certificates,
+            .private_key = client_private_key,
         },
     });
 

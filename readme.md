@@ -27,6 +27,30 @@ Stats can be used to inspect which cipher suite and other handshake parameters w
     // inspect stats
 ```
 
+### Client authentication
+
+If server requires client authentication set `auth` attribute in options. You need to prepare certificate bundle with client certificates and client private key.
+
+```zig
+    // Load client certificate(s) and client private key
+    var client_certificates: Certificate.Bundle = .{};
+    try client_certificates.addCertsFromFilePath(gpa, dir, "client-rsa/cert.pem");
+    const file = try dir.openFile("client-rsa/key.pem", .{});
+    defer file.close();
+    const client_private_key = try tls.PrivateKey.fromFile(gpa, file);
+
+    // Handshake with client authentication
+    var cli = tls.client(tcp);
+    try cli.handshake(host, ca_bundle, .{
+        .auth = .{
+            .certificates = client_certificates,
+            .private_key = client_private_key,
+        },
+    });
+```
+
+When client receives certificate request from server during handshake it will respond with client certificates message build from provided certificate bundle and client certificate verify message where verify data is signed with client private key.
+
 # Examples
 
 ## Top sites
@@ -181,18 +205,30 @@ google.com
 ```
 
 
-## testing with Go tls server
+## Client certificate example
+
+Create local development certificates and keys:
+```
+$ cd example && ./cert.sh
+```
+This uses [minica](https://github.com/jsha/minica) tool. Go compiler and go install dir in the path are required.
 
 Start server from go_tls_server folder:
 ```
- $ cd example/go_tls_server && ./run.sh
+ $ cd example/go_tls_server && go run server.go
 ```
-That will generate certificate, download a text file and start Go server.  
-Then run example:
+That server requires client authentication.
+
 ```
 $ zig-out/bin/tls_client
 ```
-After connecting server will stream a large text file.
+
+Tls client reads certificate from example/cert/client-rsa/cert.pem and key from example/cert/client-rsa/key.pem and uses them to authenticate to the server.
+
+Equivalent curl is:
+```sh
+curl https://localhost:8443 --cacert example/cert/minica.pem --cert example/cert/client-rsa/cert.pem --key example/cert/client-rsa/key.pem
+```
 
 # Usage with standard library http.Client
 
