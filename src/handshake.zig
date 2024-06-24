@@ -701,10 +701,12 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     try h.encryptHandshake(&w, try h.clientCertificateVerify(&buffer, a));
                 } else {
                     // empty certificate message and no certificate verify message
-                    try w.write(&consts.handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 });
+                    const empty_certificate = &consts.handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 };
+                    try h.encryptHandshake(&w, empty_certificate);
                 }
             }
             { // client finished
+
                 const client_finished = h.transcript.clientFinished13Msg(h.cipher_suite_tag);
                 try h.encryptHandshake(&w, client_finished);
             }
