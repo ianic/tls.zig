@@ -2,7 +2,7 @@ const std = @import("std");
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 
-pub fn showStats(stats: *tls.Stats, domain: []const u8) void {
+pub fn showStats(stats: *tls.Options.Stats, domain: []const u8) void {
     std.debug.print(
         "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n",
         .{
@@ -142,7 +142,7 @@ pub fn get(
 
     // Prepare and show handshake stats
     if (show_handshake_stat and opt.stats == null) {
-        var stats: tls.Stats = .{};
+        var stats: tls.Options.Stats = .{};
         opt.stats = &stats;
     }
     defer if (show_handshake_stat) showStats(opt.stats.?, domain);

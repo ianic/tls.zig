@@ -29,7 +29,7 @@ pub fn main() !void {
 }
 
 pub fn run(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle, counter: *cmn.Counter) void {
-    var stats: tls.Stats = .{};
+    var stats: tls.Options.Stats = .{};
     var opt: tls.Options = .{ .stats = &stats };
 
     if (cmn.inList(domain, &cmn.noKeyber)) {

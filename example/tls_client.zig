@@ -48,7 +48,7 @@ pub fn main() !void {
 
     // Upgrade tcp connection to tls client
     var cli = tls.client(tcp);
-    var stats: tls.Stats = .{};
+    var stats: tls.Options.Stats = .{};
     try cli.handshake(host, ca_bundle, .{
         //.cipher_suites = &tls.CipherSuite.tls12_secure,
         .stats = &stats,
