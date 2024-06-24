@@ -5,7 +5,6 @@ const mem = std.mem;
 const tls = crypto.tls;
 
 const Certificate = crypto.Certificate;
-const rsa = Certificate.rsa;
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
@@ -19,11 +18,8 @@ const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
-
-const rsaEncrypt = @import("std_copy.zig").rsaEncrypt;
-const verifyRsa = @import("std_copy.zig").verifyRsa;
-
 const PrivateKey = @import("PrivateKey.zig");
+const rsa = @import("rsa/rsa.zig");
 
 pub const Options = struct {
     // To use just tls 1.3 cipher suites:
@@ -49,27 +45,27 @@ pub const Options = struct {
     // Client authentication
     auth: ?Auth = null,
 
-    const Auth = struct {
+    pub const Auth = struct {
         // Certificate chain to send to the server if server requests client authentication.
         certificates: Certificate.Bundle,
         // Private key of the first certificate in bundle.
         // Used for creating signature in certificate signature message.
         private_key: PrivateKey,
     };
-};
 
-pub const Stats = struct {
-    tls_version: tls.ProtocolVersion = @enumFromInt(0),
-    cipher_suite_tag: CipherSuite = @enumFromInt(0),
-    named_group: tls.NamedGroup = @enumFromInt(0),
-    signature_scheme: tls.SignatureScheme = @enumFromInt(0),
+    pub const Stats = struct {
+        tls_version: tls.ProtocolVersion = @enumFromInt(0),
+        cipher_suite_tag: CipherSuite = @enumFromInt(0),
+        named_group: tls.NamedGroup = @enumFromInt(0),
+        signature_scheme: tls.SignatureScheme = @enumFromInt(0),
 
-    pub fn update(stats: *Stats, h: anytype) void {
-        stats.tls_version = h.tls_version;
-        stats.cipher_suite_tag = h.cipher_suite_tag;
-        stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
-        stats.signature_scheme = h.signature_scheme;
-    }
+        pub fn update(stats: *Stats, h: anytype) void {
+            stats.tls_version = h.tls_version;
+            stats.cipher_suite_tag = h.cipher_suite_tag;
+            stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
+            stats.signature_scheme = h.signature_scheme;
+        }
+    };
 };
 
 /// Handshake parses tls server message and creates client messages. Collects
@@ -503,17 +499,13 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 => |comptime_scheme| {
                     if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
                     const Hash = SchemeHash(comptime_scheme);
-                    const pk = try rsa.PublicKey.parseDer(h.cert_pub_key);
-                    switch (pk.modulus.len) {
-                        inline 128, 256, 512 => |modulus_len| {
-                            const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
-                            const sig = rsa.PSSSignature.fromBytes(modulus_len, h.signature);
-                            try rsa.PSSSignature.verify(modulus_len, sig, verify_bytes, key, Hash);
-                        },
-                        else => {
-                            return error.TlsBadRsaSignatureBitCount;
-                        },
-                    }
+                    const pk = try rsa.PublicKey.fromDer(h.cert_pub_key);
+                    const sig = rsa.Pss(Hash).Signature{ .bytes = h.signature };
+                    try sig.verify(
+                        verify_bytes,
+                        pk,
+                        if (comptime_scheme == .rsa_pss_rsae_sha512) 64 else null,
+                    );
                 },
                 inline .rsa_pkcs1_sha1,
                 .rsa_pkcs1_sha256,
@@ -522,7 +514,9 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 => |comptime_scheme| {
                     if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
                     const Hash = SchemeHash(comptime_scheme);
-                    try verifyRsa(Hash, verify_bytes, h.signature, h.cert_pub_key_algo, h.cert_pub_key);
+                    const pk = try rsa.PublicKey.fromDer(h.cert_pub_key);
+                    const sig = rsa.PKCS1v1_5(Hash).Signature{ .bytes = h.signature };
+                    try sig.verify(verify_bytes, pk);
                 },
                 else => return error.TlsUnknownSignatureScheme,
             }
@@ -555,10 +549,9 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     }
                 },
                 .rsaEncryption => |k| {
-                    const rsa2 = @import("rsa/rsa.zig");
-                    const public_key = try rsa2.PublicKey.fromBytes(k.modulus, k.public_exponent);
-                    const secret_key = try rsa2.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
-                    const kp = rsa2.KeyPair{ .public = public_key, .secret = secret_key };
+                    const public_key = try rsa.PublicKey.fromBytes(k.modulus, k.public_exponent);
+                    const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
+                    const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
 
                     const modulus_len = std.math.divCeil(usize, kp.public.modulus.bits(), 8) catch unreachable;
                     switch (modulus_len) {
@@ -849,27 +842,10 @@ const RsaKeyPair = struct {
         cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
         cert_pub_key: []const u8,
     ) ![]const u8 {
-        if (cert_pub_key_algo != .rsaEncryption)
-            return error.TlsBadSignatureScheme;
-
-        const pk = try rsa.PublicKey.parseDer(cert_pub_key);
-        switch (pk.modulus.len) {
-            inline 128, 256, 512 => |modulus_len| {
-                const msg_len = self.pre_master_secret.len;
-                const pad_len = modulus_len - msg_len - 3;
-                const padded_msg: [modulus_len]u8 =
-                    [2]u8{ 0, 2 } ++
-                    ([1]u8{0xff} ** pad_len) ++
-                    [1]u8{0} ++
-                    self.pre_master_secret;
-
-                const key = try rsa.PublicKey.fromBytes(pk.exponent, pk.modulus);
-                return &(try rsaEncrypt(modulus_len, padded_msg, key));
-            },
-            else => {
-                return error.TlsBadRsaSignatureBitCount;
-            },
-        }
+        if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
+        const pk = try rsa.PublicKey.fromDer(cert_pub_key);
+        var out: [512]u8 = undefined;
+        return try pk.encryptPkcsv1_5(&self.pre_master_secret, &out);
     }
 };
 

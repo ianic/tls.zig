@@ -71,7 +71,9 @@ pub const PublicKey = struct {
         em[1] = 2;
 
         const ps = em[2..][0 .. k - msg.len - 3];
-        std.crypto.random.bytes(ps);
+        @memset(ps, 0xff);
+        // TODO: changed from random to 0xff to get stanford.edu working
+        // std.crypto.random.bytes(ps);
 
         em[em.len - msg.len - 1] = 0;
         @memcpy(em[em.len - msg.len ..][0..msg.len], msg);
