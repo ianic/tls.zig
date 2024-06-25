@@ -853,9 +853,9 @@ const RsaSecret = struct {
 };
 
 test "DhKeyPair.x25519" {
-    const seed = testu.hexStr2("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
-    const server_pub_key = &testu.hexStr2("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
-    const expected = &testu.hexStr2("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
+    const seed = testu.hexToBytes("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
+    const server_pub_key = &testu.hexToBytes("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
+    const expected = &testu.hexToBytes("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
 
     const kp = try DhKeyPair.init(seed[0..64].*);
     try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
@@ -1144,7 +1144,7 @@ test "create client hello" {
         .disable_keyber = true,
     });
 
-    const expected = testu.hexStr3(
+    const expected = testu.hexToBytes(
         "16 03 03 00 7c " ++ // record header
             "01 00 00 78 " ++ // handshake header
             "03 03 " ++ // protocol version

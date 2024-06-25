@@ -213,7 +213,7 @@ test Decoder {
     try testing.expectEqual(45, try d.decode(u24)); // length
     try testing.expectEqual(.tls_1_2, try d.decode(tls.ProtocolVersion));
     try testing.expectEqualStrings(
-        &testu.hexStr2("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
+        &testu.hexToBytes("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
         try d.array(32),
     ); // server random
     try testing.expectEqual(0, try d.decode(u8)); // session id len
