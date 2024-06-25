@@ -71,9 +71,11 @@ pub const PublicKey = struct {
         em[1] = 2;
 
         const ps = em[2..][0 .. k - msg.len - 3];
-        @memset(ps, 0xff);
-        // TODO: changed from random to 0xff to get stanford.edu working
-        // std.crypto.random.bytes(ps);
+        // Section: 7.2.1
+        // PS consists of pseudo-randomly generated nonzero octets.
+        for (ps) |*v| {
+            v.* = std.crypto.random.uintLessThan(u8, 0xff) + 1;
+        }
 
         em[em.len - msg.len - 1] = 0;
         @memcpy(em[em.len - msg.len ..][0..msg.len], msg);
