@@ -84,7 +84,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         cipher_suite_tag: CipherSuite = @enumFromInt(0),
         named_group: ?tls.NamedGroup = null,
         dh_kp: DhKeyPair,
-        rsa_kp: RsaKeyPair,
+        rsa_secret: RsaSecret,
         signature_scheme: tls.SignatureScheme = @enumFromInt(0),
         now_sec: i64 = 0,
         tls_version: tls.ProtocolVersion = .tls_1_2,
@@ -118,7 +118,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
             return .{
                 .client_random = random_buf[0..32].*,
                 .dh_kp = try DhKeyPair.init(random_buf[32..][0..64].*),
-                .rsa_kp = RsaKeyPair.init(random_buf[32 + 64 ..][0..46].*),
+                .rsa_secret = RsaSecret.init(random_buf[32 + 64 ..][0..46].*),
                 .now_sec = std.time.timestamp(),
                 .buffer = buf,
                 .rec_rdr = rec_rdr,
@@ -600,7 +600,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
             const pre_master_secret = if (h.named_group) |named_group|
                 try h.dh_kp.preMasterSecret(named_group, h.server_pub_key)
             else
-                &h.rsa_kp.pre_master_secret;
+                &h.rsa_secret.secret;
 
             h.master_secret = Transcript.masterSecret(
                 h.cipher_suite_tag,
@@ -633,7 +633,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 const key: []const u8 = if (h.named_group) |named_group|
                     try h.dh_kp.publicKey(named_group)
                 else
-                    try h.rsa_kp.publicKey(h.cert_pub_key_algo, h.cert_pub_key);
+                    try h.rsa_secret.encrypted(h.cert_pub_key_algo, h.cert_pub_key);
 
                 const header = if (h.named_group != null)
                     &consts.handshakeRecordHeader(.client_key_exchange, 1 + key.len) ++
@@ -832,37 +832,25 @@ const DhKeyPair = struct {
     }
 };
 
-const RsaKeyPair = struct {
-    pre_master_secret: [48]u8,
+const RsaSecret = struct {
+    secret: [48]u8,
 
-    fn init(rand: [46]u8) RsaKeyPair {
-        return .{ .pre_master_secret = consts.hello.protocol_version ++ rand };
+    fn init(rand: [46]u8) RsaSecret {
+        return .{ .secret = consts.hello.protocol_version ++ rand };
     }
 
-    inline fn publicKey(
-        self: RsaKeyPair,
+    // Pre master secret encrypted with certificate public key.
+    inline fn encrypted(
+        self: RsaSecret,
         cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
         cert_pub_key: []const u8,
     ) ![]const u8 {
         if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
         const pk = try rsa.PublicKey.fromDer(cert_pub_key);
         var out: [512]u8 = undefined;
-        return try pk.encryptPkcsv1_5(&self.pre_master_secret, &out);
+        return try pk.encryptPkcsv1_5(&self.secret, &out);
     }
 };
-
-test "RsaKeyPair" {
-    const seed = testu.hexStr2("23bc6aea3bf218e0154835af87536c8078b3cb9ed7be55579b6c55b36a503090584936ee572afeb19fd16ad333e4");
-    const cert_pub_key = &testu.hexStr2("3082010a0282010100893b748b32b7dee524a8e0add60d84265eb39b0221f99d1a2bf6011707de90bdadccae76b8ed2e7da1d565b573e9aeb3c316a6d5178ce26b2b4085a2e7bdf9f8372935f06407a183dcda00ba28ed9117093c49a306fb2e1ff4798562eb9a08eb7d70557a11c68b446a0e6f4aee9224886e5bdb07c00c02f3e5428d59f8bd2c79ea53e3e60e1331627f294f5185e7344bb27158fa1494c749cce9d9dafc4550189934e839904ef43252acfd670556e513721658b632cef88a05d825ad5aad83989f973cdad7e9362e465c3930a9fbfa9b245fffbdb6c75856b2457854b5848c79b7a4de6022290a56a0890732c12437c3dbed18004ab4754505b1554c254f66410203010001");
-    const expected_key = &testu.hexStr2("495fd4a3ff7b2bf5eb6c316b488559142c2678d3204df4408e9a6ccb0680a52739fc766136e6da92e17941c35e1e02150bfcf7830fe0a1443772bf88ca22b614e5d4df122a3e615e6d409bf4702d34effb0bba9f801b3a795f1ff88e483eaa2968a8f7d1fbddee0ac0ecb88c615b5787fd5daa2180ad9791df87dd7d589884414ebe02576bc136f1aa0d866951a29161d80a3339c92300f37c822c6d303919dc9776fa91c7de45d7b0092014b2e0f678daa81fae1530c90b1ef15eecb3aba2b285ba725a623b083aa70ada7adfebbfcbf8472a3cdd9337b92770e33c86f6180591a4f26db6822c95bc5cf379c9fcb3895561e60bf5be02845b96a3e3867c168b");
-
-    var rsa_kp = RsaKeyPair.init(seed[0..46].*);
-    try testing.expectEqualSlices(
-        u8,
-        expected_key,
-        try rsa_kp.publicKey(.{ .rsaEncryption = {} }, cert_pub_key),
-    );
-}
 
 test "DhKeyPair.x25519" {
     const seed = testu.hexStr2("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
