@@ -524,7 +524,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
         /// Creates signature for client certificate signature message.
         /// Returns signature bytes and signature scheme.
-        inline fn createSignature(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
+        inline fn createSignature13(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
             const verify_bytes = h.transcript.clientVerifyBytes13(h.cipher_suite_tag);
             switch (auth.private_key.algorithm) {
                 .X9_62_id_ecPublicKey => |k| {
@@ -552,13 +552,36 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     const public_key = try rsa.PublicKey.fromBytes(k.modulus, k.public_exponent);
                     const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
                     const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
-
-                    const modulus_len = std.math.divCeil(usize, kp.public.modulus.bits(), 8) catch unreachable;
+                    const modulus_len = rsa.byteLen(kp.public.modulus.bits());
                     switch (modulus_len) {
                         inline 256, 384, 512 => |comptime_modulus_len| {
                             const Hash, const signature_scheme = try ModulusHash(comptime_modulus_len);
                             var buf: [comptime_modulus_len]u8 = undefined;
                             const signature = try kp.signOaep(Hash, verify_bytes, null, &buf);
+                            return .{ signature.bytes, signature_scheme };
+                        },
+                        else => return error.TlsBadRsaSignatureBitCount,
+                    }
+                },
+                else => return error.TlsUnsupportedPrivateKeyAlgorithm,
+            }
+        }
+
+        // ref: https://datatracker.ietf.org/doc/html/rfc5246.html#section-7.4.8
+        inline fn createSignature12(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
+            switch (auth.private_key.algorithm) {
+                .rsaEncryption => |k| {
+                    const public_key = try rsa.PublicKey.fromBytes(k.modulus, k.public_exponent);
+                    const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
+                    const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
+                    const modulus_len = rsa.byteLen(kp.public.modulus.bits());
+                    switch (modulus_len) {
+                        inline 256, 384, 512 => |comptime_modulus_len| {
+                            const Hash, const signature_scheme = try ModulusHash(comptime_modulus_len);
+                            var buf: [comptime_modulus_len]u8 = undefined;
+                            var signer = try kp.signerOaep(Hash, null);
+                            signer.h = h.transcript.hash(Hash);
+                            const signature = try signer.finalize(&buf);
                             return .{ signature.bytes, signature_scheme };
                         },
                         else => return error.TlsBadRsaSignatureBitCount,
@@ -618,14 +641,22 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
         /// Creates client key exchange, change cipher spec and handshake
         /// finished messages for tls 1.2.
-        pub fn clientFlight2Tls12(h: *HandshakeT) ![]u8 {
-            var fbs = std.io.fixedBufferStream(h.buffer);
+        pub fn clientFlight2Tls12(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
+            var w = BufWriter{ .buf = h.buffer };
 
             // client certificate message
             if (h.client_certificate_requested) {
-                const msg = &consts.handshakeRecordHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
-                _ = try fbs.write(msg);
-                h.transcript.update(msg[tls.record_header_len..]);
+                if (auth) |a| {
+                    var buffer: [tls.max_cipertext_inner_record_len]u8 = undefined; // TODO
+                    const client_certificate = try h.clientCertificate(&buffer, a);
+                    h.transcript.update(client_certificate);
+                    try w.write(&consts.recordHeader(.handshake, client_certificate.len));
+                    try w.write(client_certificate);
+                } else {
+                    const empty_certificate = &consts.handshakeRecordHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
+                    try w.write(empty_certificate);
+                    h.transcript.update(empty_certificate[tls.record_header_len..]);
+                }
             }
 
             // client key exchange message
@@ -642,17 +673,33 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     &consts.handshakeRecordHeader(.client_key_exchange, 2 + key.len) ++
                         consts.int2(@intCast(key.len));
 
-                _ = try fbs.write(header);
-                _ = try fbs.write(key);
+                try w.write(header);
+                try w.write(key);
 
                 h.transcript.update(header[tls.record_header_len..]);
                 h.transcript.update(key);
             }
 
+            // client certificate verify message
+            if (h.client_certificate_requested and auth != null) {
+                const signature, const signature_scheme = try h.createSignature12(auth.?);
+
+                const handshake_header = &consts.handshakeHeader(.certificate_verify, signature.len + 4) ++
+                    consts.int2e(signature_scheme) ++
+                    consts.int2(@intCast(signature.len));
+
+                try w.write(&consts.recordHeader(.handshake, handshake_header.len + signature.len));
+                try w.write(handshake_header);
+                try w.write(signature);
+
+                h.transcript.update(handshake_header);
+                h.transcript.update(signature);
+            }
+
             // client change cipher spec message
             {
                 const change_cipher_spec = consts.recordHeader(.change_cipher_spec, 1) ++ consts.int1(1);
-                _ = try fbs.write(&change_cipher_spec);
+                try w.write(&change_cipher_spec);
             }
 
             // client handshake finished message
@@ -661,11 +708,11 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
                 h.transcript.update(&client_finished);
                 // encrypt client_finished into handshake_finished tls record
-                const handshake_finished = try h.cipher.encrypt(fbs.buffer[fbs.pos..], 0, .handshake, &client_finished);
-                fbs.pos += handshake_finished.len;
+                const handshake_finished = try h.cipher.encrypt(w.getFree(), 0, .handshake, &client_finished);
+                w.pos += handshake_finished.len;
             }
 
-            return fbs.getWritten();
+            return w.getWritten();
         }
 
         /// Read server change cipher spec message.
@@ -697,7 +744,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
             if (h.client_certificate_requested) {
                 if (auth) |a| { // client certificate and client certificate verify
                     var buffer: [tls.max_cipertext_inner_record_len]u8 = undefined;
-                    try h.encryptHandshake(&w, try clientCertificate(&buffer, a));
+                    try h.encryptHandshake(&w, try h.clientCertificate(&buffer, a));
                     try h.encryptHandshake(&w, try h.clientCertificateVerify(&buffer, a));
                 } else {
                     // empty certificate message and no certificate verify message
@@ -714,19 +761,25 @@ pub fn Handshake(comptime RecordReaderT: type) type {
             return w.getWritten();
         }
 
-        fn clientCertificate(buffer: []u8, auth: Options.Auth) ![]const u8 {
+        fn clientCertificate(h: HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
             var w = BufWriter{ .buf = buffer };
+            const tls_1_3 = h.tls_version == .tls_1_3;
 
             const certs = auth.certificates.bytes.items;
             const certs_count = auth.certificates.map.size;
             // overhead per each certificate:
             // length 3 bytes, empty extensions 2 bytes = 5 bytes
-            const certs_len = certs.len + 5 * certs_count;
 
-            // handshake header, content length (0), certificates length
-            try w.write(&consts.handshakeHeader(.certificate, certs_len + 4) ++
-                [_]u8{0} ++
-                consts.int3(@intCast(certs_len)));
+            var certs_len = certs.len + 3 * certs_count;
+            if (tls_1_3) {
+                certs_len += 2 * certs_count;
+                try w.write(&consts.handshakeHeader(.certificate, certs_len + 4) ++
+                    [_]u8{0} ++ consts.int3(@intCast(certs_len)));
+            } else {
+                try w.write(&consts.handshakeHeader(.certificate, certs_len + 3) ++
+                    consts.int3(@intCast(certs_len)));
+            }
+
             // write each certificate
             var index: u32 = 0;
             while (index < certs.len) {
@@ -734,14 +787,14 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 const cert = certs[index..e.slice.end];
                 try w.write(&consts.int3(@intCast(cert.len))); // certificate length
                 try w.write(cert); // certificate
-                try w.write(&[_]u8{ 0, 0 }); // extensions length
+                if (tls_1_3) try w.write(&[_]u8{ 0, 0 }); // extensions length
                 index = e.slice.end;
             }
             return w.getWritten();
         }
 
         fn clientCertificateVerify(h: *HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
-            const signature, const signature_scheme = try h.createSignature(auth);
+            const signature, const signature_scheme = try h.createSignature13(auth);
             var w = BufWriter{ .buf = buffer };
             // handshake header, signature scheme, signature len
             try w.write(&consts.handshakeHeader(.certificate_verify, signature.len + 4) ++

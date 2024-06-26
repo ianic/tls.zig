@@ -101,6 +101,14 @@ pub const Transcript = struct {
         };
     }
 
+    pub inline fn hash(self: *Transcript, comptime Hash: type) Hash {
+        return switch (Hash) {
+            Sha256 => self.sha256.hash,
+            Sha384 => self.sha384.hash,
+            else => unreachable,
+        };
+    }
+
     pub fn Hkdf(cs: CipherSuite) type {
         return switch (cs.hash()) {
             .sha384 => Transcript384.Hkdf,

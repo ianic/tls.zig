@@ -10,9 +10,8 @@ const Cipher = @import("cipher.zig").Cipher;
 const Handshake = @import("handshake.zig").Handshake;
 pub const Options = @import("handshake.zig").Options;
 pub const CipherSuite = @import("cipher.zig").CipherSuite;
-const VecPut = @import("std_copy.zig").VecPut;
-
 pub const PrivateKey = @import("PrivateKey.zig");
+const VecPut = @import("std_copy.zig").VecPut;
 
 pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     return .{
@@ -84,7 +83,7 @@ pub fn Client(comptime Stream: type) type {
                     c.cipher = h.cipher;
                     c.cipher_client_seq = 1;
                 }
-                try c.send(try h.clientFlight2Tls12());
+                try c.send(try h.clientFlight2Tls12(opt.auth));
                 { // parse server flight 2
                     try h.serverChangeCipherSpec();
                     // Read encrypted server handshake finished message.
