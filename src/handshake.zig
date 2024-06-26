@@ -526,66 +526,53 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         /// Returns signature bytes and signature scheme.
         inline fn createSignature13(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
             const verify_bytes = h.transcript.clientVerifyBytes13(h.cipher_suite_tag);
-            switch (auth.private_key.algorithm) {
-                .X9_62_id_ecPublicKey => |k| {
-                    switch (k.named_curve) {
-                        inline .secp384r1, .X9_62_prime256v1 => |comptime_named_curve| {
-                            const Ecdsa, const signature_scheme = switch (comptime_named_curve) {
-                                .secp384r1 => .{ EcdsaP384Sha384, .ecdsa_secp384r1_sha384 },
-                                .X9_62_prime256v1 => .{ EcdsaP256Sha256, .ecdsa_secp256r1_sha256 },
-                                else => unreachable,
-                            };
-                            const key_len = Ecdsa.SecretKey.encoded_length;
-                            if (k.secret_key.len < key_len) return error.TlsPrivateKey;
-                            const secret_key = try Ecdsa.SecretKey.fromBytes(k.secret_key[0..key_len].*);
-                            const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
-                            var signer = try key_pair.signer(null);
-                            signer.update(verify_bytes);
-                            const signature = try signer.finalize();
-                            var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
-                            return .{ signature.toDer(&buf), signature_scheme };
-                        },
-                        else => return error.TlsUnsupportedPrivateKeyNamedCurve,
-                    }
+
+            switch (auth.private_key.signature_scheme) {
+                inline .ecdsa_secp256r1_sha256,
+                .ecdsa_secp384r1_sha384,
+                => |comptime_scheme| {
+                    const Ecdsa = switch (comptime_scheme) {
+                        .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
+                        .ecdsa_secp256r1_sha256 => EcdsaP256Sha256,
+                        else => unreachable,
+                    };
+                    const key = auth.private_key.key.ecdsa;
+                    const key_len = Ecdsa.SecretKey.encoded_length;
+                    if (key.len < key_len) return error.TlsPrivateKey;
+                    const secret_key = try Ecdsa.SecretKey.fromBytes(key[0..key_len].*);
+                    const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
+                    var signer = try key_pair.signer(null);
+                    signer.update(verify_bytes);
+                    const signature = try signer.finalize();
+                    var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
+                    return .{ signature.toDer(&buf), comptime_scheme };
                 },
-                .rsaEncryption => |k| {
-                    const public_key = try rsa.PublicKey.fromBytes(k.modulus, k.public_exponent);
-                    const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
-                    const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
-                    const modulus_len = rsa.byteLen(kp.public.modulus.bits());
-                    switch (modulus_len) {
-                        inline 256, 384, 512 => |comptime_modulus_len| {
-                            const Hash, const signature_scheme = try ModulusHash(comptime_modulus_len);
-                            var buf: [comptime_modulus_len]u8 = undefined;
-                            const signature = try kp.signOaep(Hash, verify_bytes, null, &buf);
-                            return .{ signature.bytes, signature_scheme };
-                        },
-                        else => return error.TlsBadRsaSignatureBitCount,
-                    }
+                inline .rsa_pss_rsae_sha256,
+                .rsa_pss_rsae_sha384,
+                .rsa_pss_rsae_sha512,
+                => |comptime_scheme| {
+                    const Hash = SchemeHash(comptime_scheme);
+                    var buf: [512]u8 = undefined;
+                    const signature = try auth.private_key.key.rsa.signOaep(Hash, verify_bytes, null, &buf);
+                    return .{ signature.bytes, comptime_scheme };
                 },
-                else => return error.TlsUnsupportedPrivateKeyAlgorithm,
+                else => return error.TlsUnknownSignatureScheme,
             }
         }
 
         // ref: https://datatracker.ietf.org/doc/html/rfc5246.html#section-7.4.8
         inline fn createSignature12(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
-            switch (auth.private_key.algorithm) {
-                .rsaEncryption => |k| {
-                    const public_key = try rsa.PublicKey.fromBytes(k.modulus, k.public_exponent);
-                    const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, k.private_exponent);
-                    const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
-                    const modulus_len = rsa.byteLen(kp.public.modulus.bits());
-                    switch (modulus_len) {
-                        inline 256, 384, 512 => |comptime_modulus_len| {
-                            const Hash, const signature_scheme = try ModulusHash(comptime_modulus_len);
-                            var buf: [comptime_modulus_len]u8 = undefined;
-                            var signer = try kp.signerOaep(Hash, null);
-                            signer.h = h.transcript.hash(Hash);
-                            const signature = try signer.finalize(&buf);
-                            return .{ signature.bytes, signature_scheme };
-                        },
-                        else => return error.TlsBadRsaSignatureBitCount,
-                    }
+            switch (auth.private_key.signature_scheme) {
+                inline .rsa_pss_rsae_sha256,
+                .rsa_pss_rsae_sha384,
+                .rsa_pss_rsae_sha512,
+                => |comptime_scheme| {
+                    const Hash = SchemeHash(comptime_scheme);
+                    var signer = try auth.private_key.key.rsa.signerOaep(Hash, null);
+                    signer.h = h.transcript.hash(Hash);
+                    var buf: [512]u8 = undefined;
+                    const signature = try signer.finalize(&buf);
+                    return .{ signature.bytes, comptime_scheme };
                 },
                 else => return error.TlsUnsupportedPrivateKeyAlgorithm,
             }
@@ -606,15 +593,6 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 .rsa_pss_rsae_sha384, .rsa_pkcs1_sha384 => Sha384,
                 .rsa_pss_rsae_sha512, .rsa_pkcs1_sha512 => Sha512,
                 else => @compileError("bad scheme"),
-            };
-        }
-
-        fn ModulusHash(comptime modulus_len: usize) !struct { type, tls.SignatureScheme } {
-            return switch (modulus_len) {
-                256 => .{ Sha256, .rsa_pss_rsae_sha256 },
-                384 => .{ Sha384, .rsa_pss_rsae_sha384 },
-                512 => .{ Sha512, .rsa_pss_rsae_sha512 },
-                else => @compileError("bad modulus len"),
             };
         }
 

@@ -41,6 +41,12 @@ pub fn main() !void {
     var cli = tls.client(tcp);
     var stats: tls.Options.Stats = .{};
     try cli.handshake(host, ca_bundle, .{
+        .cipher_suites = &tls.CipherSuite.tls13,
+        // .cipher_suites = &[_]tls.CipherSuite{
+        //     .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        //     .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        //     .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+        // },
         .stats = &stats,
         .auth = .{
             .certificates = client_certificates,
