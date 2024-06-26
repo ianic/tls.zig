@@ -58,12 +58,15 @@ pub const Options = struct {
         cipher_suite_tag: CipherSuite = @enumFromInt(0),
         named_group: tls.NamedGroup = @enumFromInt(0),
         signature_scheme: tls.SignatureScheme = @enumFromInt(0),
+        client_signature_scheme: tls.SignatureScheme = @enumFromInt(0),
 
-        pub fn update(stats: *Stats, h: anytype) void {
+        pub fn update(stats: *Stats, h: anytype, opt: Options) void {
             stats.tls_version = h.tls_version;
             stats.cipher_suite_tag = h.cipher_suite_tag;
             stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
             stats.signature_scheme = h.signature_scheme;
+            if (opt.auth) |a|
+                stats.client_signature_scheme = a.private_key.signature_scheme;
         }
     };
 };
@@ -524,9 +527,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
         /// Creates signature for client certificate signature message.
         /// Returns signature bytes and signature scheme.
-        inline fn createSignature13(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
-            const verify_bytes = h.transcript.clientVerifyBytes13(h.cipher_suite_tag);
-
+        inline fn createSignature(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
             switch (auth.private_key.signature_scheme) {
                 inline .ecdsa_secp256r1_sha256,
                 .ecdsa_secp384r1_sha384,
@@ -542,7 +543,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                     const secret_key = try Ecdsa.SecretKey.fromBytes(key[0..key_len].*);
                     const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
                     var signer = try key_pair.signer(null);
-                    signer.update(verify_bytes);
+                    h.setVerifyBytes(&signer);
                     const signature = try signer.finalize();
                     var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
                     return .{ signature.toDer(&buf), comptime_scheme };
@@ -552,29 +553,27 @@ pub fn Handshake(comptime RecordReaderT: type) type {
                 .rsa_pss_rsae_sha512,
                 => |comptime_scheme| {
                     const Hash = SchemeHash(comptime_scheme);
+                    var signer = try auth.private_key.key.rsa.signerOaep(Hash, null);
+                    h.setVerifyBytes(&signer);
                     var buf: [512]u8 = undefined;
-                    const signature = try auth.private_key.key.rsa.signOaep(Hash, verify_bytes, null, &buf);
+                    const signature = try signer.finalize(&buf);
                     return .{ signature.bytes, comptime_scheme };
                 },
                 else => return error.TlsUnknownSignatureScheme,
             }
         }
 
-        // ref: https://datatracker.ietf.org/doc/html/rfc5246.html#section-7.4.8
-        inline fn createSignature12(h: *HandshakeT, auth: Options.Auth) !struct { []const u8, tls.SignatureScheme } {
-            switch (auth.private_key.signature_scheme) {
-                inline .rsa_pss_rsae_sha256,
-                .rsa_pss_rsae_sha384,
-                .rsa_pss_rsae_sha512,
-                => |comptime_scheme| {
-                    const Hash = SchemeHash(comptime_scheme);
-                    var signer = try auth.private_key.key.rsa.signerOaep(Hash, null);
-                    signer.h = h.transcript.hash(Hash);
-                    var buf: [512]u8 = undefined;
-                    const signature = try signer.finalize(&buf);
-                    return .{ signature.bytes, comptime_scheme };
-                },
-                else => return error.TlsUnsupportedPrivateKeyAlgorithm,
+        fn setVerifyBytes(h: *HandshakeT, signer: anytype) void {
+            if (h.tls_version == .tls_1_2) {
+                // tls 1.2 signature uses current transcript hash value.
+                // ref: https://datatracker.ietf.org/doc/html/rfc5246.html#section-7.4.8
+                const Hash = @TypeOf(signer.h);
+                signer.h = h.transcript.hash(Hash);
+            } else {
+                // tls 1.3 signature is computed over concatenation of 64 spaces,
+                // context, separator and content.
+                // ref: https://datatracker.ietf.org/doc/html/rfc8446#section-4.4.3
+                signer.update(h.transcript.clientVerifyBytes13(h.cipher_suite_tag));
             }
         }
 
@@ -660,7 +659,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
 
             // client certificate verify message
             if (h.client_certificate_requested and auth != null) {
-                const signature, const signature_scheme = try h.createSignature12(auth.?);
+                const signature, const signature_scheme = try h.createSignature(auth.?);
 
                 const handshake_header = &consts.handshakeHeader(.certificate_verify, signature.len + 4) ++
                     consts.int2e(signature_scheme) ++
@@ -772,7 +771,7 @@ pub fn Handshake(comptime RecordReaderT: type) type {
         }
 
         fn clientCertificateVerify(h: *HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
-            const signature, const signature_scheme = try h.createSignature13(auth);
+            const signature, const signature_scheme = try h.createSignature(auth);
             var w = BufWriter{ .buf = buffer };
             // handshake header, signature scheme, signature len
             try w.write(&consts.handshakeHeader(.certificate_verify, signature.len + 4) ++

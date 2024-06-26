@@ -66,7 +66,7 @@ pub fn Client(comptime Stream: type) type {
             opt: Options,
         ) !void {
             var h = try c.initHandshake();
-            defer if (opt.stats) |stats| stats.update(&h);
+            defer if (opt.stats) |stats| stats.update(&h, opt);
 
             try c.send(try h.clientHello(host, opt));
             try h.serverFlight1(ca_bundle, host);

@@ -13,6 +13,9 @@ pub fn showStats(stats: *tls.Options.Stats, domain: []const u8) void {
             if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
         },
     );
+    if (@intFromEnum(stats.client_signature_scheme) != 0) {
+        std.debug.print("\t client signature scheme: {s}\n", .{@tagName(stats.client_signature_scheme)});
+    }
 }
 
 pub fn initCaBundle(gpa: std.mem.Allocator) !Certificate.Bundle {
