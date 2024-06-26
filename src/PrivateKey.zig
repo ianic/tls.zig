@@ -33,7 +33,6 @@ pub fn parsePem(gpa: Allocator, buf: []const u8) !PrivateKey {
     const decoded_size_upper_bound = encoded.len / 4 * 3;
     const decoded = try gpa.alloc(u8, decoded_size_upper_bound);
     defer gpa.free(decoded);
-    errdefer gpa.free(decoded);
     const n = try base64.decode(decoded, encoded);
 
     return try parseDer(decoded[0..n]);
@@ -64,16 +63,8 @@ pub fn parseDer(buf: []const u8) !PrivateKey {
             const public_key = try rsa.PublicKey.fromBytes(modulus, public_exponent);
             const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, private_exponent);
             const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
-            const modulus_len = rsa.byteLen(kp.public.modulus.bits());
-
-            const signature_scheme: tls.SignatureScheme = switch (modulus_len) {
-                256 => .rsa_pss_rsae_sha256,
-                384 => .rsa_pss_rsae_sha384,
-                512 => .rsa_pss_rsae_sha512,
-                else => return error.TlsPrivateKeyUnknownLength,
-            };
             return .{
-                .signature_scheme = signature_scheme,
+                .signature_scheme = .rsa_pss_rsae_sha256,
                 .key = .{ .rsa = kp },
             };
         },
