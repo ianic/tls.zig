@@ -2,12 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Certificate = std.crypto.Certificate;
 const der = Certificate.der;
-const KeyAlgo = Certificate.Parsed.PubKeyAlgo;
-const AlgorithmCategory = Certificate.AlgorithmCategory;
-const NamedCurve = Certificate.NamedCurve;
 const tls = std.crypto.tls;
 const rsa = @import("rsa/rsa.zig");
 const base64 = std.base64.standard.decoderWithIgnore(" \t\r\n");
+
 const max_ecdsa_key_len = 66;
 
 signature_scheme: tls.SignatureScheme,

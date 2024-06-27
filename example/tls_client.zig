@@ -3,11 +3,8 @@ const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 const cmn = @import("common.zig");
 
-// Create ca, server and client certificates:
-// $ cd example && ./cert.sh
-//
 // Start server from go_tls_server folder:
-// $ cd example/go_tls_server && go run server.go
+// $ cd example/go_tls_server && ./run_file_server.sh
 //
 // Then run this client:
 //   zig build example_tls_client
@@ -30,28 +27,12 @@ pub fn main() !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, port);
     defer tcp.close();
 
-    // Prepare client authentication
-    var client_certificates: Certificate.Bundle = .{};
-    try client_certificates.addCertsFromFilePath(gpa, dir, "client-rsa/cert.pem");
-    const file = try dir.openFile("client-rsa/key.pem", .{});
-    defer file.close();
-    const client_private_key = try tls.PrivateKey.fromFile(gpa, file);
-
     // Upgrade tcp connection to tls client
     var cli = tls.client(tcp);
     var stats: tls.Options.Stats = .{};
     try cli.handshake(host, ca_bundle, .{
         .cipher_suites = &tls.CipherSuite.tls13,
-        // .cipher_suites = &[_]tls.CipherSuite{
-        //     .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        //     .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-        //     .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
-        // },
         .stats = &stats,
-        .auth = .{
-            .certificates = client_certificates,
-            .private_key = client_private_key,
-        },
     });
 
     // Show response

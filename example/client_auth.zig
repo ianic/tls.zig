@@ -10,9 +10,9 @@ const cmn = @import("common.zig");
 // $ cd example/go_tls_server && go run server.go
 //
 // Then run this client:
-//   zig build example_tls_client
+//   zig build example_client_auth
 //   or
-//   zig build && zig-out/bin/tls_client
+//   zig build && zig-out/bin/client_auth
 //
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -27,11 +27,6 @@ pub fn main() !void {
     const host = "localhost";
     const port = 8443;
 
-    // const tls12_384 = [_]tls.CipherSuite{
-    //     .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-    //     .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-    //     //.ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
-    // };
     const client_keys = [_][]const u8{
         "client_ec",
         "client_rsa",
