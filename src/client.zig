@@ -22,11 +22,11 @@ pub fn client(stream: anytype) Client(@TypeOf(stream)) {
 
 /// Tls 1.2 and 1.3 client.
 ///
-/// Stream must have read/write functions, and ReaderError/WriteError error
+/// Stream must have read/writeAll functions, and ReaderError/WriteError error
 /// sets.
 pub fn Client(comptime Stream: type) type {
     const RecordReaderT = record.Reader(Stream);
-    const HandshakeT = Handshake(RecordReaderT);
+    const HandshakeT = Handshake(Stream);
     return struct {
         stream: Stream, // underlying stream
         rec_rdr: RecordReaderT, // reads tls record from underlying stream
@@ -41,55 +41,19 @@ pub fn Client(comptime Stream: type) type {
 
         const ClientT = @This();
 
-        fn initHandshake(c: *ClientT) !HandshakeT {
-            return try HandshakeT.init(&c.write_buf, &c.rec_rdr);
-        }
-
         /// Handshake upgrades stream to tls connection.
-        ///
-        /// tls 1.2 messages:
-        ///   client flight 1: client hello
-        ///   server flight 1: server hello, certificate, key exchange, hello done
-        ///   client flight 2: client key exchange, change cipher spec, handshake finished
-        ///   server flight 2: server change cipher spec, handshake finished
-        ///
-        /// tls 1.3 messages:
-        ///   client flight 1: client hello
-        ///   server flight 1: server hello
-        ///         encrypted: server change cipher spec, certificate, certificate verify, handshake finished
-        ///   client flight 2: client change cipher spec, handshake finished
-        ///
         pub fn handshake(
             c: *ClientT,
             host: []const u8,
             ca_bundle: ?Certificate.Bundle,
             opt: Options,
         ) !void {
-            var h = try c.initHandshake();
-            defer if (opt.stats) |stats| stats.update(&h, opt);
+            var h = try HandshakeT.init(&c.write_buf, &c.rec_rdr);
 
-            try c.send(try h.clientHello(host, opt));
-            try h.serverFlight1(ca_bundle, host);
-            if (h.tls_version == .tls_1_3) { // tls 1.3 specific handshake part
-                h.cipher = try Cipher.init13Handshake(h.cipher_suite_tag, try h.sharedKey(), &h.transcript);
-                try h.serverEncryptedFlight1(ca_bundle, host);
-                c.cipher = try Cipher.init13Application(h.cipher_suite_tag, &h.transcript);
-                try c.send(try h.clientFlight2Tls13(opt.auth));
-            } else { // tls 1.2 specific handshake part
-                try h.verifySignature12();
-                try h.generateKeyMaterial();
-                {
-                    h.cipher = try Cipher.init12(h.cipher_suite_tag, h.key_material, crypto.random);
-                    c.cipher = h.cipher;
-                    c.cipher_client_seq = 1;
-                }
-                try c.send(try h.clientFlight2Tls12(opt.auth));
-                { // parse server flight 2
-                    try h.serverChangeCipherSpec();
-                    // Read encrypted server handshake finished message.
-                    const content_type, const cleartext = try c.nextRecord() orelse return error.EndOfStream;
-                    try h.verifyServerHandshakeFinished(content_type, cleartext);
-                }
+            c.cipher = try h.handshake(c.stream, host, ca_bundle, opt);
+            if (h.tls_version == .tls_1_2) {
+                c.cipher_client_seq = 1;
+                c.cipher_server_seq = 1;
             }
         }
 
@@ -98,15 +62,7 @@ pub fn Client(comptime Stream: type) type {
             assert(bytes.len <= tls.max_cipertext_inner_record_len);
             const rec = try c.cipher.encrypt(&c.write_buf, c.cipher_client_seq, content_type, bytes);
             c.cipher_client_seq += 1;
-            try c.send(rec);
-        }
-
-        /// Writes buffer to the underlying stream.
-        fn send(c: *ClientT, buffer: []const u8) !void {
-            var n: usize = 0;
-            while (n < buffer.len) {
-                n += try c.stream.write(buffer[n..]);
-            }
+            try c.stream.writeAll(rec);
         }
 
         /// Returns next record of cleartext data.

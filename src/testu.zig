@@ -61,6 +61,13 @@ pub const Stream = struct {
         return try self.output.writer().write(buf);
     }
 
+    pub fn writeAll(self: *Stream, buffer: []const u8) !void {
+        var n: usize = 0;
+        while (n < buffer.len) {
+            n += try self.write(buffer[n..]);
+        }
+    }
+
     pub fn read(self: *Stream, buffer: []u8) !usize {
         return self.input.read(buffer);
     }
