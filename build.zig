@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
         "badssl",
         "std_top_sites",
         "all_ciphers",
+        "client_auth",
     };
     inline for (examples) |name| {
         const source_file = "example/" ++ name ++ ".zig";

@@ -8,7 +8,7 @@ const NamedCurve = Certificate.NamedCurve;
 const tls = std.crypto.tls;
 const rsa = @import("rsa/rsa.zig");
 const base64 = std.base64.standard.decoderWithIgnore(" \t\r\n");
-const max_ecdsa_key_len = 48;
+const max_ecdsa_key_len = 66;
 
 signature_scheme: tls.SignatureScheme,
 
@@ -19,25 +19,46 @@ key: union {
 
 const PrivateKey = @This();
 
+pub fn fromFile(gpa: Allocator, file: std.fs.File) !PrivateKey {
+    const buf = try file.readToEndAlloc(gpa, 1024 * 1024);
+    defer gpa.free(buf);
+    return try parsePem(gpa, buf);
+}
+
 pub fn parsePem(gpa: Allocator, buf: []const u8) !PrivateKey {
-    const begin_marker = "-----BEGIN PRIVATE KEY-----";
-    const end_marker = "-----END PRIVATE KEY-----";
-
-    const begin_marker_start = std.mem.indexOfPos(u8, buf, 0, begin_marker) orelse
-        return error.MissingEndMarker;
-    const key_start = begin_marker_start + begin_marker.len;
-    const key_end = std.mem.indexOfPos(u8, buf, key_start, end_marker) orelse
-        return error.MissingEndMarker;
-
+    const key_start, const key_end, const marker_version = try findKey(buf);
     const encoded = std.mem.trim(u8, buf[key_start..key_end], " \t\r\n");
     const decoded_size_upper_bound = encoded.len / 4 * 3;
     const decoded = try gpa.alloc(u8, decoded_size_upper_bound);
     defer gpa.free(decoded);
     const n = try base64.decode(decoded, encoded);
 
+    if (marker_version == 2) {
+        return try parseEcDer(decoded[0..n]);
+    }
     return try parseDer(decoded[0..n]);
 }
 
+fn findKey(buf: []const u8) !struct { usize, usize, usize } {
+    const markers = [_]struct {
+        begin: []const u8,
+        end: []const u8,
+    }{
+        .{ .begin = "-----BEGIN PRIVATE KEY-----", .end = "-----END PRIVATE KEY-----" },
+        .{ .begin = "-----BEGIN EC PRIVATE KEY-----", .end = "-----END EC PRIVATE KEY-----" },
+    };
+
+    for (markers, 1..) |marker, ver| {
+        const begin_marker_start = std.mem.indexOfPos(u8, buf, 0, marker.begin) orelse continue;
+        const key_start = begin_marker_start + marker.begin.len;
+        const key_end = std.mem.indexOfPos(u8, buf, key_start, marker.end) orelse continue;
+
+        return .{ key_start, key_end, ver };
+    }
+    return error.MissingEndMarker;
+}
+
+// ref: https://asn1js.eu/#MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBKFkVJCtU9FR6egz3yNxKBwXd86cFzMYqyGb8hRc1zVvLdw-So_2FBtITp6jzYmFShZANiAAQ-CH3a1R0V6dFlTK8Rs4M4egrpPtdta0osysO0Zl8mkBiDsTlvJNqeAp7L2ItHgFW8k_CfhgQT6iLDacNMhKC4XOV07r_ePD-mmkvqvRmzfOowHUoVRhCKrOTmF_J9Syc
 pub fn parseDer(buf: []const u8) !PrivateKey {
     const info_seq = try der.Element.parse(buf, 0);
     const version = try der.Element.parse(buf, info_seq.slice.start);
@@ -92,10 +113,31 @@ pub fn parseDer(buf: []const u8) !PrivateKey {
     }
 }
 
-pub fn fromFile(gpa: Allocator, file: std.fs.File) !PrivateKey {
-    const buf = try file.readToEndAlloc(gpa, 1024 * 1024);
-    defer gpa.free(buf);
-    return try parsePem(gpa, buf);
+// References:
+// https://asn1js.eu/#MHcCAQEEINJSRKv8kSKEzLHptfAlg-LGh4_pHHlq0XLf30Q9pcztoAoGCCqGSM49AwEHoUQDQgAEJpmLyp8aGCgyMcFIJaIq_-4V1K6nPpeoih3bT2npeplF9eyXj7rm8eW9Ua6VLhq71mqtMC-YLm-IkORBVq1cuA
+// https://www.rfc-editor.org/rfc/rfc5915
+pub fn parseEcDer(buf: []const u8) !PrivateKey {
+    const pki = try der.Element.parse(buf, 0);
+    const version = try der.Element.parse(buf, pki.slice.start);
+    const key = try der.Element.parse(buf, version.slice.end);
+    const parameters = try der.Element.parse(buf, key.slice.end);
+    const curve = try der.Element.parse(buf, parameters.slice.start);
+    const named_curve = try Certificate.parseNamedCurve(buf, curve);
+
+    const signature_scheme: tls.SignatureScheme = switch (named_curve) {
+        .X9_62_prime256v1 => .ecdsa_secp256r1_sha256,
+        .secp384r1 => .ecdsa_secp384r1_sha384,
+        .secp521r1 => .ecdsa_secp521r1_sha512,
+    };
+
+    const secret_key = buf[key.slice.start..key.slice.end];
+    var ecdsa_key: [max_ecdsa_key_len]u8 = undefined;
+    @memcpy(ecdsa_key[0..secret_key.len], secret_key);
+
+    return .{
+        .signature_scheme = signature_scheme,
+        .key = .{ .ecdsa = ecdsa_key },
+    };
 }
 
 const testing = std.testing;
@@ -103,19 +145,58 @@ const testu = @import("testu.zig");
 
 test "parse ec pem" {
     const gpa = testing.allocator;
-
     const data = @embedFile("testdata/ec_private_key.pem");
     var pk = try parsePem(gpa, data);
-    //defer pk.deinit(gpa);
-
     const priv_key = &testu.hexToBytes(
-        \\ 10 35 3d ca 1b 15 1d 06 aa 71 b8 ef f3 19 22 43
-        \\ 78 f3 20 98 1e b1 2f 2b 64 7e 71 d0 30 2a 90 aa
-        \\ e5 eb 99 c3 90 65 3d c1 26 19 be 3f 08 20 9b 01
+        \\ 10 35 3d ca 1b 15 1d 06 aa 71 b8 ef f3 19 22
+        \\ 43 78 f3 20 98 1e b1 2f 2b 64 7e 71 d0 30 2a
+        \\ 90 aa e5 eb 99 c3 90 65 3d c1 26 19 be 3f 08
+        \\ 20 9b 01
     );
-
-    try testing.expectEqualSlices(u8, priv_key, &pk.key.ecdsa);
+    try testing.expectEqualSlices(u8, priv_key, pk.key.ecdsa[0..priv_key.len]);
     try testing.expectEqual(.ecdsa_secp384r1_sha384, pk.signature_scheme);
+}
+
+test "parse ec prime256v1" {
+    const gpa = testing.allocator;
+    const data = @embedFile("testdata/ec_prime256v1_private_key.pem");
+    var pk = try parsePem(gpa, data);
+    const priv_key = &testu.hexToBytes(
+        \\ d2 52 44 ab fc 91 22 84 cc b1 e9 b5 f0 25 83
+        \\ e2 c6 87 8f e9 1c 79 6a d1 72 df df 44 3d a5
+        \\ cc ed
+    );
+    try testing.expectEqualSlices(u8, priv_key, pk.key.ecdsa[0..priv_key.len]);
+    try testing.expectEqual(.ecdsa_secp256r1_sha256, pk.signature_scheme);
+}
+
+test "parse ec secp384r1" {
+    const gpa = testing.allocator;
+    const data = @embedFile("testdata/ec_secp384r1_private_key.pem");
+    var pk = try parsePem(gpa, data);
+    const priv_key = &testu.hexToBytes(
+        \\ ee 6d 8a 5e 0d d3 b0 c6 4b 32 40 80 e2 3a de
+        \\ 8b 1e dd e2 92 db 36 1c db 91 ea ba a1 06 0d
+        \\ 42 2d d9 a9 dc 05 43 29 f1 78 7c f9 08 af c5
+        \\ 03 1f 6d
+    );
+    try testing.expectEqualSlices(u8, priv_key, pk.key.ecdsa[0..priv_key.len]);
+    try testing.expectEqual(.ecdsa_secp384r1_sha384, pk.signature_scheme);
+}
+
+test "parse ec secp521r1" {
+    const gpa = testing.allocator;
+    const data = @embedFile("testdata/ec_secp521r1_private_key.pem");
+    var pk = try parsePem(gpa, data);
+    const priv_key = &testu.hexToBytes(
+        \\ 01 f0 2f 5a c7 24 18 ea 68 23 8c 2e a1 b4 b8
+        \\ dc f2 11 b2 96 b0 ec 87 80 42 bf de ba f4 96
+        \\ 83 8f 9b db c6 60 a7 4c d9 60 3a e4 ba 0b df
+        \\ ae 24 d3 1b c2 6e 82 a0 88 c1 ed 17 20 0d 3a
+        \\ f1 c5 7e e8 0b 27
+    );
+    try testing.expectEqualSlices(u8, priv_key, pk.key.ecdsa[0..priv_key.len]);
+    try testing.expectEqual(.ecdsa_secp521r1_sha512, pk.signature_scheme);
 }
 
 test "parse rsa pem" {
