@@ -121,26 +121,14 @@ pub fn Client(comptime Stream: type) type {
         fn nextRecord(c: *ClientT) ReadError!?struct { tls.ContentType, []const u8 } {
             if (c.eof()) return null;
             while (true) {
-                const rec = (try c.rec_rdr.next()) orelse return null;
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-
-                const content_type, const cleartext = try c.cipher.decrypt(
-                    // Reuse reader buffer for cleartext. `rec.header` and
-                    // `rec.payload`(ciphertext) are also pointing somewhere in
-                    // this buffer. Decrypter is first reading then writing a
-                    // block, cleartext has less length then ciphertext,
-                    // cleartext starts from the beginning of the buffer, so
-                    // ciphertext is always ahead of cleartext.
-                    c.rec_rdr.buffer[0..c.rec_rdr.start],
-                    c.cipher_server_seq,
-                    rec,
-                );
+                const content_type, const cleartext = try c.rec_rdr.nextDecrypt(c.cipher, c.cipher_server_seq) orelse return null;
                 c.cipher_server_seq += 1;
 
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
                         const handshake_type: consts.HandshakeType = @enumFromInt(cleartext[0]);
+                        // skip new session ticket and read next record
                         if (handshake_type == .new_session_ticket)
                             continue;
                     },
@@ -150,6 +138,7 @@ pub fn Client(comptime Stream: type) type {
                         const desc: tls.AlertDescription = @enumFromInt(cleartext[1]);
                         _ = level;
                         try desc.toError();
+                        // server side clean shutdown
                         c.received_close_notify = true;
                         return null;
                     },
@@ -312,32 +301,4 @@ test "encrypt decrypt" {
         try testing.expectEqual(4, n);
         try testing.expectEqualStrings("pong", buffer[0..n]);
     }
-}
-
-test "handshake verify server finished message" {
-    var output_buf: [1024]u8 = undefined;
-    const stream = testu.Stream.init(&data12.server_handshake_finished_msgs, &output_buf);
-    var c = client(stream);
-    var h = try c.initHandshake();
-
-    h.cipher_suite_tag = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
-    h.master_secret = data12.master_secret;
-
-    // add handshake messages to the transcript
-    for (data12.handshake_messages) |msg| {
-        h.transcript.update(msg[tls.record_header_len..]);
-    }
-
-    // expect verify data
-    const client_finished = h.transcript.clientFinished(h.cipher_suite_tag, &h.master_secret);
-    try testing.expectEqualSlices(u8, &data12.client_finished, &client_finished);
-
-    // init client with prepared key_material
-    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random);
-
-    // check that server verify data matches calculates from hashes of all handshake messages
-    h.transcript.update(&data12.client_finished);
-    try h.serverChangeCipherSpec();
-    const content_type, const cleartext = try c.nextRecord() orelse return error.EndOfStream;
-    try h.verifyServerHandshakeFinished(content_type, cleartext);
 }
