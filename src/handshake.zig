@@ -188,10 +188,10 @@ pub fn Handshake(comptime Stream: type) type {
             //
             // Header will be written last because we need to know length of
             // payload and extensions when creating it. Payload has
-            // extensions lenght (u16) as last element.
+            // extensions length (u16) as last element.
             //
             var buffer = h.buffer;
-            const header_len = 9; // tls record header (5 bytes) and handsheke header (4 bytes)
+            const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
             const tls_versions = try CipherSuite.versions(opt.cipher_suites);
             // Payload writer, preserve header_len bytes for handshake header.
             var payload = BufWriter{ .buf = buffer[header_len..] };

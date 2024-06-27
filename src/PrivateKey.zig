@@ -22,16 +22,17 @@ const PrivateKey = @This();
 pub fn fromFile(gpa: Allocator, file: std.fs.File) !PrivateKey {
     const buf = try file.readToEndAlloc(gpa, 1024 * 1024);
     defer gpa.free(buf);
-    return try parsePem(gpa, buf);
+    return try parsePem(buf);
 }
 
-pub fn parsePem(gpa: Allocator, buf: []const u8) !PrivateKey {
+pub fn parsePem(buf: []const u8) !PrivateKey {
     const key_start, const key_end, const marker_version = try findKey(buf);
     const encoded = std.mem.trim(u8, buf[key_start..key_end], " \t\r\n");
-    const decoded_size_upper_bound = encoded.len / 4 * 3;
-    const decoded = try gpa.alloc(u8, decoded_size_upper_bound);
-    defer gpa.free(decoded);
-    const n = try base64.decode(decoded, encoded);
+
+    // required bytes:
+    // 2412, 1821, 1236 for rsa 4096, 3072, 2048 bits size keys
+    var decoded: [4096]u8 = undefined;
+    const n = try base64.decode(&decoded, encoded);
 
     if (marker_version == 2) {
         return try parseEcDer(decoded[0..n]);
@@ -60,53 +61,38 @@ fn findKey(buf: []const u8) !struct { usize, usize, usize } {
 
 // ref: https://asn1js.eu/#MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBKFkVJCtU9FR6egz3yNxKBwXd86cFzMYqyGb8hRc1zVvLdw-So_2FBtITp6jzYmFShZANiAAQ-CH3a1R0V6dFlTK8Rs4M4egrpPtdta0osysO0Zl8mkBiDsTlvJNqeAp7L2ItHgFW8k_CfhgQT6iLDacNMhKC4XOV07r_ePD-mmkvqvRmzfOowHUoVRhCKrOTmF_J9Syc
 pub fn parseDer(buf: []const u8) !PrivateKey {
-    const info_seq = try der.Element.parse(buf, 0);
-    const version = try der.Element.parse(buf, info_seq.slice.start);
+    const info = try der.Element.parse(buf, 0);
+    const version = try der.Element.parse(buf, info.slice.start);
 
     const algo_seq = try der.Element.parse(buf, version.slice.end);
     const algo_cat = try der.Element.parse(buf, algo_seq.slice.start);
-    const category = try Certificate.parseAlgorithmCategory(buf, algo_cat);
 
     const key_str = try der.Element.parse(buf, algo_seq.slice.end);
     const key_seq = try der.Element.parse(buf, key_str.slice.start);
     const key_int = try der.Element.parse(buf, key_seq.slice.start);
 
+    const category = try Certificate.parseAlgorithmCategory(buf, algo_cat);
     switch (category) {
         .rsaEncryption => {
-            const modulus_elem = try der.Element.parse(buf, key_int.slice.end);
-            const public_exponent_elem = try der.Element.parse(buf, modulus_elem.slice.end);
-            const private_exponent_elem = try der.Element.parse(buf, public_exponent_elem.slice.end);
+            const modulus = try der.Element.parse(buf, key_int.slice.end);
+            const public_exponent = try der.Element.parse(buf, modulus.slice.end);
+            const private_exponent = try der.Element.parse(buf, public_exponent.slice.end);
 
-            const modulus = buf[modulus_elem.slice.start..modulus_elem.slice.end];
-            const public_exponent = buf[public_exponent_elem.slice.start..public_exponent_elem.slice.end];
-            const private_exponent = buf[private_exponent_elem.slice.start..private_exponent_elem.slice.end];
-
-            const public_key = try rsa.PublicKey.fromBytes(modulus, public_exponent);
-            const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, private_exponent);
-            const kp = rsa.KeyPair{ .public = public_key, .secret = secret_key };
+            const public_key = try rsa.PublicKey.fromBytes(content(buf, modulus), content(buf, public_exponent));
+            const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, content(buf, private_exponent));
+            const key_pair = rsa.KeyPair{ .public = public_key, .secret = secret_key };
             return .{
                 .signature_scheme = .rsa_pss_rsae_sha256,
-                .key = .{ .rsa = kp },
+                .key = .{ .rsa = key_pair },
             };
         },
         .X9_62_id_ecPublicKey => {
             const key = try der.Element.parse(buf, key_int.slice.end);
             const algo_param = try der.Element.parse(buf, algo_cat.slice.end);
-            const secret_key = buf[key.slice.start..key.slice.end];
             const named_curve = try Certificate.parseNamedCurve(buf, algo_param);
-            const signature_scheme: tls.SignatureScheme = switch (named_curve) {
-                .secp384r1 => .ecdsa_secp384r1_sha384,
-                .X9_62_prime256v1 => .ecdsa_secp256r1_sha256,
-                else => return error.TlsUnknownSignatureScheme,
-            };
-
-            if (secret_key.len > max_ecdsa_key_len) return error.BufferOverflow;
-            var ecdsa_key: [max_ecdsa_key_len]u8 = undefined;
-            @memcpy(ecdsa_key[0..secret_key.len], secret_key);
-
             return .{
-                .signature_scheme = signature_scheme,
-                .key = .{ .ecdsa = ecdsa_key },
+                .signature_scheme = signatureScheme(named_curve),
+                .key = .{ .ecdsa = ecdsaKey(buf, key) },
             };
         },
         else => unreachable,
@@ -116,37 +102,44 @@ pub fn parseDer(buf: []const u8) !PrivateKey {
 // References:
 // https://asn1js.eu/#MHcCAQEEINJSRKv8kSKEzLHptfAlg-LGh4_pHHlq0XLf30Q9pcztoAoGCCqGSM49AwEHoUQDQgAEJpmLyp8aGCgyMcFIJaIq_-4V1K6nPpeoih3bT2npeplF9eyXj7rm8eW9Ua6VLhq71mqtMC-YLm-IkORBVq1cuA
 // https://www.rfc-editor.org/rfc/rfc5915
-pub fn parseEcDer(buf: []const u8) !PrivateKey {
-    const pki = try der.Element.parse(buf, 0);
-    const version = try der.Element.parse(buf, pki.slice.start);
-    const key = try der.Element.parse(buf, version.slice.end);
-    const parameters = try der.Element.parse(buf, key.slice.end);
-    const curve = try der.Element.parse(buf, parameters.slice.start);
-    const named_curve = try Certificate.parseNamedCurve(buf, curve);
+pub fn parseEcDer(bytes: []const u8) !PrivateKey {
+    const pki_msg = try der.Element.parse(bytes, 0);
+    const version = try der.Element.parse(bytes, pki_msg.slice.start);
+    const key = try der.Element.parse(bytes, version.slice.end);
+    const parameters = try der.Element.parse(bytes, key.slice.end);
+    const curve = try der.Element.parse(bytes, parameters.slice.start);
+    const named_curve = try Certificate.parseNamedCurve(bytes, curve);
+    return .{
+        .signature_scheme = signatureScheme(named_curve),
+        .key = .{ .ecdsa = ecdsaKey(bytes, key) },
+    };
+}
 
-    const signature_scheme: tls.SignatureScheme = switch (named_curve) {
+fn signatureScheme(named_curve: Certificate.NamedCurve) tls.SignatureScheme {
+    return switch (named_curve) {
         .X9_62_prime256v1 => .ecdsa_secp256r1_sha256,
         .secp384r1 => .ecdsa_secp384r1_sha384,
         .secp521r1 => .ecdsa_secp521r1_sha512,
     };
+}
 
-    const secret_key = buf[key.slice.start..key.slice.end];
+fn ecdsaKey(bytes: []const u8, e: der.Element) [max_ecdsa_key_len]u8 {
+    const data = content(bytes, e);
     var ecdsa_key: [max_ecdsa_key_len]u8 = undefined;
-    @memcpy(ecdsa_key[0..secret_key.len], secret_key);
+    @memcpy(ecdsa_key[0..data.len], data);
+    return ecdsa_key;
+}
 
-    return .{
-        .signature_scheme = signature_scheme,
-        .key = .{ .ecdsa = ecdsa_key },
-    };
+fn content(bytes: []const u8, e: der.Element) []const u8 {
+    return bytes[e.slice.start..e.slice.end];
 }
 
 const testing = std.testing;
 const testu = @import("testu.zig");
 
 test "parse ec pem" {
-    const gpa = testing.allocator;
     const data = @embedFile("testdata/ec_private_key.pem");
-    var pk = try parsePem(gpa, data);
+    var pk = try parsePem(data);
     const priv_key = &testu.hexToBytes(
         \\ 10 35 3d ca 1b 15 1d 06 aa 71 b8 ef f3 19 22
         \\ 43 78 f3 20 98 1e b1 2f 2b 64 7e 71 d0 30 2a
@@ -158,9 +151,8 @@ test "parse ec pem" {
 }
 
 test "parse ec prime256v1" {
-    const gpa = testing.allocator;
     const data = @embedFile("testdata/ec_prime256v1_private_key.pem");
-    var pk = try parsePem(gpa, data);
+    var pk = try parsePem(data);
     const priv_key = &testu.hexToBytes(
         \\ d2 52 44 ab fc 91 22 84 cc b1 e9 b5 f0 25 83
         \\ e2 c6 87 8f e9 1c 79 6a d1 72 df df 44 3d a5
@@ -171,9 +163,8 @@ test "parse ec prime256v1" {
 }
 
 test "parse ec secp384r1" {
-    const gpa = testing.allocator;
     const data = @embedFile("testdata/ec_secp384r1_private_key.pem");
-    var pk = try parsePem(gpa, data);
+    var pk = try parsePem(data);
     const priv_key = &testu.hexToBytes(
         \\ ee 6d 8a 5e 0d d3 b0 c6 4b 32 40 80 e2 3a de
         \\ 8b 1e dd e2 92 db 36 1c db 91 ea ba a1 06 0d
@@ -185,9 +176,8 @@ test "parse ec secp384r1" {
 }
 
 test "parse ec secp521r1" {
-    const gpa = testing.allocator;
     const data = @embedFile("testdata/ec_secp521r1_private_key.pem");
-    var pk = try parsePem(gpa, data);
+    var pk = try parsePem(data);
     const priv_key = &testu.hexToBytes(
         \\ 01 f0 2f 5a c7 24 18 ea 68 23 8c 2e a1 b4 b8
         \\ dc f2 11 b2 96 b0 ec 87 80 42 bf de ba f4 96
@@ -200,10 +190,8 @@ test "parse ec secp521r1" {
 }
 
 test "parse rsa pem" {
-    const gpa = testing.allocator;
-
     const data = @embedFile("testdata/rsa_private_key.pem");
-    const pk = try parsePem(gpa, data);
+    const pk = try parsePem(data);
 
     // expected results from:
     // $ openssl pkey -in testdata/rsa_private_key.pem -text -noout
