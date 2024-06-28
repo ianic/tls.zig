@@ -218,7 +218,7 @@ test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = testu.Stream.init(&(data12.server_pong ** 3), &output_buf);
     var c = client(stream);
-    c.cipher = try Cipher.init12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0));
+    c.cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0));
 
     c.stream.output.reset();
     { // encrypt verify data from example
