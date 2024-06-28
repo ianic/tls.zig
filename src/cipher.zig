@@ -122,24 +122,15 @@ pub const Cipher = union(CipherSuite) {
         }
     }
 
-    // tls 1.3 handshake cipher
-    pub fn init13Handshake(tag: CipherSuite, shared_key: []const u8, transcript: *Transcript) !Cipher {
-        return try init13(tag, transcript.handshakeSecret(tag, shared_key));
-    }
-
-    // tls 1.3 application cipher
-    pub fn init13Application(tag: CipherSuite, transcript: *Transcript) !Cipher {
-        return try init13(tag, transcript.applicationSecret(tag));
-    }
-
-    fn init13(tag: CipherSuite, secret: Transcript.Secret) !Cipher {
+    // tls 1.3 handshake or application cipher
+    pub fn init13(tag: CipherSuite, secret: Transcript.Secret) !Cipher {
         return switch (tag) {
             inline .AES_128_GCM_SHA256,
             .AES_256_GCM_SHA384,
             .CHACHA20_POLY1305_SHA256,
             .AEGIS_128L_SHA256,
             => |comptime_tag| {
-                const Hkdf = Transcript.Hkdf(comptime_tag);
+                const Hkdf = Transcript.Hkdf(comptime_tag.hash());
                 const T = CipherType(comptime_tag);
                 return @unionInit(Cipher, @tagName(comptime_tag), .{
                     .client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", T.key_len),

@@ -8,13 +8,26 @@ const Sha384 = crypto.hash.sha2.Sha384;
 
 const handsakeHeader = @import("handshake.zig").handshakeHeader;
 const CipherSuite = @import("cipher.zig").CipherSuite;
+const HashTag = CipherSuite.Hash;
 
+// Transcript holds transcript hash for both sha256 and sha384. Until the server
+// hello is parsed we don't know which hash will be used so we update both hashes.
+// Handshake process will set selected field once cipher suite is known.
+//
+// Most of the functions are inlined because they are returning pointers.
+//
 pub const Transcript = struct {
-    const Transcript256 = TranscriptT(Sha256);
-    const Transcript384 = TranscriptT(Sha384);
+    sha256: TT(.sha256) = .{ .hash = Sha256.init(.{}) },
+    sha384: TT(.sha384) = .{ .hash = Sha384.init(.{}) },
+    selected: HashTag = .sha256,
 
-    sha256: Transcript256 = .{ .hash = Sha256.init(.{}) },
-    sha384: Transcript384 = .{ .hash = Sha384.init(.{}) },
+    // Transcript Type from hash tag
+    fn TT(h: HashTag) type {
+        return switch (h) {
+            .sha256 => TranscriptT(Sha256),
+            .sha384 => TranscriptT(Sha384),
+        };
+    }
 
     pub fn update(t: *Transcript, buf: []const u8) void {
         t.sha256.hash.update(buf);
@@ -22,97 +35,68 @@ pub const Transcript = struct {
     }
 
     pub inline fn masterSecret(
-        cs: CipherSuite,
+        t: *Transcript,
         pre_master_secret: []const u8,
         client_random: [32]u8,
         server_random: [32]u8,
     ) []const u8 {
-        return switch (cs.hash()) {
-            .sha256 => &Transcript256.masterSecret(pre_master_secret, client_random, server_random),
-            .sha384 => &Transcript384.masterSecret(pre_master_secret, client_random, server_random),
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| brk: {
+                break :brk &TT(h).masterSecret(pre_master_secret, client_random, server_random);
+            },
         };
     }
 
     pub inline fn keyMaterial(
-        cs: CipherSuite,
+        t: *Transcript,
         master_secret: []const u8,
         client_random: [32]u8,
         server_random: [32]u8,
     ) []const u8 {
-        return switch (cs.hash()) {
-            .sha256 => &Transcript256.keyExpansion(master_secret, client_random, server_random),
-            .sha384 => &Transcript384.keyExpansion(master_secret, client_random, server_random),
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| &TT(h).keyExpansion(master_secret, client_random, server_random),
         };
     }
 
-    pub fn clientFinished(self: *Transcript, cs: CipherSuite, master_secret: []const u8) [16]u8 {
-        return switch (cs.hash()) {
-            .sha256 => self.sha256.clientFinished(master_secret),
-            .sha384 => self.sha384.clientFinished(master_secret),
+    pub fn Hkdf(ht: HashTag) type {
+        return switch (ht) {
+            inline .sha256, .sha384 => |h| TT(h).Hkdf,
         };
     }
 
-    pub fn serverFinished(self: *Transcript, cs: CipherSuite, master_secret: []const u8) [16]u8 {
-        return switch (cs.hash()) {
-            .sha256 => self.sha256.serverFinished(master_secret),
-            .sha384 => self.sha384.serverFinished(master_secret),
+    pub fn clientFinished(t: *Transcript, master_secret: []const u8) [16]u8 {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).clientFinished(master_secret),
         };
     }
 
-    pub inline fn verifyBytes13(self: *Transcript, cs: CipherSuite) []const u8 {
-        return switch (cs.hash()) {
-            .sha256 => &self.sha256.verifyBytes13(),
-            .sha384 => &self.sha384.verifyBytes13(),
+    pub fn serverFinished(t: *Transcript, master_secret: []const u8) [16]u8 {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).serverFinished(master_secret),
         };
     }
 
-    pub inline fn clientVerifyBytes13(self: *Transcript, cs: CipherSuite) []const u8 {
-        return switch (cs.hash()) {
-            .sha256 => &self.sha256.clientVerifyBytes13(),
-            .sha384 => &self.sha384.clientVerifyBytes13(),
+    pub inline fn verifyBytes13(t: *Transcript) []const u8 {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).verifyBytes13(),
         };
     }
 
-    pub inline fn serverFinished13(self: *Transcript, cs: CipherSuite) []const u8 {
-        return switch (cs.hash()) {
-            .sha256 => &self.sha256.serverFinished13(),
-            .sha384 => &self.sha384.serverFinished13(),
+    pub inline fn clientVerifyBytes13(t: *Transcript) []const u8 {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).clientVerifyBytes13(),
         };
     }
 
-    pub inline fn clientFinished13Msg(self: *Transcript, cs: CipherSuite) []const u8 {
-        return switch (cs.hash()) {
-            .sha256 => &self.sha256.clientFinished13Msg(),
-            .sha384 => &self.sha384.clientFinished13Msg(),
+    pub inline fn serverFinished13(t: *Transcript) []const u8 {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).serverFinished13(),
         };
     }
 
-    pub inline fn handshakeSecret(self: *Transcript, cs: CipherSuite, shared_key: []const u8) Secret {
-        return switch (cs.hash()) {
-            .sha384 => self.sha384.handshakeSecret(shared_key),
-            .sha256 => self.sha256.handshakeSecret(shared_key),
-        };
-    }
-
-    pub inline fn applicationSecret(self: *Transcript, cs: CipherSuite) Secret {
-        return switch (cs.hash()) {
-            .sha384 => self.sha384.applicationSecret(),
-            .sha256 => self.sha256.applicationSecret(),
-        };
-    }
-
-    pub inline fn hash(self: *Transcript, comptime Hash: type) Hash {
-        return switch (Hash) {
-            Sha256 => self.sha256.hash,
-            Sha384 => self.sha384.hash,
-            else => unreachable,
-        };
-    }
-
-    pub fn Hkdf(cs: CipherSuite) type {
-        return switch (cs.hash()) {
-            .sha384 => Transcript384.Hkdf,
-            .sha256 => Transcript256.Hkdf,
+    pub inline fn clientFinished13Msg(t: *Transcript) []const u8 {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).clientFinished13Msg(),
         };
     }
 
@@ -120,6 +104,26 @@ pub const Transcript = struct {
         client: []const u8,
         server: []const u8,
     };
+
+    pub inline fn handshakeSecret(t: *Transcript, shared_key: []const u8) Secret {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
+        };
+    }
+
+    pub inline fn applicationSecret(t: *Transcript) Secret {
+        return switch (t.selected) {
+            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).applicationSecret(),
+        };
+    }
+
+    pub inline fn hash(t: *Transcript, comptime Hash: type) Hash {
+        return switch (Hash) {
+            Sha256 => t.sha256.hash,
+            Sha384 => t.sha384.hash,
+            else => @compileError("unimplemented"),
+        };
+    }
 };
 
 fn TranscriptT(comptime HashType: type) type {
