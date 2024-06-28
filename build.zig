@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const tls_module = b.addModule("tls", .{
-        .root_source_file = b.path("src/client.zig"),
+        .root_source_file = b.path("src/main.zig"),
     });
 
     const examples = [_][]const u8{
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/client.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });

@@ -6,7 +6,7 @@ const Sha1 = crypto.hash.Sha1;
 const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 
-const consts = @import("consts.zig");
+const handsakeHeader = @import("handshake.zig").handshakeHeader;
 const CipherSuite = @import("cipher.zig").CipherSuite;
 
 pub const Transcript = struct {
@@ -204,7 +204,7 @@ fn TranscriptT(comptime HashType: type) type {
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return consts.handshake_finished_header ++ p1[0..12].*;
+            return handsakeHeader(.finished, 12) ++ p1[0..12].*;
         }
 
         fn serverFinished(self: *Self, master_secret: []const u8) [16]u8 {
@@ -213,7 +213,7 @@ fn TranscriptT(comptime HashType: type) type {
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return consts.handshake_finished_header ++ p1[0..12].*;
+            return handsakeHeader(.finished, 12) ++ p1[0..12].*;
         }
 
         // tls 1.3
@@ -259,8 +259,7 @@ fn TranscriptT(comptime HashType: type) type {
         // client finished message with header
         fn clientFinished13Msg(self: *Self) [4 + mac_length]u8 {
             var msg: [4 + mac_length]u8 = undefined;
-            // 4 bytes handshake header
-            msg[0..4].* = consts.int1e(consts.HandshakeType.finished) ++ tls.int3(@intCast(mac_length));
+            msg[0..4].* = handsakeHeader(.finished, mac_length);
             Hmac.create(msg[4..], &self.hash.peek(), &self.client_finished_key);
             return msg;
         }

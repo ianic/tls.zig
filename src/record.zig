@@ -194,8 +194,8 @@ pub const Decoder = struct {
 const testing = std.testing;
 const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
-const consts = @import("consts.zig");
 const CipherSuite = @import("cipher.zig").CipherSuite;
+const HandshakeType = @import("handshake.zig").HandshakeType;
 
 test Reader {
     var fbs = std.io.fixedBufferStream(&data12.server_responses);
@@ -227,7 +227,7 @@ test Decoder {
     var d = (try rdr.nextDecoder());
     try testing.expectEqual(.handshake, d.content_type);
 
-    try testing.expectEqual(.server_hello, try d.decode(consts.HandshakeType));
+    try testing.expectEqual(.server_hello, try d.decode(HandshakeType));
     try testing.expectEqual(45, try d.decode(u24)); // length
     try testing.expectEqual(.tls_1_2, try d.decode(tls.ProtocolVersion));
     try testing.expectEqualStrings(

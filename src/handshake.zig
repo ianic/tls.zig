@@ -13,7 +13,6 @@ const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
 const Sha512 = crypto.hash.sha2.Sha512;
 
-const consts = @import("consts.zig");
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
@@ -60,6 +59,45 @@ pub const Options = struct {
         signature_scheme: tls.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: tls.SignatureScheme = @enumFromInt(0),
     };
+};
+
+// tls.HandshakeType is missing server_key_exchange, server_hello_done
+pub const HandshakeType = enum(u8) {
+    client_hello = 1,
+    server_hello = 2,
+    new_session_ticket = 4,
+    end_of_early_data = 5,
+    encrypted_extensions = 8,
+    certificate = 11,
+    server_key_exchange = 12,
+    certificate_request = 13,
+    server_hello_done = 14,
+    certificate_verify = 15,
+    client_key_exchange = 16,
+    finished = 20,
+    key_update = 24,
+    message_hash = 254,
+    _,
+};
+
+pub fn handshakeRecordHeader(handshake_type: HandshakeType, payload_len: usize) [9]u8 {
+    return recordHeader(.handshake, 4 + payload_len) ++
+        handshakeHeader(handshake_type, payload_len);
+}
+
+pub fn handshakeHeader(handshake_type: HandshakeType, payload_len: usize) [4]u8 {
+    return [1]u8{@intFromEnum(handshake_type)} ++ tls.int3(@intCast(payload_len));
+}
+
+pub fn recordHeader(content_type: tls.ContentType, payload_len: usize) [5]u8 {
+    return [1]u8{@intFromEnum(content_type)} ++
+        tls.int2(@intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
+        tls.int2(@intCast(payload_len));
+}
+
+const CurveType = enum(u8) {
+    named_curve = 0x03,
+    _,
 };
 
 /// Handshake parses tls server message and creates client messages. Collects
@@ -183,6 +221,19 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Create client hello message.
         fn clientHello(h: *HandshakeT, host: []const u8, opt: Options) ![]const u8 {
+            const extension = struct {
+                pub const status_request = [_]u8{ 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00 };
+                pub const ec_point_formats = [_]u8{ 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00 };
+                pub const renegotiation_info = [_]u8{ 0xff, 0x01, 0x00, 0x01, 0x00 };
+                pub const sct = [_]u8{ 0x00, 0x12, 0x00, 0x00 };
+            };
+
+            const hello = struct {
+                pub const no_compression = [_]u8{ 0x01, 0x00 };
+                pub const no_session_id = [_]u8{0x00};
+                pub const protocol_version = tls.int2(@intFromEnum(tls.ProtocolVersion.tls_1_2));
+            };
+
             // Buffer will have this parts:
             // | header | payload | extensions |
             //
@@ -195,11 +246,11 @@ pub fn Handshake(comptime Stream: type) type {
             const tls_versions = try CipherSuite.versions(opt.cipher_suites);
             // Payload writer, preserve header_len bytes for handshake header.
             var payload = BufWriter{ .buf = buffer[header_len..] };
-            try payload.write(&consts.hello.protocol_version ++
+            try payload.write(&hello.protocol_version ++
                 h.client_random ++
-                consts.hello.no_session_id);
+                hello.no_session_id);
             try payload.writeEnumArray(CipherSuite, opt.cipher_suites);
-            try payload.write(&consts.hello.no_compression);
+            try payload.write(&hello.no_compression);
 
             // Extensions writer starts after payload and preserves 2 more
             // bytes for extension len in payload.
@@ -209,9 +260,9 @@ pub fn Handshake(comptime Stream: type) type {
                 .tls_1_3 => &[_]tls.ProtocolVersion{.tls_1_3},
                 .tls_1_2 => &[_]tls.ProtocolVersion{.tls_1_2},
             });
-            try ext.write(&consts.extension.ec_point_formats ++
-                consts.extension.renegotiation_info ++
-                consts.extension.sct);
+            try ext.write(&extension.ec_point_formats ++
+                extension.renegotiation_info ++
+                extension.sct);
             try ext.writeExtension(.signature_algorithms, &[_]tls.SignatureScheme{
                 .ecdsa_secp256r1_sha256,
                 .ecdsa_secp384r1_sha384,
@@ -241,7 +292,7 @@ pub fn Handshake(comptime Stream: type) type {
             // Extensions length at the end of the payload.
             try payload.writeInt(@as(u16, @intCast(ext.pos)));
             // Header at the start of the buffer.
-            buffer[0..header_len].* = consts.handshakeRecordHeader(.client_hello, payload.pos + ext.pos);
+            buffer[0..header_len].* = handshakeRecordHeader(.client_hello, payload.pos + ext.pos);
 
             const msg = buffer[0 .. header_len + payload.pos + ext.pos];
             h.transcript.update(msg[tls.record_header_len..]);
@@ -253,7 +304,7 @@ pub fn Handshake(comptime Stream: type) type {
             if (try d.decode(tls.ProtocolVersion) != tls.ProtocolVersion.tls_1_2)
                 return error.TlsBadVersion;
             h.server_random = (try d.array(32)).*;
-            if (consts.isServerHelloRetryRequest(&h.server_random))
+            if (isServerHelloRetryRequest(&h.server_random))
                 return error.TlsServerHelloRetryRequest;
 
             const session_id_len = try d.decode(u8);
@@ -292,6 +343,16 @@ pub fn Handshake(comptime Stream: type) type {
                     }
                 }
             }
+        }
+
+        fn isServerHelloRetryRequest(server_random: []const u8) bool {
+            // HelloRetryRequest message uses the same structure as the ServerHello, but
+            // with Random set to the special value of the SHA-256 of "HelloRetryRequest"
+            // Ref: https://datatracker.ietf.org/doc/html/rfc8446#section-4.1.3
+            const hello_retry_request_magic = testu.hexToBytes(
+                \\ CF 21 AD 74 E5 9A 61 11 BE 1D 8C 02 1E 65 B8 91 C2 A2 11 16 7A BB 8C 5E 07 9E 09 E2 C8 A8 33 9C
+            );
+            return std.mem.eql(u8, server_random, &hello_retry_request_magic);
         }
 
         /// Parse server certificate message.
@@ -345,7 +406,7 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Parse server key exchange message.
         fn serverKeyExchange(h: *HandshakeT, d: *record.Decoder) !void {
-            const curve_type = try d.decode(consts.CurveType);
+            const curve_type = try d.decode(CurveType);
             h.named_group = try d.decode(tls.NamedGroup);
             h.server_pub_key = try dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
             h.signature_scheme = try d.decode(tls.SignatureScheme);
@@ -358,7 +419,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// return. For tls 1.2 continue and read certificate, key_exchange
         /// and hello done messages.
         fn serverFlight1(h: *HandshakeT, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
-            var handshake_state = consts.HandshakeType.server_hello;
+            var handshake_state = HandshakeType.server_hello;
 
             while (true) {
                 var d = try h.rec_rdr.nextDecoder();
@@ -368,7 +429,7 @@ pub fn Handshake(comptime Stream: type) type {
 
                 // Multiple handshake messages can be packed in single tls record.
                 while (!d.eof()) {
-                    const handshake_type = try d.decode(consts.HandshakeType);
+                    const handshake_type = try d.decode(HandshakeType);
                     if (handshake_state == .certificate_request and handshake_type == .server_hello_done)
                         handshake_state = .server_hello_done; // certificate request is optional
                     if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
@@ -424,7 +485,7 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
-            var handshake_state: tls.HandshakeType = .encrypted_extensions;
+            var handshake_state: HandshakeType = .encrypted_extensions;
 
             outer: while (true) {
                 // wrapped record decoder
@@ -448,7 +509,7 @@ pub fn Handshake(comptime Stream: type) type {
                         var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
                         while (!d.eof()) {
                             const start_idx = d.idx;
-                            const handshake_type = try d.decode(tls.HandshakeType);
+                            const handshake_type = try d.decode(HandshakeType);
                             const length = try d.decode(u24);
 
                             // std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
@@ -513,7 +574,7 @@ pub fn Handshake(comptime Stream: type) type {
                 var w = BufWriter{ .buf = h.buffer };
                 try w.write(&h.client_random);
                 try w.write(&h.server_random);
-                try w.writeEnum(consts.CurveType.named_curve);
+                try w.writeEnum(CurveType.named_curve);
                 try w.writeEnum(h.named_group.?);
                 try w.writeInt(@as(u8, @intCast(h.server_pub_key.len)));
                 try w.write(h.server_pub_key);
@@ -687,7 +748,7 @@ pub fn Handshake(comptime Stream: type) type {
                     try w.updateRecordHeaderLen(len_pos, client_certificate.len);
                     h.transcript.update(client_certificate);
                 } else {
-                    const empty_certificate = &consts.handshakeRecordHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
+                    const empty_certificate = &handshakeRecordHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
                     try w.write(empty_certificate);
                     h.transcript.update(empty_certificate[tls.record_header_len..]);
                 }
@@ -701,11 +762,11 @@ pub fn Handshake(comptime Stream: type) type {
                     try h.rsa_secret.encrypted(h.cert_pub_key_algo, h.cert_pub_key);
 
                 const header = if (h.named_group != null)
-                    &consts.handshakeRecordHeader(.client_key_exchange, 1 + key.len) ++
-                        consts.int1(@intCast(key.len))
+                    &handshakeRecordHeader(.client_key_exchange, 1 + key.len) ++
+                        [1]u8{@intCast(key.len)}
                 else
-                    &consts.handshakeRecordHeader(.client_key_exchange, 2 + key.len) ++
-                        consts.int2(@intCast(key.len));
+                    &handshakeRecordHeader(.client_key_exchange, 2 + key.len) ++
+                        tls.int2(@intCast(key.len));
 
                 try w.write(header);
                 try w.write(key);
@@ -718,9 +779,9 @@ pub fn Handshake(comptime Stream: type) type {
             if (h.client_certificate_requested and auth != null) {
                 const signature, const signature_scheme = try h.createSignature(auth.?);
 
-                const handshake_header = &consts.handshakeHeader(.certificate_verify, signature.len + 4) ++
-                    consts.int2e(signature_scheme) ++
-                    consts.int2(@intCast(signature.len));
+                const handshake_header = &handshakeHeader(.certificate_verify, signature.len + 4) ++
+                    tls.int2(@intFromEnum(signature_scheme)) ++
+                    tls.int2(@intCast(signature.len));
 
                 _ = try w.writeRecordHeader(.handshake, handshake_header.len + signature.len);
                 try w.write(handshake_header);
@@ -732,7 +793,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             // client change cipher spec message
             {
-                const change_cipher_spec = consts.recordHeader(.change_cipher_spec, 1) ++ consts.int1(1);
+                const change_cipher_spec = recordHeader(.change_cipher_spec, 1) ++ [_]u8{1};
                 try w.write(&change_cipher_spec);
             }
 
@@ -773,7 +834,7 @@ pub fn Handshake(comptime Stream: type) type {
         fn clientFlight2Tls13(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
             // change cipher spec
-            try w.write(&consts.recordHeader(.change_cipher_spec, 1) ++ [_]u8{1});
+            try w.write(&recordHeader(.change_cipher_spec, 1) ++ [_]u8{1});
 
             if (h.client_certificate_requested) {
                 if (auth) |a| { // client certificate and client certificate verify
@@ -782,7 +843,7 @@ pub fn Handshake(comptime Stream: type) type {
                     try h.encryptHandshake(&w, try h.clientCertificateVerify(&buffer, a));
                 } else {
                     // empty certificate message and no certificate verify message
-                    const empty_certificate = &consts.handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 };
+                    const empty_certificate = &handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 };
                     try h.encryptHandshake(&w, empty_certificate);
                 }
             }
@@ -807,11 +868,11 @@ pub fn Handshake(comptime Stream: type) type {
             var certs_len = certs.len + 3 * certs_count;
             if (tls_1_3) {
                 certs_len += 2 * certs_count;
-                try w.write(&consts.handshakeHeader(.certificate, certs_len + 4) ++
-                    [_]u8{0} ++ consts.int3(@intCast(certs_len)));
+                try w.write(&handshakeHeader(.certificate, certs_len + 4) ++
+                    [_]u8{0} ++ tls.int3(@intCast(certs_len)));
             } else {
-                try w.write(&consts.handshakeHeader(.certificate, certs_len + 3) ++
-                    consts.int3(@intCast(certs_len)));
+                try w.write(&handshakeHeader(.certificate, certs_len + 3) ++
+                    tls.int3(@intCast(certs_len)));
             }
 
             // write each certificate
@@ -819,7 +880,7 @@ pub fn Handshake(comptime Stream: type) type {
             while (index < certs.len) {
                 const e = try Certificate.der.Element.parse(certs, index);
                 const cert = certs[index..e.slice.end];
-                try w.write(&consts.int3(@intCast(cert.len))); // certificate length
+                try w.write(&tls.int3(@intCast(cert.len))); // certificate length
                 try w.write(cert); // certificate
                 if (tls_1_3) try w.write(&[_]u8{ 0, 0 }); // extensions length
                 index = e.slice.end;
@@ -831,9 +892,9 @@ pub fn Handshake(comptime Stream: type) type {
             const signature, const signature_scheme = try h.createSignature(auth);
             var w = BufWriter{ .buf = buffer };
             // handshake header, signature scheme, signature len
-            try w.write(&consts.handshakeHeader(.certificate_verify, signature.len + 4) ++
-                consts.int2e(signature_scheme) ++
-                consts.int2(@intCast(signature.len)));
+            try w.write(&handshakeHeader(.certificate_verify, signature.len + 4) ++
+                tls.int2(@intFromEnum(signature_scheme)) ++
+                tls.int2(@intCast(signature.len)));
             try w.write(signature);
             return w.getWritten();
         }
@@ -923,7 +984,7 @@ const RsaSecret = struct {
     secret: [48]u8,
 
     fn init(rand: [46]u8) RsaSecret {
-        return .{ .secret = consts.hello.protocol_version ++ rand };
+        return .{ .secret = [_]u8{ 0x03, 0x03 } ++ rand };
     }
 
     // Pre master secret encrypted with certificate public key.
@@ -978,7 +1039,7 @@ const BufWriter = struct {
 
     // Returns position of record len bytes.
     pub fn writeRecordHeader(self: *BufWriter, content_type: tls.ContentType, payload_len: usize) !usize {
-        try self.write(&consts.recordHeader(content_type, payload_len));
+        try self.write(&recordHeader(content_type, payload_len));
         return self.pos - 2;
     }
 
@@ -1044,17 +1105,27 @@ const BufWriter = struct {
     }
 
     pub fn writeServerName(self: *BufWriter, host: []const u8) !void {
-        try self.write(&consts.serverNameExtensionHeader(@intCast(host.len)));
+        try self.write(&serverNameExtensionHeader(@intCast(host.len)));
         try self.write(host);
     }
 };
+
+fn serverNameExtensionHeader(host_len: u16) [9]u8 {
+    const int2 = tls.int2;
+
+    return int2(@intFromEnum(tls.ExtensionType.server_name)) ++
+        int2(host_len + 5) ++ // byte length of this extension payload
+        int2(host_len + 3) ++ // server_name_list byte count
+        [1]u8{0x00} ++ // name_type
+        int2(host_len);
+}
 
 test "BufWriter" {
     var buf: [16]u8 = undefined;
     var w = BufWriter{ .buf = &buf };
 
     try w.write("ab");
-    try w.writeEnum(consts.CurveType.named_curve);
+    try w.writeEnum(CurveType.named_curve);
     try w.writeEnum(tls.NamedGroup.x25519);
     try w.writeInt(@as(u16, 0x1234));
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
@@ -1121,7 +1192,7 @@ test "parse tls 1.3 server hello" {
     var rec_rdr = testReader(&data13.server_hello);
     var d = (try rec_rdr.nextDecoder());
 
-    const handshake_type = try d.decode(consts.HandshakeType);
+    const handshake_type = try d.decode(HandshakeType);
     const length = try d.decode(u24);
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);

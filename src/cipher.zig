@@ -9,7 +9,7 @@ const Sha384 = crypto.hash.sha2.Sha384;
 
 const Record = @import("record.zig").Record;
 const Transcript = @import("transcript.zig").Transcript;
-const recordHeader = @import("consts.zig").recordHeader;
+const recordHeader = @import("handshake.zig").recordHeader;
 
 // tls 1.2 cbc cipher types
 const CbcAes128Sha1 = CbcType(crypto.core.aes.Aes128, Sha1);
