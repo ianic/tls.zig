@@ -1,9 +1,20 @@
+// This file is originally copied from: https://github.com/jedisct1/zig-cbc.
+//
+// It is modified then to have TLS padding insead of PKCS#7 padding.
+// Reference:
+// https://datatracker.ietf.org/doc/html/rfc5246/#section-6.2.3.2
+// https://crypto.stackexchange.com/questions/98917/on-the-correctness-of-the-padding-example-of-rfc-5246
+//
+// If required padding i n bytes
+//   PKCS#7 padding is (n...n)
+//   TLS    padding is (n-1...n-1)   - n times of n-1 value
+//
 const std = @import("std");
 const aes = std.crypto.core.aes;
 const mem = std.mem;
 const debug = std.debug;
 
-/// CBC mode with PKCS#7 padding.
+/// CBC mode with TLS 1.2 padding
 ///
 /// Important: the counter mode doesn't provide authenticated encryption: the ciphertext can be trivially modified without this being detected.
 /// If you need authenticated encryption, use anything from `std.crypto.aead` instead.
@@ -50,7 +61,7 @@ pub fn CBC(comptime BlockCipher: anytype) type {
             }
             // Last block
             var in = [_]u8{0} ** block_length;
-            const padding_length: u8 = @intCast(padded_length - src.len);
+            const padding_length: u8 = @intCast(padded_length - src.len - 1);
             @memset(&in, padding_length);
             @memcpy(in[0 .. src.len - i], src[i..]);
             for (cv[0..], in) |*x, y| x.* ^= y;
@@ -63,8 +74,7 @@ pub fn CBC(comptime BlockCipher: anytype) type {
         /// IV must be secret, unpredictable and match the one used for encryption.
         pub fn decrypt(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
             const block_length = DecryptCtx.block_length;
-            const padded_length = paddedLength(dst.len);
-            if (src.len != padded_length) {
+            if (src.len != dst.len) {
                 return error.EncodingError;
             }
             debug.assert(src.len % block_length == 0);
@@ -96,7 +106,7 @@ test "CBC mode" {
     const key = [_]u8{ 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
     const iv = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
     const src_ = "This is a test of AES-CBC that goes on longer than a couple blocks. It is a somewhat long test case to type out!";
-    const expected = [_]u8{ 32, 252, 200, 238, 32, 28, 17, 125, 123, 151, 155, 190, 31, 191, 253, 139, 24, 221, 222, 242, 8, 19, 219, 65, 255, 8, 14, 245, 190, 73, 192, 187 };
+    const expected = "\xA0\x8C\x09\x7D\xFF\x42\xB6\x65\x4D\x4B\xC6\x90\x90\x39\xDE\x3D\xC7\xCA\xEB\xF6\x9A\x4F\x09\x97\xC9\x32\xAB\x75\x88\xB7\x57\x17";
     var res: [32]u8 = undefined;
 
     try comptime std.testing.expect(src_.len / M.paddedLength(1) >= 3); // Ensure that we have at least 3 blocks
@@ -108,16 +118,18 @@ test "CBC mode" {
     inline for (0..src_.len) |len| {
         const src = src_[0..len];
         var dst = [_]u8{0} ** M.paddedLength(src.len);
+
         z.encrypt(&dst, src, iv);
         h.update(&dst);
 
-        var decrypted = [_]u8{0} ** src.len;
+        var decrypted = [_]u8{0} ** dst.len;
         try z.decrypt(&decrypted, &dst, iv);
 
-        try std.testing.expectEqualSlices(u8, src, &decrypted);
+        const padding = decrypted[decrypted.len - 1] + 1;
+        try std.testing.expectEqualSlices(u8, src, decrypted[0 .. decrypted.len - padding]);
     }
     h.final(&res);
-    try std.testing.expectEqualSlices(u8, &expected, &res);
+    try std.testing.expectEqualSlices(u8, expected, &res);
 
     // Test encryption and decryption with the same buffer
     h = std.crypto.hash.sha2.Sha256.init(.{});
@@ -127,10 +139,10 @@ test "CBC mode" {
         z.encrypt(&buf, buf[0..len], iv);
         h.update(&buf);
 
-        try z.decrypt(buf[0..len], &buf, iv);
+        try z.decrypt(&buf, &buf, iv);
 
         try std.testing.expectEqualSlices(u8, src_[0..len], buf[0..len]);
     }
     h.final(&res);
-    try std.testing.expectEqualSlices(u8, &expected, &res);
+    try std.testing.expectEqualSlices(u8, expected, &res);
 }
