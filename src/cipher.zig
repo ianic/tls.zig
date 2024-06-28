@@ -10,14 +10,12 @@ const Sha384 = crypto.hash.sha2.Sha384;
 const Record = @import("record.zig").Record;
 const Transcript = @import("transcript.zig").Transcript;
 const recordHeader = @import("consts.zig").recordHeader;
-const Aes128Cbc = @import("cbc.zig").Aes128Cbc;
-const Aes256Cbc = @import("cbc.zig").Aes256Cbc;
 
 // tls 1.2 cbc cipher types
-const CbcAes128Sha1 = CbcType(Aes128Cbc, Sha1);
-const CbcAes128Sha256 = CbcType(Aes128Cbc, Sha256);
-const CbcAes256Sha256 = CbcType(Aes256Cbc, Sha256);
-const CbcAes256Sha384 = CbcType(Aes256Cbc, Sha384);
+const CbcAes128Sha1 = CbcType(crypto.core.aes.Aes128, Sha1);
+const CbcAes128Sha256 = CbcType(crypto.core.aes.Aes128, Sha256);
+const CbcAes256Sha256 = CbcType(crypto.core.aes.Aes256, Sha256);
+const CbcAes256Sha384 = CbcType(crypto.core.aes.Aes256, Sha384);
 // tls 1.2 gcm cipher types
 const Aead12Aes128Gcm = Aead12Type(crypto.aead.aes_gcm.Aes128Gcm);
 const Aead12Aes256Gcm = Aead12Type(crypto.aead.aes_gcm.Aes256Gcm);
@@ -419,11 +417,12 @@ fn Aead13Type(comptime AeadType: type) type {
     };
 }
 
-fn CbcType(comptime CBC: type, comptime HashType: type) type {
+fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
+    const CBC = @import("cbc/main.zig").CBC(BlockCipher);
     return struct {
         const mac_len = HashType.digest_length; // 20, 32, 48 bytes for sha1, sha256, sha384
-        const key_len = CBC.key_length; // 16 bytes
-        const iv_len = CBC.nonce_length; // 16 bytes
+        const key_len = BlockCipher.key_bits / 8; // 16, 32 for Aes128, Aes256
+        const iv_len = 16;
 
         pub const Hmac = crypto.auth.hmac.Hmac(HashType);
         const paddedLength = CBC.paddedLength;
@@ -484,28 +483,26 @@ fn CbcType(comptime CBC: type, comptime HashType: type) type {
                 Hmac.create(mac, mac_msg, &self.client_secret);
             }
 
-            // ...         | cleartext | mac | ...
+            // ...         | cleartext | mac |  ...
+            // ...         | -- plaintext ---   ...
             // ...         | cleartext | mac | padding
-            // ...         | ------- plaintext -------
-            const plaintext = brk: { // add padding
-                const unpadded_len = cleartext.len + mac_len;
-                const padded_len = paddedLength(unpadded_len);
-                const plaintext = buf[cleartext_idx..][0..padded_len];
-                const padding_byte: u8 = @intCast(padded_len - unpadded_len - 1);
-                @memset(plaintext[unpadded_len..padded_len], padding_byte);
-                break :brk plaintext;
-            };
+            // ...         | ------ ciphertext -------
+            const unpadded_len = cleartext.len + mac_len;
+            const padded_len = paddedLength(unpadded_len);
+            const plaintext = buf[cleartext_idx..][0..unpadded_len];
+            const ciphertext = buf[cleartext_idx..][0..padded_len];
 
-            // header | iv | ------- plaintext -------
-            buf[0..tls.record_header_len].* = recordHeader(content_type, iv_len + plaintext.len);
+            // Add header and iv at the buf start
+            // header | iv | ...
+            buf[0..tls.record_header_len].* = recordHeader(content_type, iv_len + ciphertext.len);
             const iv = buf[tls.record_header_len..][0..iv_len];
             self.rnd.bytes(iv);
 
             // encrypt plaintext into ciphertext
-            CBC.init(self.client_key).encrypt(plaintext, plaintext, iv[0..iv_len].*);
+            CBC.init(self.client_key).encrypt(ciphertext, plaintext, iv[0..iv_len].*);
 
             // header | iv | ------ ciphertext -------
-            return buf[0 .. tls.record_header_len + iv_len + plaintext.len];
+            return buf[0 .. tls.record_header_len + iv_len + ciphertext.len];
         }
 
         /// Decrypts payload into cleartext. Returns tls record content type and
