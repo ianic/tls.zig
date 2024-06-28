@@ -474,7 +474,7 @@ fn CbcType(comptime CBC: type, comptime HashType: type) type {
             const cleartext_idx = tls.record_header_len + iv_len; // position of cleartext in buf
             @memcpy(buf[cleartext_idx..][0..cleartext.len], cleartext);
 
-            { // calculate mac from (ad + cleatext)
+            { // calculate mac from (ad + cleartext)
                 // ...     | ad | cleartext | mac | ...
                 //         | -- mac msg --  | mac |
                 const ad = additionalData(seq, content_type, cleartext.len);
