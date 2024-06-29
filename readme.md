@@ -265,6 +265,12 @@ Tests are created using examples from [The Illustrated TLS 1.2 Connection](https
 Client uses two 16K buffers. One in record reader and another for writing output messages. When created over std.net.Stream it statically allocates 33544 bytes.
 
 
+# Credits
+
+ * @jedisct1 for [zig-cbc](https://github.com/jedisct1/zig-cbc) library. Copied to [src/cbc](/src/cbc) with padding changed from pkcs to tls.
+ * @clickingbuttons for rsa package. Copied to [src/rsa](/src/rsa) from [branch](
+https://github.com/clickingbuttons/zig/blob/f1cea91624fd2deae28bfb2414a4fd9c7e246883/lib/std/crypto/rsa.zig) of this [PR](
+https://github.com/ziglang/zig/pull/19771)
 
 
 <!--
