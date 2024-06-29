@@ -470,10 +470,9 @@ pub fn PKCS1v1_5(comptime Hash: type) type {
 
 /// Probabilistic Signature Scheme (RSASSA-PSS)
 pub fn Pss(comptime Hash: type) type {
+    // RFC 4055 S3.1
+    const default_salt_len = Hash.digest_length;
     return struct {
-        // RFC 4055 S3.1
-        pub const default_salt_len = 32;
-
         pub const Signature = struct {
             bytes: []const u8,
 
