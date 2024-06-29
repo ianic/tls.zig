@@ -216,10 +216,7 @@ pub fn Handshake(comptime Stream: type) type {
             try w.writeAll(try h.clientFlight2Tls12(opt.auth));
 
             // Parse server flight 2
-            try h.serverChangeCipherSpec();
-            // Read encrypted server handshake finished message.
-            const content_type, const cleartext = try h.rec_rdr.nextDecrypt(h.cipher, 0) orelse return error.EndOfStream;
-            try h.verifyServerHandshakeFinished(content_type, cleartext);
+            try h.serverFlight2Tls12();
 
             return h.cipher;
         }
@@ -824,19 +821,22 @@ pub fn Handshake(comptime Stream: type) type {
             return w.getWritten();
         }
 
-        /// Read server change cipher spec message.
-        fn serverChangeCipherSpec(h: *HandshakeT) !void {
-            var d = try h.rec_rdr.nextDecoder();
-            try d.expectContentType(.change_cipher_spec);
-        }
+        fn serverFlight2Tls12(h: *HandshakeT) !void {
+            // Read server change cipher spec message.
+            {
+                var d = try h.rec_rdr.nextDecoder();
+                try d.expectContentType(.change_cipher_spec);
+            }
+            // Read encrypted server handshake finished message. Verify that
+            // content of the server finished message is based on transcript
+            // hash and master secret.
+            {
+                const content_type, const server_finished = try h.rec_rdr.nextDecrypt(h.cipher, 0) orelse return error.EndOfStream;
 
-        /// Verify that body of server handshake finished is built from a
-        /// hash of all handshake messages.
-        fn verifyServerHandshakeFinished(h: *HandshakeT, content_type: tls.ContentType, cleartext: []const u8) !void {
-            if (content_type != .handshake) return error.TlsUnexpectedMessage;
-            const expected_server_finished = h.transcript.serverFinishedTls12(&h.master_secret);
-            if (!mem.eql(u8, cleartext, &expected_server_finished))
-                return error.TlsBadRecordMac;
+                if (content_type != .handshake) return error.TlsUnexpectedMessage;
+                const expected_server_finished = h.transcript.serverFinishedTls12(&h.master_secret);
+                if (!mem.eql(u8, server_finished, &expected_server_finished)) return error.TlsBadRecordMac;
+            }
         }
 
         // Create client change cipher spec and handshake finished messages for
@@ -1369,9 +1369,5 @@ test "handshake verify server finished message" {
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&data12.client_finished);
-    try h.serverChangeCipherSpec();
-
-    const rec = (try rec_rdr.next()).?;
-    const content_type, const cleartext = try h.cipher.decrypt(rec_rdr.buffer[0..rec_rdr.start], 0, rec);
-    try h.verifyServerHandshakeFinished(content_type, cleartext);
+    try h.serverFlight2Tls12();
 }
