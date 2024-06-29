@@ -24,19 +24,24 @@ const HashTag = CipherSuite.HashTag;
 // Most of the functions are inlined because they are returning pointers.
 //
 pub const Transcript = struct {
-    sha256: TT(.sha256) = .{ .hash = Sha256.init(.{}) },
-    sha384: TT(.sha384) = .{ .hash = Sha384.init(.{}) },
-    sha512: TT(.sha512) = .{ .hash = Sha512.init(.{}) },
+    sha256: Type(.sha256) = .{ .hash = Sha256.init(.{}) },
+    sha384: Type(.sha384) = .{ .hash = Sha384.init(.{}) },
+    sha512: Type(.sha512) = .{ .hash = Sha512.init(.{}) },
 
-    selected: HashTag = .sha256,
+    tag: HashTag = .sha256,
 
     // Transcript Type from hash tag
-    fn TT(h: HashTag) type {
+    fn Type(h: HashTag) type {
         return switch (h) {
             .sha256 => TranscriptT(Sha256),
             .sha384 => TranscriptT(Sha384),
             .sha512 => TranscriptT(Sha512),
         };
+    }
+
+    /// Set hash to use in all following function calls.
+    pub fn set(t: *Transcript, tag: HashTag) void {
+        t.tag = tag;
     }
 
     pub fn update(t: *Transcript, buf: []const u8) void {
@@ -53,10 +58,12 @@ pub const Transcript = struct {
         client_random: [32]u8,
         server_random: [32]u8,
     ) []const u8 {
-        return switch (t.selected) {
-            inline .sha256, .sha384, .sha512 => |h| brk: {
-                break :brk &TT(h).masterSecret(pre_master_secret, client_random, server_random);
-            },
+        return switch (t.tag) {
+            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).masterSecret(
+                pre_master_secret,
+                client_random,
+                server_random,
+            ),
         };
     }
 
@@ -66,19 +73,23 @@ pub const Transcript = struct {
         client_random: [32]u8,
         server_random: [32]u8,
     ) []const u8 {
-        return switch (t.selected) {
-            inline .sha256, .sha384, .sha512 => |h| &TT(h).keyExpansion(master_secret, client_random, server_random),
+        return switch (t.tag) {
+            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).keyExpansion(
+                master_secret,
+                client_random,
+                server_random,
+            ),
         };
     }
 
     pub fn clientFinishedTls12(t: *Transcript, master_secret: []const u8) [16]u8 {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).clientFinishedTls12(master_secret),
         };
     }
 
     pub fn serverFinishedTls12(t: *Transcript, master_secret: []const u8) [16]u8 {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).serverFinishedTls12(master_secret),
         };
     }
@@ -86,25 +97,25 @@ pub const Transcript = struct {
     // tls 1.3 handshake specific
 
     pub inline fn verifyBytesTls13(t: *Transcript) []const u8 {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).verifyBytesTls13(),
         };
     }
 
     pub inline fn clientVerifyBytesTls13(t: *Transcript) []const u8 {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).clientVerifyBytesTls13(),
         };
     }
 
     pub inline fn serverFinishedTls13(t: *Transcript) []const u8 {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).serverFinishedTls13(),
         };
     }
 
     pub inline fn clientFinishedTls13(t: *Transcript) []const u8 {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).clientFinishedTls13(),
         };
     }
@@ -115,26 +126,24 @@ pub const Transcript = struct {
     };
 
     pub inline fn handshakeSecret(t: *Transcript, shared_key: []const u8) Secret {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
         };
     }
 
     pub inline fn applicationSecret(t: *Transcript) Secret {
-        return switch (t.selected) {
+        return switch (t.tag) {
             inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).applicationSecret(),
         };
     }
 
     // other
 
-    pub fn Hkdf(ht: HashTag) type {
-        return switch (ht) {
-            inline .sha256, .sha384, .sha512 => |h| TT(h).Hkdf,
-        };
+    pub fn Hkdf(h: HashTag) type {
+        return Type(h).Hkdf;
     }
 
-    // Copy of the current hash value
+    /// Copy of the current hash value
     pub inline fn hash(t: *Transcript, comptime Hash: type) Hash {
         return switch (Hash) {
             Sha256 => t.sha256.hash,
@@ -145,9 +154,8 @@ pub const Transcript = struct {
     }
 };
 
-fn TranscriptT(comptime HashType: type) type {
+fn TranscriptT(comptime Hash: type) type {
     return struct {
-        const Hash = HashType;
         const Hmac = crypto.auth.hmac.Hmac(Hash);
         const Hkdf = crypto.kdf.hkdf.Hkdf(Hmac);
         const mac_length = Hmac.mac_length;
@@ -170,13 +178,14 @@ fn TranscriptT(comptime HashType: type) type {
         }
 
         // ref: https://www.rfc-editor.org/rfc/rfc8446#section-4.4.3
-        fn clientVerifyBytesTls13(c: Self) [64 + 34 + Hash.digest_length]u8 {
+        fn clientVerifyBytesTls13(c: *Self) [64 + 34 + Hash.digest_length]u8 {
             return ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, client CertificateVerify\x00".* ++
                 c.hash.peek();
         }
 
         fn masterSecret(
+            _: *Self,
             pre_master_secret: []const u8,
             client_random: [32]u8,
             server_random: [32]u8,
@@ -197,6 +206,7 @@ fn TranscriptT(comptime HashType: type) type {
         }
 
         fn keyExpansion(
+            _: *Self,
             master_secret: []const u8,
             client_random: [32]u8,
             server_random: [32]u8,

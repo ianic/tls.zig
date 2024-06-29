@@ -185,7 +185,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             // Parse server flight 1
             try h.serverFlight1(ca_bundle, host);
-            h.transcript.selected = h.cipher_suite_tag.hash();
+            h.transcript.set(h.cipher_suite_tag.hash());
 
             if (h.tls_version == .tls_1_3) { // tls 1.3 specific handshake part
                 // Generate handshake cipher
@@ -1222,7 +1222,7 @@ test "init tls 1.3 handshake cipher" {
     const cipher_suite_tag: CipherSuite = .AES_256_GCM_SHA384;
 
     var transcript = Transcript{};
-    transcript.selected = cipher_suite_tag.hash();
+    transcript.set(cipher_suite_tag.hash());
     transcript.update(data13.client_hello[tls.record_header_len..]);
     transcript.update(data13.server_hello[tls.record_header_len..]);
 
@@ -1246,7 +1246,7 @@ test "init tls 1.3 handshake cipher" {
 
 fn initExampleHandshake(h: *TestHandshake) !void {
     h.cipher_suite_tag = .AES_256_GCM_SHA384;
-    h.transcript.selected = h.cipher_suite_tag.hash();
+    h.transcript.set(h.cipher_suite_tag.hash());
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
     h.cipher = try Cipher.initTls13(h.cipher_suite_tag, h.transcript.handshakeSecret(&data13.shared_key));
