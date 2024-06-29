@@ -79,8 +79,13 @@ pub fn parseDer(buf: []const u8) !PrivateKey {
             const public_key = try rsa.PublicKey.fromBytes(content(buf, modulus), content(buf, public_exponent));
             const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, content(buf, private_exponent));
             const key_pair = rsa.KeyPair{ .public = public_key, .secret = secret_key };
+
             return .{
-                .signature_scheme = .rsa_pss_rsae_sha256,
+                .signature_scheme = switch (key_pair.public.modulus.bits()) {
+                    4096 => .rsa_pss_rsae_sha512,
+                    3072 => .rsa_pss_rsae_sha384,
+                    else => .rsa_pss_rsae_sha256,
+                },
                 .key = .{ .rsa = key_pair },
             };
         },

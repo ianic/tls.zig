@@ -677,12 +677,13 @@ pub const CipherSuite = enum(u16) {
         };
     }
 
-    pub const Hash = enum {
+    pub const HashTag = enum {
         sha256,
         sha384,
+        sha512,
     };
 
-    pub inline fn hash(cs: CipherSuite) Hash {
+    pub inline fn hash(cs: CipherSuite) HashTag {
         return switch (cs) {
             .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .ECDHE_RSA_WITH_AES_256_GCM_SHA384,

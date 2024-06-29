@@ -2,23 +2,32 @@ const std = @import("std");
 const crypto = std.crypto;
 const tls = crypto.tls;
 const hkdfExpandLabel = tls.hkdfExpandLabel;
-const Sha1 = crypto.hash.Sha1;
+
 const Sha256 = crypto.hash.sha2.Sha256;
 const Sha384 = crypto.hash.sha2.Sha384;
+const Sha512 = crypto.hash.sha2.Sha512;
 
-const handsakeHeader = @import("handshake.zig").handshakeHeader;
+const handshakeHeader = @import("handshake.zig").handshakeHeader;
 const CipherSuite = @import("cipher.zig").CipherSuite;
-const HashTag = CipherSuite.Hash;
+const HashTag = CipherSuite.HashTag;
 
-// Transcript holds transcript hash for both sha256 and sha384. Until the server
-// hello is parsed we don't know which hash will be used so we update both hashes.
-// Handshake process will set selected field once cipher suite is known.
+// Transcript holds hash of all handshake message.
+//
+// Until the server hello is parsed we don't know which hash (sha256, sha384,
+// sha512) will be used so we update all of them. Handshake process will set
+// `selected` field once cipher suite is known. Other function will use that
+// selected hash. We continue to calculate all hashes because client certificate
+// message could use different hash than the other part of the handshake.
+// Handshake hash is dictated by the server selected cipher. Client certificate
+// hash is dictated by the private key used.
 //
 // Most of the functions are inlined because they are returning pointers.
 //
 pub const Transcript = struct {
     sha256: TT(.sha256) = .{ .hash = Sha256.init(.{}) },
     sha384: TT(.sha384) = .{ .hash = Sha384.init(.{}) },
+    sha512: TT(.sha512) = .{ .hash = Sha512.init(.{}) },
+
     selected: HashTag = .sha256,
 
     // Transcript Type from hash tag
@@ -26,15 +35,17 @@ pub const Transcript = struct {
         return switch (h) {
             .sha256 => TranscriptT(Sha256),
             .sha384 => TranscriptT(Sha384),
+            .sha512 => TranscriptT(Sha512),
         };
     }
 
     pub fn update(t: *Transcript, buf: []const u8) void {
         t.sha256.hash.update(buf);
         t.sha384.hash.update(buf);
+        t.sha512.hash.update(buf);
     }
 
-    // tls 1.2 specific functions
+    // tls 1.2 handshake specific
 
     pub inline fn masterSecret(
         t: *Transcript,
@@ -43,7 +54,7 @@ pub const Transcript = struct {
         server_random: [32]u8,
     ) []const u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| brk: {
+            inline .sha256, .sha384, .sha512 => |h| brk: {
                 break :brk &TT(h).masterSecret(pre_master_secret, client_random, server_random);
             },
         };
@@ -56,51 +67,45 @@ pub const Transcript = struct {
         server_random: [32]u8,
     ) []const u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| &TT(h).keyExpansion(master_secret, client_random, server_random),
-        };
-    }
-
-    pub fn Hkdf(ht: HashTag) type {
-        return switch (ht) {
-            inline .sha256, .sha384 => |h| TT(h).Hkdf,
+            inline .sha256, .sha384, .sha512 => |h| &TT(h).keyExpansion(master_secret, client_random, server_random),
         };
     }
 
     pub fn clientFinishedTls12(t: *Transcript, master_secret: []const u8) [16]u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).clientFinishedTls12(master_secret),
+            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).clientFinishedTls12(master_secret),
         };
     }
 
     pub fn serverFinishedTls12(t: *Transcript, master_secret: []const u8) [16]u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).serverFinishedTls12(master_secret),
+            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).serverFinishedTls12(master_secret),
         };
     }
 
-    // tls 1.3 specific functions
+    // tls 1.3 handshake specific
 
     pub inline fn verifyBytesTls13(t: *Transcript) []const u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).verifyBytesTls13(),
+            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).verifyBytesTls13(),
         };
     }
 
     pub inline fn clientVerifyBytesTls13(t: *Transcript) []const u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).clientVerifyBytesTls13(),
+            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).clientVerifyBytesTls13(),
         };
     }
 
     pub inline fn serverFinishedTls13(t: *Transcript) []const u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).serverFinishedTls13(),
+            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).serverFinishedTls13(),
         };
     }
 
     pub inline fn clientFinishedTls13(t: *Transcript) []const u8 {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| &@field(t, @tagName(h)).clientFinishedTls13(),
+            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).clientFinishedTls13(),
         };
     }
 
@@ -111,20 +116,30 @@ pub const Transcript = struct {
 
     pub inline fn handshakeSecret(t: *Transcript, shared_key: []const u8) Secret {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
+            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
         };
     }
 
     pub inline fn applicationSecret(t: *Transcript) Secret {
         return switch (t.selected) {
-            inline .sha256, .sha384 => |h| @field(t, @tagName(h)).applicationSecret(),
+            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).applicationSecret(),
         };
     }
 
+    // other
+
+    pub fn Hkdf(ht: HashTag) type {
+        return switch (ht) {
+            inline .sha256, .sha384, .sha512 => |h| TT(h).Hkdf,
+        };
+    }
+
+    // Copy of the current hash value
     pub inline fn hash(t: *Transcript, comptime Hash: type) Hash {
         return switch (Hash) {
             Sha256 => t.sha256.hash,
             Sha384 => t.sha384.hash,
+            Sha512 => t.sha512.hash,
             else => @compileError("unimplemented"),
         };
     }
@@ -212,7 +227,7 @@ fn TranscriptT(comptime HashType: type) type {
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return handsakeHeader(.finished, 12) ++ p1[0..12].*;
+            return handshakeHeader(.finished, 12) ++ p1[0..12].*;
         }
 
         fn serverFinishedTls12(self: *Self, master_secret: []const u8) [16]u8 {
@@ -221,7 +236,7 @@ fn TranscriptT(comptime HashType: type) type {
             var p1: [mac_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
-            return handsakeHeader(.finished, 12) ++ p1[0..12].*;
+            return handshakeHeader(.finished, 12) ++ p1[0..12].*;
         }
 
         // tls 1.3
@@ -267,7 +282,7 @@ fn TranscriptT(comptime HashType: type) type {
         // client finished message with header
         fn clientFinishedTls13(self: *Self) [4 + mac_length]u8 {
             var msg: [4 + mac_length]u8 = undefined;
-            msg[0..4].* = handsakeHeader(.finished, mac_length);
+            msg[0..4].* = handshakeHeader(.finished, mac_length);
             Hmac.create(msg[4..], &self.hash.peek(), &self.client_finished_key);
             return msg;
         }

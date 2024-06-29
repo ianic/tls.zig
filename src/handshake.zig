@@ -639,11 +639,7 @@ pub fn Handshake(comptime Stream: type) type {
                     const Hash = SchemeHash(comptime_scheme);
                     const pk = try rsa.PublicKey.fromDer(h.cert_pub_key);
                     const sig = rsa.Pss(Hash).Signature{ .bytes = h.signature };
-                    try sig.verify(
-                        verify_bytes,
-                        pk,
-                        if (comptime_scheme == .rsa_pss_rsae_sha512) 64 else null,
-                    );
+                    try sig.verify(verify_bytes, pk, null);
                 },
                 inline .rsa_pkcs1_sha1,
                 .rsa_pkcs1_sha256,
@@ -681,6 +677,7 @@ pub fn Handshake(comptime Stream: type) type {
                 },
                 inline .rsa_pss_rsae_sha256,
                 .rsa_pss_rsae_sha384,
+                .rsa_pss_rsae_sha512,
                 => |comptime_scheme| {
                     const Hash = SchemeHash(comptime_scheme);
                     var signer = try auth.private_key.key.rsa.signerOaep(Hash, null);
