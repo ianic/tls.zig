@@ -59,7 +59,7 @@ pub const Transcript = struct {
         server_random: [32]u8,
     ) []const u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).masterSecret(
+            inline else => |h| &@field(t, @tagName(h)).masterSecret(
                 pre_master_secret,
                 client_random,
                 server_random,
@@ -74,7 +74,7 @@ pub const Transcript = struct {
         server_random: [32]u8,
     ) []const u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).keyExpansion(
+            inline else => |h| &@field(t, @tagName(h)).keyExpansion(
                 master_secret,
                 client_random,
                 server_random,
@@ -82,41 +82,41 @@ pub const Transcript = struct {
         };
     }
 
-    pub fn clientFinishedTls12(t: *Transcript, master_secret: []const u8) [16]u8 {
+    pub fn clientFinishedTLS12(t: *Transcript, master_secret: []const u8) [16]u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).clientFinishedTls12(master_secret),
+            inline else => |h| @field(t, @tagName(h)).clientFinishedTLS12(master_secret),
         };
     }
 
-    pub fn serverFinishedTls12(t: *Transcript, master_secret: []const u8) [16]u8 {
+    pub fn serverFinishedTLS12(t: *Transcript, master_secret: []const u8) [16]u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).serverFinishedTls12(master_secret),
+            inline else => |h| @field(t, @tagName(h)).serverFinishedTLS12(master_secret),
         };
     }
 
     // tls 1.3 handshake specific
 
-    pub inline fn verifyBytesTls13(t: *Transcript) []const u8 {
+    pub inline fn serverCertificateVerify(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).verifyBytesTls13(),
+            inline else => |h| &@field(t, @tagName(h)).serverCertificateVerify(),
         };
     }
 
-    pub inline fn clientVerifyBytesTls13(t: *Transcript) []const u8 {
+    pub inline fn clientCertificateVerify(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).clientVerifyBytesTls13(),
+            inline else => |h| &@field(t, @tagName(h)).clientCertificateVerify(),
         };
     }
 
-    pub inline fn serverFinishedTls13(t: *Transcript) []const u8 {
+    pub inline fn serverFinishedTLS13(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).serverFinishedTls13(),
+            inline else => |h| &@field(t, @tagName(h)).serverFinishedTLS13(),
         };
     }
 
-    pub inline fn clientFinishedTls13(t: *Transcript) []const u8 {
+    pub inline fn clientFinishedTLS13(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| &@field(t, @tagName(h)).clientFinishedTls13(),
+            inline else => |h| &@field(t, @tagName(h)).clientFinishedTLS13(),
         };
     }
 
@@ -127,13 +127,13 @@ pub const Transcript = struct {
 
     pub inline fn handshakeSecret(t: *Transcript, shared_key: []const u8) Secret {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
+            inline else => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
         };
     }
 
     pub inline fn applicationSecret(t: *Transcript) Secret {
         return switch (t.tag) {
-            inline .sha256, .sha384, .sha512 => |h| @field(t, @tagName(h)).applicationSecret(),
+            inline else => |h| @field(t, @tagName(h)).applicationSecret(),
         };
     }
 
@@ -171,14 +171,14 @@ fn TranscriptT(comptime Hash: type) type {
             return .{ .transcript = transcript };
         }
 
-        fn verifyBytesTls13(c: *Self) [64 + 34 + Hash.digest_length]u8 {
+        fn serverCertificateVerify(c: *Self) [64 + 34 + Hash.digest_length]u8 {
             return ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, server CertificateVerify\x00".* ++
                 c.hash.peek();
         }
 
         // ref: https://www.rfc-editor.org/rfc/rfc8446#section-4.4.3
-        fn clientVerifyBytesTls13(c: *Self) [64 + 34 + Hash.digest_length]u8 {
+        fn clientCertificateVerify(c: *Self) [64 + 34 + Hash.digest_length]u8 {
             return ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, client CertificateVerify\x00".* ++
                 c.hash.peek();
@@ -231,7 +231,7 @@ fn TranscriptT(comptime Hash: type) type {
             return key_material;
         }
 
-        fn clientFinishedTls12(self: *Self, master_secret: []const u8) [16]u8 {
+        fn clientFinishedTLS12(self: *Self, master_secret: []const u8) [16]u8 {
             const seed = "client finished" ++ self.hash.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
@@ -240,7 +240,7 @@ fn TranscriptT(comptime Hash: type) type {
             return handshakeHeader(.finished, 12) ++ p1[0..12].*;
         }
 
-        fn serverFinishedTls12(self: *Self, master_secret: []const u8) [16]u8 {
+        fn serverFinishedTLS12(self: *Self, master_secret: []const u8) [16]u8 {
             const seed = "server finished" ++ self.hash.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
@@ -283,14 +283,14 @@ fn TranscriptT(comptime Hash: type) type {
             return .{ .client = &client_secret, .server = &server_secret };
         }
 
-        fn serverFinishedTls13(self: *Self) [mac_length]u8 {
+        fn serverFinishedTLS13(self: *Self) [mac_length]u8 {
             var msg: [mac_length]u8 = undefined;
             Hmac.create(&msg, &self.hash.peek(), &self.server_finished_key);
             return msg;
         }
 
         // client finished message with header
-        fn clientFinishedTls13(self: *Self) [4 + mac_length]u8 {
+        fn clientFinishedTLS13(self: *Self) [4 + mac_length]u8 {
             var msg: [4 + mac_length]u8 = undefined;
             msg[0..4].* = handshakeHeader(.finished, mac_length);
             Hmac.create(msg[4..], &self.hash.peek(), &self.client_finished_key);

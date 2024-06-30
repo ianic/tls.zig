@@ -191,32 +191,32 @@ pub fn Handshake(comptime Stream: type) type {
                 // Generate handshake cipher
                 const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
                 const handshake_secret = h.transcript.handshakeSecret(shared_key);
-                h.cipher = try Cipher.initTls13(h.cipher_suite_tag, handshake_secret);
+                h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, handshake_secret);
 
                 // Continue parsing server flight 1
                 try h.serverEncryptedFlight1(ca_bundle, host);
 
                 // Generate application (client) cipher
                 const application_secret = h.transcript.applicationSecret();
-                const app_cipher = try Cipher.initTls13(h.cipher_suite_tag, application_secret);
+                const app_cipher = try Cipher.initTLS13(h.cipher_suite_tag, application_secret);
 
                 // Send client flight 2 messages
-                try w.writeAll(try h.clientFlight2Tls13(opt.auth));
+                try w.writeAll(try h.clientFlight2TLS13(opt.auth));
 
                 return app_cipher;
             }
             // tls 1.2 specific handshake part
 
             // Prepare key material and generate cipher
-            try h.verifySignatureTls12();
+            try h.verifyCertificateSignatureTLS12();
             try h.generateKeyMaterial();
-            h.cipher = try Cipher.initTls12(h.cipher_suite_tag, &h.key_material, crypto.random);
+            h.cipher = try Cipher.initTLS12(h.cipher_suite_tag, &h.key_material, crypto.random);
 
             // Send client flight 2 messages
-            try w.writeAll(try h.clientFlight2Tls12(opt.auth));
+            try w.writeAll(try h.clientFlight2TLS12(opt.auth));
 
             // Parse server flight 2
-            try h.serverFlight2Tls12();
+            try h.serverFlight2TLS12();
 
             return h.cipher;
         }
@@ -505,7 +505,7 @@ pub fn Handshake(comptime Stream: type) type {
                 // wrapped record decoder
                 const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-                //std.debug.print("serverFlightTls13 {} {}\n", .{ wrap_rec.content_type, wrap_rec.payload.len });
+                //std.debug.print("serverFlightTLS13 {} {}\n", .{ wrap_rec.content_type, wrap_rec.payload.len });
                 switch (rec.content_type) {
                     .change_cipher_spec => {},
                     .application_data => {
@@ -560,12 +560,12 @@ pub fn Handshake(comptime Stream: type) type {
                                 .certificate_verify => {
                                     h.signature_scheme = try d.decode(tls.SignatureScheme);
                                     h.signature = dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
-                                    try h.verifySignatureTls13();
+                                    try h.verifyCertificateSignatureTLS13();
                                     handshake_state = .finished;
                                 },
                                 .finished => {
                                     const actual = try d.slice(length);
-                                    const expected = h.transcript.serverFinishedTls13();
+                                    const expected = h.transcript.serverFinishedTLS13();
                                     if (!mem.eql(u8, expected, actual))
                                         return error.TlsDecryptError;
                                     return;
@@ -581,12 +581,12 @@ pub fn Handshake(comptime Stream: type) type {
             }
         }
 
-        fn verifySignatureTls13(h: *HandshakeT) !void {
-            try h.verifySignature(h.transcript.verifyBytesTls13());
+        fn verifyCertificateSignatureTLS13(h: *HandshakeT) !void {
+            try h.verifyCertificateSignature(h.transcript.serverCertificateVerify());
         }
 
         /// Create verify data and verify server signature for tls 1.2.
-        fn verifySignatureTls12(h: *HandshakeT) !void {
+        fn verifyCertificateSignatureTLS12(h: *HandshakeT) !void {
             if (h.cipher_suite_tag.keyExchange() != .ecdhe) return;
             const verify_bytes = brk: {
                 var w = BufWriter{ .buf = h.buffer };
@@ -598,11 +598,11 @@ pub fn Handshake(comptime Stream: type) type {
                 try w.write(h.server_pub_key);
                 break :brk w.getWritten();
             };
-            try h.verifySignature(verify_bytes);
+            try h.verifyCertificateSignature(verify_bytes);
         }
 
-        /// Verify server signature with server public key.
-        fn verifySignature(h: *HandshakeT, verify_bytes: []const u8) !void {
+        /// Verify server certificate signature with server public key.
+        fn verifyCertificateSignature(h: *HandshakeT, verify_bytes: []const u8) !void {
             switch (h.signature_scheme) {
                 inline .ecdsa_secp256r1_sha256,
                 .ecdsa_secp384r1_sha384,
@@ -697,7 +697,7 @@ pub fn Handshake(comptime Stream: type) type {
                 // tls 1.3 signature is computed over concatenation of 64 spaces,
                 // context, separator and content.
                 // ref: https://datatracker.ietf.org/doc/html/rfc8446#section-4.4.3
-                signer.update(h.transcript.clientVerifyBytesTls13());
+                signer.update(h.transcript.clientCertificateVerify());
             }
         }
 
@@ -747,81 +747,68 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Creates client key exchange, change cipher spec and handshake
         /// finished messages for tls 1.2.
-        fn clientFlight2Tls12(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
+        /// If client certificate is requested also adds client certificate and
+        /// certificate verify messages.
+        fn clientFlight2TLS12(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
 
-            // client certificate message
+            // Client certificate message
             if (h.client_certificate_requested) {
                 if (auth) |a| {
-                    const len_pos = try w.writeRecordHeader(.handshake, 0);
-                    const client_certificate = try h.clientCertificate(w.getFree(), a);
-                    w.pos += client_certificate.len;
-                    try w.updateRecordHeaderLen(len_pos, client_certificate.len);
+                    const client_certificate = try h.clientCertificate(w.getPayload(), a);
+                    try w.writeRecord(.handshake, client_certificate.len);
                     h.transcript.update(client_certificate);
                 } else {
-                    const empty_certificate = &handshakeRecordHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
-                    try w.write(empty_certificate);
-                    h.transcript.update(empty_certificate[tls.record_header_len..]);
+                    const empty_certificate = &handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
+                    try w.writeRecord(.handshake, empty_certificate);
+                    h.transcript.update(empty_certificate);
                 }
             }
 
-            // client key exchange message
+            // Client key exchange message
             {
-                const key: []const u8 = if (h.named_group) |named_group|
-                    try h.dh_kp.publicKey(named_group)
-                else
-                    try h.rsa_secret.encrypted(h.cert_pub_key_algo, h.cert_pub_key);
-
-                const header = if (h.named_group != null)
-                    &handshakeRecordHeader(.client_key_exchange, 1 + key.len) ++
-                        [1]u8{@intCast(key.len)}
-                else
-                    &handshakeRecordHeader(.client_key_exchange, 2 + key.len) ++
-                        tls.int2(@intCast(key.len));
-
-                try w.write(header);
-                try w.write(key);
-
-                h.transcript.update(header[tls.record_header_len..]);
-                h.transcript.update(key);
+                const key_exchange = try h.clientKeyExchange(w.getPayload());
+                try w.writeRecord(.handshake, key_exchange.len);
+                h.transcript.update(key_exchange);
             }
 
-            // client certificate verify message
+            // Client certificate verify message
             if (h.client_certificate_requested and auth != null) {
-                const signature, const signature_scheme = try h.createSignature(auth.?);
-
-                const handshake_header = &handshakeHeader(.certificate_verify, signature.len + 4) ++
-                    tls.int2(@intFromEnum(signature_scheme)) ++
-                    tls.int2(@intCast(signature.len));
-
-                _ = try w.writeRecordHeader(.handshake, handshake_header.len + signature.len);
-                try w.write(handshake_header);
-                try w.write(signature);
-
-                h.transcript.update(handshake_header);
-                h.transcript.update(signature);
+                const certificate_verify = try h.clientCertificateVerify(w.getPayload(), auth.?);
+                try w.writeRecord(.handshake, certificate_verify.len);
+                h.transcript.update(certificate_verify);
             }
 
-            // client change cipher spec message
-            {
-                const change_cipher_spec = recordHeader(.change_cipher_spec, 1) ++ [_]u8{1};
-                try w.write(&change_cipher_spec);
-            }
+            // Client change cipher spec message
+            try w.writeRecord(.change_cipher_spec, &[_]u8{1});
 
-            // client handshake finished message
+            // Client handshake finished message
             {
-                // verify data + handshake header
-                const client_finished = h.transcript.clientFinishedTls12(&h.master_secret);
-                h.transcript.update(&client_finished);
-                // encrypt client_finished into handshake_finished tls record
-                const handshake_finished = try h.cipher.encrypt(w.getFree(), 0, .handshake, &client_finished);
-                w.pos += handshake_finished.len;
+                const client_finished = &h.transcript.clientFinishedTLS12(&h.master_secret);
+                try h.writeEncrypted(&w, client_finished);
+                h.transcript.update(client_finished);
             }
 
             return w.getWritten();
         }
 
-        fn serverFlight2Tls12(h: *HandshakeT) !void {
+        fn clientKeyExchange(h: *HandshakeT, buffer: []u8) ![]const u8 {
+            var w = BufWriter{ .buf = buffer };
+            if (h.named_group) |named_group| {
+                const key = try h.dh_kp.publicKey(named_group);
+                try w.writeHandshakeHeader(.client_key_exchange, 1 + key.len);
+                try w.writeInt(@as(u8, @intCast(key.len)));
+                try w.write(key);
+            } else {
+                const key = try h.rsa_secret.encrypted(h.cert_pub_key_algo, h.cert_pub_key);
+                try w.writeHandshakeHeader(.client_key_exchange, 2 + key.len);
+                try w.writeInt(@as(u16, @intCast(key.len)));
+                try w.write(key);
+            }
+            return w.getWritten();
+        }
+
+        fn serverFlight2TLS12(h: *HandshakeT) !void {
             // Read server change cipher spec message.
             {
                 var d = try h.rec_rdr.nextDecoder();
@@ -834,91 +821,105 @@ pub fn Handshake(comptime Stream: type) type {
                 const content_type, const server_finished = try h.rec_rdr.nextDecrypt(h.cipher, 0) orelse return error.EndOfStream;
 
                 if (content_type != .handshake) return error.TlsUnexpectedMessage;
-                const expected_server_finished = h.transcript.serverFinishedTls12(&h.master_secret);
+                const expected_server_finished = h.transcript.serverFinishedTLS12(&h.master_secret);
                 if (!mem.eql(u8, server_finished, &expected_server_finished)) return error.TlsBadRecordMac;
             }
         }
 
-        // Create client change cipher spec and handshake finished messages for
-        // tls 1.3. If the client certificate is requested by the server and
-        // client is configured with certificates and private key then client
-        // certificate and client certificate verify messages are also created.
-        // If the server has requested certificate but the client is not
-        // configured empty certificate message is sent, as is required by rfc.
-        fn clientFlight2Tls13(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
+        /// Create client change cipher spec and handshake finished messages for
+        /// tls 1.3.
+        /// If the client certificate is requested by the server and client is
+        /// configured with certificates and private key then client certificate
+        /// and client certificate verify messages are also created. If the
+        /// server has requested certificate but the client is not configured
+        /// empty certificate message is sent, as is required by rfc.
+        fn clientFlight2TLS13(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
-            // change cipher spec
-            try w.write(&recordHeader(.change_cipher_spec, 1) ++ [_]u8{1});
+
+            // Client change cipher spec message
+            try w.writeRecord(.change_cipher_spec, &[_]u8{1});
 
             if (h.client_certificate_requested) {
-                if (auth) |a| { // client certificate and client certificate verify
+                if (auth) |a| {
                     var buffer: [tls.max_cipertext_inner_record_len]u8 = undefined;
-                    try h.encryptHandshake(&w, try h.clientCertificate(&buffer, a));
-                    try h.encryptHandshake(&w, try h.clientCertificateVerify(&buffer, a));
+                    // Client certificate message
+                    const certificate = try h.clientCertificate(&buffer, a);
+                    try h.writeEncrypted(&w, certificate);
+                    h.transcript.update(certificate);
+                    // Client certificate verify message
+                    const certificate_verify = try h.clientCertificateVerify(&buffer, a);
+                    try h.writeEncrypted(&w, certificate_verify);
+                    h.transcript.update(certificate_verify);
                 } else {
-                    // empty certificate message and no certificate verify message
+                    // Empty certificate message and no certificate verify message
                     const empty_certificate = &handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 };
-                    try h.encryptHandshake(&w, empty_certificate);
+                    try h.writeEncrypted(&w, empty_certificate);
+                    h.transcript.update(empty_certificate);
                 }
             }
-            { // client finished
 
-                const client_finished = h.transcript.clientFinishedTls13();
-                try h.encryptHandshake(&w, client_finished);
+            // Client handshake finished message
+            {
+                const client_finished = h.transcript.clientFinishedTLS13();
+                try h.writeEncrypted(&w, client_finished);
+                h.transcript.update(client_finished);
             }
 
             return w.getWritten();
         }
 
+        /// Create client certificate message.
+        /// Handles differences between TLS versions.
         fn clientCertificate(h: HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
             var w = BufWriter{ .buf = buffer };
-            const tls_1_3 = h.tls_version == .tls_1_3;
-
             const certs = auth.certificates.bytes.items;
             const certs_count = auth.certificates.map.size;
-            // overhead per each certificate:
-            // length 3 bytes, empty extensions 2 bytes = 5 bytes
 
-            var certs_len = certs.len + 3 * certs_count;
-            if (tls_1_3) {
-                certs_len += 2 * certs_count;
-                try w.write(&handshakeHeader(.certificate, certs_len + 4) ++
-                    [_]u8{0} ++ tls.int3(@intCast(certs_len)));
-            } else {
-                try w.write(&handshakeHeader(.certificate, certs_len + 3) ++
-                    tls.int3(@intCast(certs_len)));
-            }
+            // Differences between tls 1.3 and 1.2
+            // TLS 1.3 has request context in header and extensions for each certificate.
+            // Here we use empty length for each field.
+            // TLS 1.2 don't have these two fields.
+            const request_context, const extensions = if (h.tls_version == .tls_1_3)
+                .{ &[_]u8{0}, &[_]u8{ 0, 0 } }
+            else
+                .{ &[_]u8{}, &[_]u8{} };
+            const certs_len = certs.len + 3 * certs_count + extensions.len;
 
-            // write each certificate
+            // Write handshake header
+            try w.writeHandshakeHeader(.certificate, certs_len + request_context.len + 3);
+            try w.write(request_context);
+            try w.writeInt(@as(u24, @intCast(certs_len)));
+
+            // Write each certificate
             var index: u32 = 0;
             while (index < certs.len) {
                 const e = try Certificate.der.Element.parse(certs, index);
                 const cert = certs[index..e.slice.end];
-                try w.write(&tls.int3(@intCast(cert.len))); // certificate length
+                try w.writeInt(@as(u24, @intCast(cert.len))); // certificate length
                 try w.write(cert); // certificate
-                if (tls_1_3) try w.write(&[_]u8{ 0, 0 }); // extensions length
+                try w.write(extensions); // certificate extensions
                 index = e.slice.end;
             }
             return w.getWritten();
         }
 
         fn clientCertificateVerify(h: *HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
-            const signature, const signature_scheme = try h.createSignature(auth);
             var w = BufWriter{ .buf = buffer };
-            // handshake header, signature scheme, signature len
-            try w.write(&handshakeHeader(.certificate_verify, signature.len + 4) ++
-                tls.int2(@intFromEnum(signature_scheme)) ++
-                tls.int2(@intCast(signature.len)));
+
+            const signature, const signature_scheme = try h.createSignature(auth);
+            try w.writeHandshakeHeader(.certificate_verify, signature.len + 4);
+            try w.writeEnum(signature_scheme);
+            try w.writeInt(@as(u16, @intCast(signature.len)));
             try w.write(signature);
+
             return w.getWritten();
         }
 
         /// Write encrypted handshake message into `w`
-        fn encryptHandshake(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
+        fn writeEncrypted(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
             const ciphertext = try h.cipher.encrypt(w.getFree(), h.write_seq, .handshake, cleartext);
             w.pos += ciphertext.len;
             h.write_seq += 1;
-            h.transcript.update(cleartext);
         }
     };
 }
@@ -1048,16 +1049,22 @@ const BufWriter = struct {
         self.pos += bytes;
     }
 
-    // Returns position of record len bytes.
-    pub fn writeRecordHeader(self: *BufWriter, content_type: tls.ContentType, payload_len: usize) !usize {
-        try self.write(&recordHeader(content_type, payload_len));
-        return self.pos - 2;
+    pub fn writeHandshakeHeader(self: *BufWriter, handshake_type: HandshakeType, payload_len: usize) !void {
+        try self.write(&handshakeHeader(handshake_type, payload_len));
     }
 
-    // Update record header payload len at pos.
-    // Pos is returned from writeRecordHeader.
-    pub fn updateRecordHeaderLen(self: *BufWriter, pos: usize, len: usize) !void {
-        mem.writeInt(u16, self.buf[pos..][0..2], @intCast(len), .big);
+    pub fn writeRecord(self: *BufWriter, content_type: tls.ContentType, payload: anytype) !void {
+        if (@TypeOf(payload) == usize) {
+            try self.write(&recordHeader(content_type, payload));
+            self.pos += payload;
+            return;
+        }
+        try self.write(&recordHeader(content_type, payload.len));
+        try self.write(payload);
+    }
+
+    pub fn getPayload(self: *BufWriter) []u8 {
+        return self.buf[self.pos + tls.record_header_len ..];
     }
 
     pub fn getWritten(self: *BufWriter) []const u8 {
@@ -1176,7 +1183,7 @@ test "parse tls 1.2 server hello" {
     try testing.expectEqualSlices(u8, &data12.signature, h.signature);
     try testing.expectEqualSlices(u8, &data12.cert_pub_key, h.cert_pub_key);
 
-    try h.verifySignatureTls12();
+    try h.verifyCertificateSignatureTLS12();
     try h.generateKeyMaterial();
 
     try testing.expectEqualSlices(u8, &data12.key_material, h.key_material[0..data12.key_material.len]);
@@ -1196,7 +1203,7 @@ test "verify google.com certificate" {
     defer ca_bundle.deinit(testing.allocator);
 
     try h.serverFlight1(ca_bundle, "google.com");
-    try h.verifySignatureTls12();
+    try h.verifyCertificateSignatureTLS12();
 }
 
 test "parse tls 1.3 server hello" {
@@ -1235,7 +1242,7 @@ test "init tls 1.3 handshake cipher" {
     const shared_key = try dh_kp.preMasterSecret(.x25519, &data13.server_pub_key);
     try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
-    const cipher = try Cipher.initTls13(cipher_suite_tag, transcript.handshakeSecret(shared_key));
+    const cipher = try Cipher.initTLS13(cipher_suite_tag, transcript.handshakeSecret(shared_key));
 
     const c = &cipher.AES_256_GCM_SHA384;
     try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.server_key);
@@ -1249,7 +1256,7 @@ fn initExampleHandshake(h: *TestHandshake) !void {
     h.transcript.set(h.cipher_suite_tag.hash());
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
-    h.cipher = try Cipher.initTls13(h.cipher_suite_tag, h.transcript.handshakeSecret(&data13.shared_key));
+    h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.handshakeSecret(&data13.shared_key));
     h.tls_version = .tls_1_3;
     h.now_sec = 1714846451;
     h.server_pub_key = &data13.server_pub_key;
@@ -1294,7 +1301,7 @@ test "tls 1.3 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cipher = try Cipher.initTls13(h.cipher_suite_tag, h.transcript.applicationSecret());
+        const cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.applicationSecret());
         const c = &cipher.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &data13.server_application_key, &c.server_key);
         try testing.expectEqualSlices(u8, &data13.client_application_key, &c.client_key);
@@ -1305,7 +1312,7 @@ test "tls 1.3 process server flight" {
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
-        const client_finished = h.transcript.clientFinishedTls13();
+        const client_finished = h.transcript.clientFinishedTLS13();
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
 
         const encrypted = try h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
@@ -1361,13 +1368,13 @@ test "handshake verify server finished message" {
     }
 
     // expect verify data
-    const client_finished = h.transcript.clientFinishedTls12(&h.master_secret);
+    const client_finished = h.transcript.clientFinishedTLS12(&h.master_secret);
     try testing.expectEqualSlices(u8, &data12.client_finished, &client_finished);
 
     // init client with prepared key_material
-    h.cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random);
+    h.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random);
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&data12.client_finished);
-    try h.serverFlight2Tls12();
+    try h.serverFlight2TLS12();
 }

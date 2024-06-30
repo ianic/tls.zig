@@ -96,7 +96,7 @@ pub const Cipher = union(CipherSuite) {
     AEGIS_128L_SHA256: CipherType(.AEGIS_128L_SHA256),
 
     // tls 1.2 application cipher
-    pub fn initTls12(tag: CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
+    pub fn initTLS12(tag: CipherSuite, key_material: []const u8, rnd: std.Random) !Cipher {
         switch (tag) {
             inline .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .ECDHE_RSA_WITH_AES_128_CBC_SHA,
@@ -123,7 +123,7 @@ pub const Cipher = union(CipherSuite) {
     }
 
     // tls 1.3 handshake or application cipher
-    pub fn initTls13(tag: CipherSuite, secret: Transcript.Secret) !Cipher {
+    pub fn initTLS13(tag: CipherSuite, secret: Transcript.Secret) !Cipher {
         return switch (tag) {
             inline .AES_128_GCM_SHA256,
             .AES_256_GCM_SHA384,
