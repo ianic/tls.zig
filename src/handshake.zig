@@ -45,7 +45,8 @@ pub const Options = struct {
     auth: ?Auth = null,
 
     pub const Auth = struct {
-        // Certificate chain to send to the server if server requests client authentication.
+        // Certificate chain to send to the server if server requests client
+        // authentication.
         certificates: Certificate.Bundle,
         // Private key of the first certificate in bundle.
         // Used for creating signature in certificate signature message.
@@ -142,19 +143,52 @@ pub fn Handshake(comptime Stream: type) type {
             };
         }
 
-        /// Handshake upgrades stream to tls connection.
+        /// Handshake exchanges messages with server to get agreement about
+        /// cryptographic parameters. That upgrades existing client-server
+        /// connection to TLS connection. Returns cipher used in application for
+        /// encrypted message exchange.
         ///
-        /// tls 1.2 messages:
-        ///   client flight 1: client hello
-        ///   server flight 1: server hello, certificate, key exchange, hello done
-        ///   client flight 2: client key exchange, change cipher spec, handshake finished
-        ///   server flight 2: server change cipher spec, handshake finished
+        /// Handles TLS 1.2 and TLS 1.3 connections. After initial client hello
+        /// server chooses in its server hello which TLS version will be used.
         ///
-        /// tls 1.3 messages:
-        ///   client flight 1: client hello
-        ///   server flight 1: server hello
-        ///         encrypted: server change cipher spec, certificate, certificate verify, handshake finished
-        ///   client flight 2: client change cipher spec, handshake finished
+        /// TLS 1.2 handshake messages exchange:
+        ///    Client                                               Server
+        /// --------------------------------------------------------------
+        ///    ClientHello        client flight 1 --->
+        ///                                                    ServerHello
+        ///                                                    Certificate
+        ///                                              ServerKeyExchange
+        ///                                            CertificateRequest*
+        ///                     <--- server flight 1      ServerHelloDone
+        ///    Certificate*
+        ///    ClientKeyExchange
+        ///    CertificateVerify*
+        ///    ChangeCipherSpec
+        ///    Finished            client flight 2 --->
+        ///                                               ChangeCipherSpec
+        ///                       <--- server flight 2           Finished
+        ///
+        /// TLS 1.3 handshake messages exchange:
+        ///    Client                                               Server
+        /// --------------------------------------------------------------
+        ///    ClientHello       client flight 1 --->
+        ///                                                    ServerHello
+        ///                                          {EncryptedExtensions}
+        ///                                          {CertificateRequest*}
+        ///                                                  {Certificate}
+        ///                                            {CertificateVerify}
+        ///                     <--- server flight 1           {Finished}
+        ///    ChangeCipherSpec
+        ///    {Certificate*}
+        ///    {CertificateVerify*}
+        ///    Finished           client flight 2 --->
+        ///
+        ///  *  - optional
+        ///  {} - encrypted
+        ///
+        /// References:
+        /// https://datatracker.ietf.org/doc/html/rfc5246#section-7.3
+        /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
         ///
         pub fn handshake(
             h: *HandshakeT,
@@ -165,39 +199,34 @@ pub fn Handshake(comptime Stream: type) type {
         ) !Cipher {
             defer h.statsUpdate(opt);
 
-            // Send client flight 1
-            try w.writeAll(try h.makeClientHello(host, opt));
-
-            // Parse server flight 1
-            try h.readServerFlight1(ca_bundle, host);
+            try w.writeAll(try h.makeClientHello(host, opt)); // client flight 1
+            try h.readServerFlight1(ca_bundle, host); // server flight 1
             h.transcript.set(h.cipher_suite_tag.hash());
 
             // tls 1.3 specific handshake part
             if (h.tls_version == .tls_1_3) {
                 try h.generateHandshakeCipher();
-                try h.readEncryptedServerFlight1(ca_bundle, host);
+                try h.readEncryptedServerFlight1(ca_bundle, host); // server flight 1
                 const app_cipher = try h.generateApplicationCipher();
-                try w.writeAll(try h.makeClientFlight2TLS13(opt.auth));
-
+                try w.writeAll(try h.makeClientFlight2TLS13(opt.auth)); // client flight 2
                 return app_cipher;
             }
 
             // tls 1.2 specific handshake part
             try h.generateCipher();
-            try w.writeAll(try h.makeClientFlight2TLS12(opt.auth));
-            try h.readServerFlight2();
-
+            try w.writeAll(try h.makeClientFlight2TLS12(opt.auth)); // client flight 2
+            try h.readServerFlight2(); // server flight 2
             return h.cipher;
         }
 
-        // Prepare key material and generate cipher for tls 1.2
+        /// Prepare key material and generate cipher for TLS 1.2
         fn generateCipher(h: *HandshakeT) !void {
             try h.verifyCertificateSignatureTLS12();
             try h.generateKeyMaterial();
             h.cipher = try Cipher.initTLS12(h.cipher_suite_tag, &h.key_material, crypto.random);
         }
 
-        /// Generate tls 1.2 pre master secret, master secret and key material.
+        /// Generate TLS 1.2 pre master secret, master secret and key material.
         fn generateKeyMaterial(h: *HandshakeT) !void {
             const pre_master_secret = if (h.named_group) |named_group|
                 try h.dh_kp.preMasterSecret(named_group, h.server_pub_key)
@@ -214,13 +243,14 @@ pub fn Handshake(comptime Stream: type) type {
             );
         }
 
+        /// TLS 1.3 cipher used during handshake
         fn generateHandshakeCipher(h: *HandshakeT) !void {
             const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
             const handshake_secret = h.transcript.handshakeSecret(shared_key);
             h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, handshake_secret);
         }
 
-        // Generate application (client) cipher
+        /// TLS 1.3 application (client) cipher
         fn generateApplicationCipher(h: *HandshakeT) !Cipher {
             const application_secret = h.transcript.applicationSecret();
             return try Cipher.initTLS13(h.cipher_suite_tag, application_secret);
@@ -309,9 +339,9 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         /// Process first flight of the messages from the server.
-        /// Read server hello message. If tls 1.3 is chosen in server hello
-        /// return. For tls 1.2 continue and read certificate, key_exchange
-        /// and hello done messages.
+        /// Read server hello message. If TLS 1.3 is chosen in server hello
+        /// return. For TLS 1.2 continue and read certificate, key_exchange
+        /// eventual certificate request and hello done messages.
         fn readServerFlight1(h: *HandshakeT, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
             var handshake_state = HandshakeType.server_hello;
 
@@ -423,7 +453,6 @@ pub fn Handshake(comptime Stream: type) type {
             return std.mem.eql(u8, server_random, &hello_retry_request_magic);
         }
 
-        /// Parse server certificate message.
         fn parseServerCertificate(h: *HandshakeT, d: *record.Decoder, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
             var trust_chain_established = false;
             var last_cert: ?Certificate.Parsed = null;
@@ -472,7 +501,6 @@ pub fn Handshake(comptime Stream: type) type {
             }
         }
 
-        /// Parse server key exchange message.
         fn parseServerKeyExchange(h: *HandshakeT, d: *record.Decoder) !void {
             const curve_type = try d.decode(CurveType);
             h.named_group = try d.decode(tls.NamedGroup);
@@ -482,9 +510,9 @@ pub fn Handshake(comptime Stream: type) type {
             if (curve_type != .named_curve) return error.TlsIllegalParameter;
         }
 
-        /// Read encrypted part (after server hello) of the server first
-        /// flight for tls 1.3: change cipher spec, certificate, certificate
-        /// verify and handshake finished messages.
+        /// Read encrypted part (after server hello) of the server first flight
+        /// for TLS 1.3: change cipher spec, eventual certificate request,
+        /// certificate, certificate verify and handshake finished messages.
         fn readEncryptedServerFlight1(
             h: *HandshakeT,
             ca_bundle: ?Certificate.Bundle,
@@ -581,7 +609,6 @@ pub fn Handshake(comptime Stream: type) type {
             try h.verifyCertificateSignature(h.transcript.serverCertificateVerify());
         }
 
-        /// Create verify data and verify server signature for tls 1.2.
         fn verifyCertificateSignatureTLS12(h: *HandshakeT) !void {
             if (h.cipher_suite_tag.keyExchange() != .ecdhe) return;
             const verify_bytes = brk: {
@@ -649,7 +676,7 @@ pub fn Handshake(comptime Stream: type) type {
             }
         }
 
-        /// Creates client key exchange, change cipher spec and handshake
+        /// Create client key exchange, change cipher spec and handshake
         /// finished messages for tls 1.2.
         /// If client certificate is requested also adds client certificate and
         /// certificate verify messages.
@@ -688,7 +715,8 @@ pub fn Handshake(comptime Stream: type) type {
 
             // Client handshake finished message
             {
-                const client_finished = &handshakeHeader(.finished, 12) ++ h.transcript.clientFinishedTLS12(&h.master_secret);
+                const client_finished = &handshakeHeader(.finished, 12) ++
+                    h.transcript.clientFinishedTLS12(&h.master_secret);
                 h.transcript.update(client_finished);
                 try h.writeEncrypted(&w, client_finished);
             }
