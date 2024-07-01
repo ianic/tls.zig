@@ -19,7 +19,7 @@ pub fn client(stream: anytype) Client(@TypeOf(stream)) {
     };
 }
 
-/// Tls 1.2 and 1.3 client.
+/// TLS 1.2 and 1.3 client.
 ///
 /// Stream must have read/writeAll functions, and ReaderError/WriteError error
 /// sets.

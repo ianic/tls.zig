@@ -444,13 +444,8 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn isServerHelloRetryRequest(server_random: []const u8) bool {
-            // HelloRetryRequest message uses the same structure as the ServerHello, but
-            // with Random set to the special value of the SHA-256 of "HelloRetryRequest"
             // Ref: https://datatracker.ietf.org/doc/html/rfc8446#section-4.1.3
-            const hello_retry_request_magic = testu.hexToBytes(
-                \\ CF 21 AD 74 E5 9A 61 11 BE 1D 8C 02 1E 65 B8 91 C2 A2 11 16 7A BB 8C 5E 07 9E 09 E2 C8 A8 33 9C
-            );
-            return std.mem.eql(u8, server_random, &hello_retry_request_magic);
+            return std.mem.eql(u8, server_random, &tls.hello_retry_request_sequence);
         }
 
         fn parseServerCertificate(h: *HandshakeT, d: *record.Decoder, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
