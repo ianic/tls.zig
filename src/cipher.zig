@@ -122,8 +122,13 @@ pub const Cipher = union(CipherSuite) {
         }
     }
 
+    const Side = enum {
+        client,
+        server,
+    };
+
     // tls 1.3 handshake or application cipher
-    pub fn initTLS13(tag: CipherSuite, secret: Transcript.Secret) !Cipher {
+    pub fn initTLS13(tag: CipherSuite, secret: Transcript.Secret, side: Side) !Cipher {
         return switch (tag) {
             inline .AES_128_GCM_SHA256,
             .AES_256_GCM_SHA384,
@@ -132,11 +137,15 @@ pub const Cipher = union(CipherSuite) {
             => |comptime_tag| {
                 const Hkdf = Transcript.Hkdf(comptime_tag.hash());
                 const T = CipherType(comptime_tag);
+                const client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", T.key_len);
+                const server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", T.key_len);
+                const client_iv = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "iv", "", T.nonce_len);
+                const server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", T.nonce_len);
                 return @unionInit(Cipher, @tagName(comptime_tag), .{
-                    .client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", T.key_len),
-                    .server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", T.key_len),
-                    .client_iv = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "iv", "", T.nonce_len),
-                    .server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", T.nonce_len),
+                    .encrypt_key = if (side == .client) client_key else server_key,
+                    .decrypt_key = if (side == .client) server_key else client_key,
+                    .encrypt_iv = if (side == .client) client_iv else server_iv,
+                    .decrypt_iv = if (side == .client) server_iv else client_iv,
                 });
             },
             else => return error.TlsIllegalParameter,
@@ -261,19 +270,19 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
         const auth_tag_len = AeadType.tag_length;
         const nonce_len = AeadType.nonce_length;
 
-        client_key: [key_len]u8,
-        server_key: [key_len]u8,
-        client_iv: [nonce_len]u8,
-        server_iv: [nonce_len]u8,
+        encrypt_key: [key_len]u8,
+        decrypt_key: [key_len]u8,
+        encrypt_iv: [nonce_len]u8,
+        decrypt_iv: [nonce_len]u8,
 
         const Self = @This();
 
         fn init(key_material: []const u8) Self {
             return .{
-                .client_key = key_material[0..key_len].*,
-                .server_key = key_material[key_len..][0..key_len].*,
-                .client_iv = key_material[2 * key_len ..][0..nonce_len].*,
-                .server_iv = key_material[2 * key_len + nonce_len ..][0..nonce_len].*,
+                .encrypt_key = key_material[0..key_len].*,
+                .decrypt_key = key_material[key_len..][0..key_len].*,
+                .encrypt_iv = key_material[2 * key_len ..][0..nonce_len].*,
+                .decrypt_iv = key_material[2 * key_len + nonce_len ..][0..nonce_len].*,
             };
         }
 
@@ -298,8 +307,8 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             const auth_tag = buf[tls.record_header_len + ciphertext.len ..][0..auth_tag_len];
 
             const ad = additionalData(seq, content_type, cleartext.len);
-            const iv = ivWithSeq(nonce_len, self.client_iv, seq);
-            AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, self.client_key);
+            const iv = ivWithSeq(nonce_len, self.encrypt_iv, seq);
+            AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, self.encrypt_key);
 
             buf[0..tls.record_header_len].* = recordHeader(content_type, ciphertext.len + auth_tag.len);
             return buf[0..record_len];
@@ -326,8 +335,8 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             const cleartext = buf[0..cleartext_len];
 
             const ad = additionalData(seq, rec.content_type, cleartext_len);
-            const iv = ivWithSeq(nonce_len, self.server_iv, seq);
-            AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.server_key) catch return error.TlsDecryptError;
+            const iv = ivWithSeq(nonce_len, self.decrypt_iv, seq);
+            AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.decrypt_key) catch return error.TlsDecryptError;
             return .{ rec.content_type, cleartext };
         }
     };
@@ -339,10 +348,10 @@ fn Aead13Type(comptime AeadType: type) type {
         const auth_tag_len = AeadType.tag_length;
         const nonce_len = AeadType.nonce_length;
 
-        client_key: [key_len]u8,
-        server_key: [key_len]u8,
-        client_iv: [nonce_len]u8,
-        server_iv: [nonce_len]u8,
+        encrypt_key: [key_len]u8,
+        decrypt_key: [key_len]u8,
+        encrypt_iv: [nonce_len]u8,
+        decrypt_iv: [nonce_len]u8,
 
         const Self = @This();
 
@@ -375,8 +384,8 @@ fn Aead13Type(comptime AeadType: type) type {
             const ciphertext = buf[tls.record_header_len..][0 .. cleartext.len + 1];
             const auth_tag = buf[tls.record_header_len + ciphertext.len ..][0..auth_tag_len];
 
-            const iv = ivWithSeq(nonce_len, self.client_iv, seq);
-            AeadType.encrypt(ciphertext, auth_tag, ciphertext, header, iv, self.client_key);
+            const iv = ivWithSeq(nonce_len, self.encrypt_iv, seq);
+            AeadType.encrypt(ciphertext, auth_tag, ciphertext, header, iv, self.encrypt_key);
             return buf[0..record_len];
         }
 
@@ -401,8 +410,8 @@ fn Aead13Type(comptime AeadType: type) type {
             const ciphertext = rec.payload[0..ciphertext_len];
             const auth_tag = rec.payload[ciphertext_len..][0..auth_tag_len];
 
-            const iv = ivWithSeq(nonce_len, self.server_iv, seq);
-            AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.server_key) catch return error.TlsDecryptError;
+            const iv = ivWithSeq(nonce_len, self.decrypt_iv, seq);
+            AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.decrypt_key) catch return error.TlsDecryptError;
 
             const cleartext = buf[0 .. ciphertext_len - 1];
             const content_type: tls.ContentType = @enumFromInt(buf[ciphertext_len - 1]);
@@ -855,10 +864,10 @@ test "encrypt/decrypt 1.3 and 1.2 chacha" {
         }
         testu.fill(buf[0..@max(T.key_len, T.auth_tag_len)]);
         var cipher = T{
-            .client_key = buf[0..T.key_len].*,
-            .server_key = buf[0..T.key_len].*,
-            .client_iv = buf[0..T.nonce_len].*,
-            .server_iv = buf[0..T.nonce_len].*,
+            .encrypt_key = buf[0..T.key_len].*,
+            .decrypt_key = buf[0..T.key_len].*,
+            .encrypt_iv = buf[0..T.nonce_len].*,
+            .decrypt_iv = buf[0..T.nonce_len].*,
         };
 
         const data = "Hello world!";
@@ -877,5 +886,38 @@ test "encrypt/decrypt 1.3 and 1.2 chacha" {
         const content_type, const decrypted = try cipher.decrypt(&buf, 0, rec);
         try testing.expectEqualSlices(u8, data, decrypted);
         try testing.expectEqual(.application_data, content_type);
+    }
+}
+
+test "client/server encryption tls 1.3" {
+    inline for (CipherSuite.tls13) |cs| {
+        var buf: [256]u8 = undefined;
+        testu.fill(&buf);
+        const secret = Transcript.Secret{
+            .client = buf[0..128],
+            .server = buf[128..],
+        };
+        const client = try Cipher.initTLS13(cs, secret, .client);
+        const server = try Cipher.initTLS13(cs, secret, .server);
+        const data =
+            \\ Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
+            \\ eiusmod tempor incididunt ut labore et dolore magna aliqua.
+        ;
+        // client to server
+        {
+            const seq = 1234;
+            const ciphertext = try client.encrypt(&buf, seq, .application_data, data);
+            const content_type, const decrypted = try server.decrypt(&buf, seq, Record.init(ciphertext));
+            try testing.expectEqualSlices(u8, data, decrypted);
+            try testing.expectEqual(.application_data, content_type);
+        }
+        // server to client
+        {
+            const seq = 5678;
+            const ciphertext = try server.encrypt(&buf, seq, .application_data, data);
+            const content_type, const decrypted = try client.decrypt(&buf, seq, Record.init(ciphertext));
+            try testing.expectEqualSlices(u8, data, decrypted);
+            try testing.expectEqual(.application_data, content_type);
+        }
     }
 }

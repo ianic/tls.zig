@@ -247,13 +247,13 @@ pub fn Handshake(comptime Stream: type) type {
         fn generateHandshakeCipher(h: *HandshakeT) !void {
             const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
             const handshake_secret = h.transcript.handshakeSecret(shared_key);
-            h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, handshake_secret);
+            h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, handshake_secret, .client);
         }
 
         /// TLS 1.3 application (client) cipher
         fn generateApplicationCipher(h: *HandshakeT) !Cipher {
             const application_secret = h.transcript.applicationSecret();
-            return try Cipher.initTLS13(h.cipher_suite_tag, application_secret);
+            return try Cipher.initTLS13(h.cipher_suite_tag, application_secret, .client);
         }
 
         fn makeClientHello(h: *HandshakeT, host: []const u8, opt: Options) ![]const u8 {
@@ -1285,13 +1285,13 @@ test "init tls 1.3 handshake cipher" {
     const shared_key = try dh_kp.preMasterSecret(.x25519, &data13.server_pub_key);
     try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
-    const cipher = try Cipher.initTLS13(cipher_suite_tag, transcript.handshakeSecret(shared_key));
+    const cipher = try Cipher.initTLS13(cipher_suite_tag, transcript.handshakeSecret(shared_key), .client);
 
     const c = &cipher.AES_256_GCM_SHA384;
-    try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.server_key);
-    try testing.expectEqualSlices(u8, &data13.client_handshake_key, &c.client_key);
-    try testing.expectEqualSlices(u8, &data13.server_handshake_iv, &c.server_iv);
-    try testing.expectEqualSlices(u8, &data13.client_handshake_iv, &c.client_iv);
+    try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.decrypt_key);
+    try testing.expectEqualSlices(u8, &data13.client_handshake_key, &c.encrypt_key);
+    try testing.expectEqualSlices(u8, &data13.server_handshake_iv, &c.decrypt_iv);
+    try testing.expectEqualSlices(u8, &data13.client_handshake_iv, &c.encrypt_iv);
 }
 
 fn initExampleHandshake(h: *TestHandshake) !void {
@@ -1299,7 +1299,7 @@ fn initExampleHandshake(h: *TestHandshake) !void {
     h.transcript.set(h.cipher_suite_tag.hash());
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
-    h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.handshakeSecret(&data13.shared_key));
+    h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.handshakeSecret(&data13.shared_key), .client);
     h.tls_version = .tls_1_3;
     h.now_sec = 1714846451;
     h.server_pub_key = &data13.server_pub_key;
@@ -1344,12 +1344,12 @@ test "tls 1.3 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.applicationSecret());
+        const cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.applicationSecret(), .client);
         const c = &cipher.AES_256_GCM_SHA384;
-        try testing.expectEqualSlices(u8, &data13.server_application_key, &c.server_key);
-        try testing.expectEqualSlices(u8, &data13.client_application_key, &c.client_key);
-        try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.server_iv);
-        try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.client_iv);
+        try testing.expectEqualSlices(u8, &data13.server_application_key, &c.decrypt_key);
+        try testing.expectEqualSlices(u8, &data13.client_application_key, &c.encrypt_key);
+        try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.decrypt_iv);
+        try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.encrypt_iv);
 
         const encrypted = try cipher.encrypt(&buffer, 0, .application_data, "ping");
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
