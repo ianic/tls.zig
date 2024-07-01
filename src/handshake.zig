@@ -660,27 +660,27 @@ pub fn Handshake(comptime Stream: type) type {
             if (h.client_certificate_requested) {
                 if (auth) |a| {
                     const client_certificate = try h.makeClientCertificate(w.getPayload(), a);
-                    try w.advanceRecord(.handshake, client_certificate.len);
                     h.transcript.update(client_certificate);
+                    try w.advanceRecord(.handshake, client_certificate.len);
                 } else {
                     const empty_certificate = &handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
-                    try w.writeRecord(.handshake, empty_certificate);
                     h.transcript.update(empty_certificate);
+                    try w.writeRecord(.handshake, empty_certificate);
                 }
             }
 
             // Client key exchange message
             {
                 const key_exchange = try h.makeClientKeyExchange(w.getPayload());
-                try w.advanceRecord(.handshake, key_exchange.len);
                 h.transcript.update(key_exchange);
+                try w.advanceRecord(.handshake, key_exchange.len);
             }
 
             // Client certificate verify message
             if (h.client_certificate_requested and auth != null) {
                 const certificate_verify = try h.makeClientCertificateVerify(w.getPayload(), auth.?);
-                try w.advanceRecord(.handshake, certificate_verify.len);
                 h.transcript.update(certificate_verify);
+                try w.advanceRecord(.handshake, certificate_verify.len);
             }
 
             // Client change cipher spec message
@@ -689,8 +689,8 @@ pub fn Handshake(comptime Stream: type) type {
             // Client handshake finished message
             {
                 const client_finished = &handshakeHeader(.finished, 12) ++ h.transcript.clientFinishedTLS12(&h.master_secret);
-                try h.writeEncrypted(&w, client_finished);
                 h.transcript.update(client_finished);
+                try h.writeEncrypted(&w, client_finished);
             }
 
             return w.getWritten();
@@ -711,43 +711,41 @@ pub fn Handshake(comptime Stream: type) type {
 
             if (h.client_certificate_requested) {
                 if (auth) |a| {
-                    var buffer: [tls.max_cipertext_inner_record_len]u8 = undefined;
                     // Client certificate message
-                    const certificate = try h.makeClientCertificate(&buffer, a);
-                    try h.writeEncrypted(&w, certificate);
+                    const certificate = try h.makeClientCertificate(w.getPayload(), a);
                     h.transcript.update(certificate);
+                    try h.writeEncrypted(&w, certificate);
                     // Client certificate verify message
-                    const certificate_verify = try h.makeClientCertificateVerify(&buffer, a);
-                    try h.writeEncrypted(&w, certificate_verify);
+                    const certificate_verify = try h.makeClientCertificateVerify(w.getPayload(), a);
                     h.transcript.update(certificate_verify);
+                    try h.writeEncrypted(&w, certificate_verify);
                 } else {
                     // Empty certificate message and no certificate verify message
                     const empty_certificate = &handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 };
-                    try h.writeEncrypted(&w, empty_certificate);
                     h.transcript.update(empty_certificate);
+                    try h.writeEncrypted(&w, empty_certificate);
                 }
             }
 
             // Client handshake finished message
             {
-                var buf: [4 + Transcript.max_mac_length]u8 = undefined;
-                const client_finished = try h.makeClientFinishedTLS13(&buf);
-                try h.writeEncrypted(&w, client_finished);
+                const client_finished = try h.makeClientFinishedTLS13(w.getPayload());
                 h.transcript.update(client_finished);
+                try h.writeEncrypted(&w, client_finished);
             }
 
             return w.getWritten();
         }
 
-        fn makeClientFinishedTLS13(h: *HandshakeT, buffer: []u8) ![]const u8 {
-            var w = BufWriter{ .buf = buffer };
+        fn makeClientFinishedTLS13(h: *HandshakeT, buf: []u8) ![]const u8 {
+            var w = BufWriter{ .buf = buf };
             const verify_data = h.transcript.clientFinishedTLS13(w.getHandshakePayload());
             try w.advanceHandshake(.finished, verify_data.len);
             return w.getWritten();
         }
 
-        fn makeClientKeyExchange(h: *HandshakeT, buffer: []u8) ![]const u8 {
-            var w = BufWriter{ .buf = buffer };
+        fn makeClientKeyExchange(h: *HandshakeT, buf: []u8) ![]const u8 {
+            var w = BufWriter{ .buf = buf };
             if (h.named_group) |named_group| {
                 const key = try h.dh_kp.publicKey(named_group);
                 try w.writeHandshakeHeader(.client_key_exchange, 1 + key.len);
@@ -764,8 +762,8 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Create client certificate message.
         /// Handles differences between TLS versions.
-        fn makeClientCertificate(h: HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
-            var w = BufWriter{ .buf = buffer };
+        fn makeClientCertificate(h: HandshakeT, buf: []u8, auth: Options.Auth) ![]const u8 {
+            var w = BufWriter{ .buf = buf };
             const certs = auth.certificates.bytes.items;
             const certs_count = auth.certificates.map.size;
 
@@ -797,15 +795,13 @@ pub fn Handshake(comptime Stream: type) type {
             return w.getWritten();
         }
 
-        fn makeClientCertificateVerify(h: *HandshakeT, buffer: []u8, auth: Options.Auth) ![]const u8 {
-            var w = BufWriter{ .buf = buffer };
-
+        fn makeClientCertificateVerify(h: *HandshakeT, buf: []u8, auth: Options.Auth) ![]const u8 {
+            var w = BufWriter{ .buf = buf };
             const signature, const signature_scheme = try h.createSignature(auth);
             try w.writeHandshakeHeader(.certificate_verify, signature.len + 4);
             try w.writeEnum(signature_scheme);
             try w.writeInt(@as(u16, @intCast(signature.len)));
             try w.write(signature);
-
             return w.getWritten();
         }
 

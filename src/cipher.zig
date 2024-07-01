@@ -367,7 +367,10 @@ fn Aead13Type(comptime AeadType: type) type {
             const header = buf[0..tls.record_header_len];
             header.* = recordHeader(.application_data, payload_len);
 
-            @memcpy(buf[tls.record_header_len..][0..cleartext.len], cleartext);
+            // Skip @memcpy if cleartext is already part of the buf at right position
+            if (&cleartext[0] != &buf[tls.record_header_len]) {
+                @memcpy(buf[tls.record_header_len..][0..cleartext.len], cleartext);
+            }
             buf[tls.record_header_len + cleartext.len] = @intFromEnum(content_type);
             const ciphertext = buf[tls.record_header_len..][0 .. cleartext.len + 1];
             const auth_tag = buf[tls.record_header_len + ciphertext.len ..][0..auth_tag_len];
