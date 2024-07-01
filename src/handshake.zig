@@ -560,7 +560,8 @@ pub fn Handshake(comptime Stream: type) type {
                                 },
                                 .finished => {
                                     const actual = try d.slice(length);
-                                    const expected = h.transcript.serverFinishedTLS13();
+                                    var buf: [Transcript.max_mac_length]u8 = undefined;
+                                    const expected = h.transcript.serverFinishedTLS13(&buf);
                                     if (!mem.eql(u8, expected, actual))
                                         return error.TlsDecryptError;
                                     return;
@@ -659,7 +660,7 @@ pub fn Handshake(comptime Stream: type) type {
             if (h.client_certificate_requested) {
                 if (auth) |a| {
                     const client_certificate = try h.makeClientCertificate(w.getPayload(), a);
-                    try w.writeRecord(.handshake, client_certificate.len);
+                    try w.advanceRecord(.handshake, client_certificate.len);
                     h.transcript.update(client_certificate);
                 } else {
                     const empty_certificate = &handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
@@ -671,14 +672,14 @@ pub fn Handshake(comptime Stream: type) type {
             // Client key exchange message
             {
                 const key_exchange = try h.makeClientKeyExchange(w.getPayload());
-                try w.writeRecord(.handshake, key_exchange.len);
+                try w.advanceRecord(.handshake, key_exchange.len);
                 h.transcript.update(key_exchange);
             }
 
             // Client certificate verify message
             if (h.client_certificate_requested and auth != null) {
                 const certificate_verify = try h.makeClientCertificateVerify(w.getPayload(), auth.?);
-                try w.writeRecord(.handshake, certificate_verify.len);
+                try w.advanceRecord(.handshake, certificate_verify.len);
                 h.transcript.update(certificate_verify);
             }
 
@@ -687,7 +688,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             // Client handshake finished message
             {
-                const client_finished = &h.transcript.clientFinishedTLS12(&h.master_secret);
+                const client_finished = &handshakeHeader(.finished, 12) ++ h.transcript.clientFinishedTLS12(&h.master_secret);
                 try h.writeEncrypted(&w, client_finished);
                 h.transcript.update(client_finished);
             }
@@ -729,11 +730,19 @@ pub fn Handshake(comptime Stream: type) type {
 
             // Client handshake finished message
             {
-                const client_finished = h.transcript.clientFinishedTLS13();
+                var buf: [4 + Transcript.max_mac_length]u8 = undefined;
+                const client_finished = try h.makeClientFinishedTLS13(&buf);
                 try h.writeEncrypted(&w, client_finished);
                 h.transcript.update(client_finished);
             }
 
+            return w.getWritten();
+        }
+
+        fn makeClientFinishedTLS13(h: *HandshakeT, buffer: []u8) ![]const u8 {
+            var w = BufWriter{ .buf = buffer };
+            const verify_data = h.transcript.clientFinishedTLS13(w.getHandshakePayload());
+            try w.advanceHandshake(.finished, verify_data.len);
             return w.getWritten();
         }
 
@@ -862,8 +871,8 @@ pub fn Handshake(comptime Stream: type) type {
                     try h.rec_rdr.nextDecrypt(h.cipher, 0) orelse return error.EndOfStream;
                 if (content_type != .handshake)
                     return error.TlsUnexpectedMessage;
-                const expected_server_finished = h.transcript.serverFinishedTLS12(&h.master_secret);
-                if (!mem.eql(u8, server_finished, &expected_server_finished))
+                const expected = handshakeHeader(.finished, 12) ++ h.transcript.serverFinishedTLS12(&h.master_secret);
+                if (!mem.eql(u8, server_finished, &expected))
                     return error.TlsBadRecordMac;
             }
         }
@@ -1044,18 +1053,32 @@ const BufWriter = struct {
         try self.write(&handshakeHeader(handshake_type, payload_len));
     }
 
-    pub fn writeRecord(self: *BufWriter, content_type: tls.ContentType, payload: anytype) !void {
-        if (@TypeOf(payload) == usize) {
-            try self.write(&recordHeader(content_type, payload));
-            self.pos += payload;
-            return;
-        }
+    /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
+    pub fn advanceHandshake(self: *BufWriter, handshake_type: HandshakeType, payload_len: usize) !void {
+        try self.write(&handshakeHeader(handshake_type, payload_len));
+        self.pos += payload_len;
+    }
+
+    /// Record payload is already written by using buffer space from `getPayload`.
+    /// Now when we know payload len we can write record header and advance over payload.
+    pub fn advanceRecord(self: *BufWriter, content_type: tls.ContentType, payload_len: usize) !void {
+        try self.write(&recordHeader(content_type, payload_len));
+        self.pos += payload_len;
+    }
+
+    pub fn writeRecord(self: *BufWriter, content_type: tls.ContentType, payload: []const u8) !void {
         try self.write(&recordHeader(content_type, payload.len));
         try self.write(payload);
     }
 
+    /// Preserves space for record header and returns buffer free space.
     pub fn getPayload(self: *BufWriter) []u8 {
         return self.buf[self.pos + tls.record_header_len ..];
+    }
+
+    /// Preserves space for handshake header and returns buffer free space.
+    pub fn getHandshakePayload(self: *BufWriter) []u8 {
+        return self.buf[self.pos + 4 ..];
     }
 
     pub fn getWritten(self: *BufWriter) []const u8 {
@@ -1127,11 +1150,6 @@ fn serverNameExtensionHeader(host_len: u16) [9]u8 {
         int2(host_len + 3) ++ // server_name_list byte count
         [1]u8{0x00} ++ // name_type
         int2(host_len);
-}
-
-fn handshakeRecordHeader(handshake_type: HandshakeType, payload_len: usize) [9]u8 {
-    return recordHeader(.handshake, 4 + payload_len) ++
-        handshakeHeader(handshake_type, payload_len);
 }
 
 pub fn handshakeHeader(handshake_type: HandshakeType, payload_len: usize) [4]u8 {
@@ -1318,9 +1336,9 @@ test "tls 1.3 process server flight" {
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
-        const client_finished = h.transcript.clientFinishedTLS13();
+        var buf: [4 + Transcript.max_mac_length]u8 = undefined;
+        const client_finished = try h.makeClientFinishedTLS13(&buf);
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
-
         const encrypted = try h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
         try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, encrypted);
     }
@@ -1375,7 +1393,7 @@ test "handshake verify server finished message" {
 
     // expect verify data
     const client_finished = h.transcript.clientFinishedTLS12(&h.master_secret);
-    try testing.expectEqualSlices(u8, &data12.client_finished, &client_finished);
+    try testing.expectEqualSlices(u8, &data12.client_finished, &handshakeHeader(.finished, 12) ++ client_finished);
 
     // init client with prepared key_material
     h.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random);
