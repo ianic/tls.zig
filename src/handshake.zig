@@ -99,7 +99,7 @@ pub fn Handshake(comptime Stream: type) type {
         key_material: [48 * 4]u8 = undefined, // for sha256 32 * 4 is filled, for sha384 48 * 4
 
         transcript: Transcript = .{},
-        cipher_suite_tag: CipherSuite = @enumFromInt(0),
+        cipher_suite: CipherSuite = @enumFromInt(0),
         named_group: ?tls.NamedGroup = null,
         dh_kp: DhKeyPair,
         rsa_secret: RsaSecret,
@@ -124,10 +124,10 @@ pub fn Handshake(comptime Stream: type) type {
 
         const HandshakeT = @This();
 
-        pub fn init(buf: []u8, reader: *RecordReaderT) !HandshakeT {
+        pub fn init(buf: []u8, rec_rdr: *RecordReaderT) !HandshakeT {
             var random_buf: [init_random_buf_len]u8 = undefined;
             crypto.random.bytes(&random_buf);
-            return try initWithRandom(buf, reader, random_buf);
+            return try initWithRandom(buf, rec_rdr, random_buf);
         }
 
         const init_random_buf_len = 32 + 64 + 46;
@@ -201,7 +201,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             try w.writeAll(try h.makeClientHello(host, opt)); // client flight 1
             try h.readServerFlight1(ca_bundle, host); // server flight 1
-            h.transcript.set(h.cipher_suite_tag.hash());
+            h.transcript.set(h.cipher_suite.hash());
 
             // tls 1.3 specific handshake part
             if (h.tls_version == .tls_1_3) {
@@ -223,13 +223,13 @@ pub fn Handshake(comptime Stream: type) type {
         fn generateCipher(h: *HandshakeT) !void {
             try h.verifyCertificateSignatureTLS12();
             try h.generateKeyMaterial();
-            h.cipher = try Cipher.initTLS12(h.cipher_suite_tag, &h.key_material, crypto.random);
+            h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, crypto.random);
         }
 
         /// Generate TLS 1.2 pre master secret, master secret and key material.
         fn generateKeyMaterial(h: *HandshakeT) !void {
             const pre_master_secret = if (h.named_group) |named_group|
-                try h.dh_kp.preMasterSecret(named_group, h.server_pub_key)
+                try h.dh_kp.sharedKey(named_group, h.server_pub_key)
             else
                 &h.rsa_secret.secret;
 
@@ -245,15 +245,15 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// TLS 1.3 cipher used during handshake
         fn generateHandshakeCipher(h: *HandshakeT) !void {
-            const shared_key = try h.dh_kp.preMasterSecret(h.named_group.?, h.server_pub_key);
+            const shared_key = try h.dh_kp.sharedKey(h.named_group.?, h.server_pub_key);
             const handshake_secret = h.transcript.handshakeSecret(shared_key);
-            h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, handshake_secret, .client);
+            h.cipher = try Cipher.initTLS13(h.cipher_suite, handshake_secret, .client);
         }
 
         /// TLS 1.3 application (client) cipher
         fn generateApplicationCipher(h: *HandshakeT) !Cipher {
             const application_secret = h.transcript.applicationSecret();
-            return try Cipher.initTLS13(h.cipher_suite_tag, application_secret, .client);
+            return try Cipher.initTLS13(h.cipher_suite, application_secret, .client);
         }
 
         fn makeClientHello(h: *HandshakeT, host: []const u8, opt: Options) ![]const u8 {
@@ -373,7 +373,7 @@ pub fn Handshake(comptime Stream: type) type {
                         },
                         .certificate => {
                             try h.parseServerCertificate(&d, ca_bundle, host);
-                            handshake_state = if (h.cipher_suite_tag.keyExchange() == .rsa)
+                            handshake_state = if (h.cipher_suite.keyExchange() == .rsa)
                                 .server_hello_done
                             else
                                 .server_key_exchange;
@@ -409,8 +409,8 @@ pub fn Handshake(comptime Stream: type) type {
             if (session_id_len > 32) return error.TlsIllegalParameter;
             try d.skip(session_id_len);
 
-            h.cipher_suite_tag = try d.decode(CipherSuite);
-            try h.cipher_suite_tag.validate();
+            h.cipher_suite = try d.decode(CipherSuite);
+            try h.cipher_suite.validate();
             try d.skip(1); // skip compression method
 
             const extensions_present = length > 2 + 32 + session_id_len + 2 + 1;
@@ -604,7 +604,7 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn verifyCertificateSignatureTLS12(h: *HandshakeT) !void {
-            if (h.cipher_suite_tag.keyExchange() != .ecdhe) return;
+            if (h.cipher_suite.keyExchange() != .ecdhe) return;
             const verify_bytes = brk: {
                 var w = BufWriter{ .buf = h.buffer };
                 try w.write(&h.client_random);
@@ -906,7 +906,7 @@ pub fn Handshake(comptime Stream: type) type {
         fn statsUpdate(h: *HandshakeT, opt: Options) void {
             if (opt.stats) |stats| {
                 stats.tls_version = h.tls_version;
-                stats.cipher_suite_tag = h.cipher_suite_tag;
+                stats.cipher_suite_tag = h.cipher_suite;
                 stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
                 stats.signature_scheme = h.signature_scheme;
                 if (opt.auth) |a|
@@ -959,7 +959,7 @@ const DhKeyPair = struct {
         };
     }
 
-    inline fn preMasterSecret(self: DhKeyPair, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
+    inline fn sharedKey(self: DhKeyPair, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
         return switch (named_group) {
             .x25519 => brk: {
                 if (server_pub_key.len != X25519.public_length)
@@ -1035,16 +1035,16 @@ test "DhKeyPair.x25519" {
     const expected = &testu.hexToBytes("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
 
     const kp = try DhKeyPair.init(seed[0..64].*);
-    try testing.expectEqualSlices(u8, expected, try kp.preMasterSecret(.x25519, server_pub_key));
+    try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
 }
 
-fn dupe(buf: []u8, data: []const u8) []u8 {
+pub fn dupe(buf: []u8, data: []const u8) []u8 {
     const n = @min(data.len, buf.len);
     @memcpy(buf[0..n], data[0..n]);
     return buf[0..n];
 }
 
-const BufWriter = struct {
+pub const BufWriter = struct {
     buf: []u8,
     pos: usize = 0,
 
@@ -1217,7 +1217,7 @@ test "parse tls 1.2 server hello" {
     // Verify host name, signature
     // Calculate key material
     try h.readServerFlight1(null, "example.ulfheim.net");
-    try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite_tag);
+    try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite);
     try testing.expectEqual(.x25519, h.named_group.?);
     try testing.expectEqual(.rsa_pkcs1_sha256, h.signature_scheme);
     try testing.expectEqualSlices(u8, &data12.server_random, &h.server_random);
@@ -1260,7 +1260,7 @@ test "parse tls 1.3 server hello" {
     var h = try TestHandshake.init(undefined, undefined);
     try h.parseServerHello(&d, length);
 
-    try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite_tag);
+    try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite);
     try testing.expectEqualSlices(u8, &data13.server_random, &h.server_random);
     try testing.expectEqual(.tls_1_3, h.tls_version);
     try testing.expectEqual(.x25519, h.named_group);
@@ -1281,7 +1281,7 @@ test "init tls 1.3 handshake cipher" {
             .secret_key = data13.client_private_key,
         },
     };
-    const shared_key = try dh_kp.preMasterSecret(.x25519, &data13.server_pub_key);
+    const shared_key = try dh_kp.sharedKey(.x25519, &data13.server_pub_key);
     try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
     const cipher = try Cipher.initTLS13(cipher_suite_tag, transcript.handshakeSecret(shared_key), .client);
@@ -1294,11 +1294,11 @@ test "init tls 1.3 handshake cipher" {
 }
 
 fn initExampleHandshake(h: *TestHandshake) !void {
-    h.cipher_suite_tag = .AES_256_GCM_SHA384;
-    h.transcript.set(h.cipher_suite_tag.hash());
+    h.cipher_suite = .AES_256_GCM_SHA384;
+    h.transcript.set(h.cipher_suite.hash());
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
-    h.cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.handshakeSecret(&data13.shared_key), .client);
+    h.cipher = try Cipher.initTLS13(h.cipher_suite, h.transcript.handshakeSecret(&data13.shared_key), .client);
     h.tls_version = .tls_1_3;
     h.now_sec = 1714846451;
     h.server_pub_key = &data13.server_pub_key;
@@ -1343,7 +1343,7 @@ test "tls 1.3 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cipher = try Cipher.initTLS13(h.cipher_suite_tag, h.transcript.applicationSecret(), .client);
+        const cipher = try Cipher.initTLS13(h.cipher_suite, h.transcript.applicationSecret(), .client);
         const c = &cipher.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &data13.server_application_key, &c.decrypt_key);
         try testing.expectEqualSlices(u8, &data13.client_application_key, &c.encrypt_key);
@@ -1401,7 +1401,7 @@ test "handshake verify server finished message" {
     var rec_rdr = testReader(&data12.server_handshake_finished_msgs);
     var h = try TestHandshake.init(&buffer, &rec_rdr);
 
-    h.cipher_suite_tag = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
+    h.cipher_suite = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
     h.master_secret = data12.master_secret;
 
     // add handshake messages to the transcript
