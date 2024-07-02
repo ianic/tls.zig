@@ -12,6 +12,10 @@ pub const server_hello =
     hexToBytes("002e002b00020304") ++ // extensions, supported version
     hexToBytes("00330024001d00209fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615"); // extension key share
 
+pub const client_random = hexToBytes(
+    \\ 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+);
+
 pub const server_random =
     hexToBytes("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f");
 pub const server_pub_key =

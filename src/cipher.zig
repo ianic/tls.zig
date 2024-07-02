@@ -643,7 +643,7 @@ pub const CipherSuite = enum(u16) {
         return error.TlsIllegalParameter;
     }
 
-    fn includes(list: []const CipherSuite, cs: CipherSuite) bool {
+    pub fn includes(list: []const CipherSuite, cs: CipherSuite) bool {
         for (list) |s| {
             if (cs == s) return true;
         }

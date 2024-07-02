@@ -19,7 +19,8 @@ pub fn Reader(comptime InnerReader: type) type {
 
         pub fn nextDecoder(r: *ReaderT) !Decoder {
             const rec = (try r.next()) orelse return error.EndOfStream;
-            if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+            if (@intFromEnum(rec.protocol_version) != 0x0301 and
+                rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
             return .{
                 .content_type = rec.content_type,
                 .payload = rec.payload,

@@ -36,7 +36,11 @@ pub fn random(seed: u8) std.Random {
 
 // Fill buf with 0,1,..ff,0,...
 pub fn fill(buf: []u8) void {
-    var i: u8 = 0;
+    fillFrom(buf, 0);
+}
+
+pub fn fillFrom(buf: []u8, start: u8) void {
+    var i: u8 = start;
     for (buf) |*v| {
         v.* = i;
         i +%= 1;

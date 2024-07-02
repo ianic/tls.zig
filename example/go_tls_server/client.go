@@ -16,7 +16,7 @@ func main() {
 	}
 	cp.AppendCertsFromPEM(data)
 
-	cer, err := tls.LoadX509KeyPair("../cert/client-ec/cert.pem", "../cert/client-ec/key.pem")
+	cer, err := tls.LoadX509KeyPair("../cert/client_ec/cert.pem", "../cert/client_ec/key.pem")
 	if err != nil {
 		panic(err)
 	}
