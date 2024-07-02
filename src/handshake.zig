@@ -527,13 +527,12 @@ pub fn Handshake(comptime Stream: type) type {
                 switch (rec.content_type) {
                     .change_cipher_spec => {},
                     .application_data => {
-                        const content_type, const cleartext = switch (h.cipher) {
-                            inline else => |*p| try p.decrypt(
-                                cleartext_buf[cleartext_buf_tail..],
-                                sequence,
-                                rec,
-                            ),
-                        };
+                        const content_type, const cleartext = try h.cipher.decrypt(
+                            cleartext_buf[cleartext_buf_tail..],
+                            sequence,
+                            rec,
+                        );
+
                         if (content_type != .handshake) return error.TlsUnexpectedMessage;
                         sequence += 1;
                         cleartext_buf_tail += cleartext.len;
