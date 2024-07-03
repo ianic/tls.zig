@@ -3,29 +3,22 @@ const assert = std.debug.assert;
 const crypto = std.crypto;
 const mem = std.mem;
 const tls = crypto.tls;
-
 const Certificate = crypto.Certificate;
 const X25519 = crypto.dh.X25519;
-const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
-const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-const Kyber768 = crypto.kem.kyber_d00.Kyber768;
-const Sha256 = crypto.hash.sha2.Sha256;
-const Sha384 = crypto.hash.sha2.Sha384;
-const Sha512 = crypto.hash.sha2.Sha512;
 
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 const PrivateKey = @import("PrivateKey.zig");
-const rsa = @import("rsa/rsa.zig");
 
-const HandshakeType = @import("handshake.zig").HandshakeType;
-const BufWriter = @import("handshake.zig").BufWriter;
-const dupe = @import("handshake.zig").dupe;
-const recordHeader = @import("handshake.zig").recordHeader;
-const handshakeHeader = @import("handshake.zig").handshakeHeader;
 const common = @import("handshake_common.zig");
+const HandshakeType = common.HandshakeType;
+const BufWriter = common.BufWriter;
+const dupe = common.dupe;
+const recordHeader = common.recordHeader;
+const handshakeHeader = common.handshakeHeader;
+const CertificateMessagesBuilder = common.CertificateMessagesBuilder;
 
 pub const Options = struct {
     auth: ?Auth = null,
@@ -41,14 +34,15 @@ pub fn Handshake(comptime Stream: type) type {
     return struct {
         server_random: [32]u8 = undefined,
         client_random: [32]u8 = undefined,
+        legacy_session_id_buf: [32]u8 = undefined,
+        legacy_session_id: []u8 = "",
         cipher_suite: CipherSuite = @enumFromInt(0),
 
         named_group: tls.NamedGroup = .x25519,
         x25519_kp: X25519.KeyPair = undefined,
         client_pub_key_buf: [X25519.public_length]u8 = undefined,
         client_pub_key: []u8 = "",
-        // TODO: take it from private key
-        signature_scheme: tls.SignatureScheme = .rsa_pss_rsae_sha256,
+        signature_scheme: tls.SignatureScheme = @enumFromInt(0),
 
         transcript: Transcript = .{},
         rec_rdr: *RecordReaderT,
@@ -74,6 +68,7 @@ pub fn Handshake(comptime Stream: type) type {
                 h.signature_scheme = a.private_key.signature_scheme;
             }
             try h.readClientHello();
+            h.transcript.use(h.cipher_suite.hash());
 
             const server_flight = brk: {
                 var w = BufWriter{ .buf = h.buffer };
@@ -90,7 +85,7 @@ pub fn Handshake(comptime Stream: type) type {
                     try h.writeEncrypted(&w, encrypted_extensions);
                 }
                 if (opt.auth) |a| {
-                    const cm = common.CertificateMessages{
+                    const cm = CertificateMessagesBuilder{
                         .certificates = a.certificates,
                         .private_key = a.private_key,
                         .transcript = &h.transcript,
@@ -133,9 +128,9 @@ pub fn Handshake(comptime Stream: type) type {
                     .change_cipher_spec => {},
                     .application_data => {
                         const content_type, const cleartext = try h.cipher.decrypt(h.buffer, 0, rec);
-                        if (content_type != .handshake) return error.TlsUnexpectedMessage;
-
                         var d = record.Decoder.init(content_type, cleartext);
+                        try d.expectContentType(.handshake);
+
                         const handshake_type = try d.decode(HandshakeType);
                         const length = try d.decode(u24);
                         if (handshake_type != .finished) return error.TlsUnexpectedMessage;
@@ -217,7 +212,10 @@ pub fn Handshake(comptime Stream: type) type {
 
             try w.writeEnum(tls.ProtocolVersion.tls_1_2);
             try w.write(&h.server_random);
-            try w.write(&[_]u8{0}); // 0 bytes of session id
+            {
+                try w.writeInt(@as(u8, @intCast(h.legacy_session_id.len)));
+                if (h.legacy_session_id.len > 0) try w.write(h.legacy_session_id);
+            }
             try w.writeEnum(h.cipher_suite);
             try w.write(&[_]u8{0}); // compression method
 
@@ -255,7 +253,10 @@ pub fn Handshake(comptime Stream: type) type {
             if (try d.decode(tls.ProtocolVersion) != .tls_1_2) return error.TlsBadVersion;
 
             h.client_random = (try d.array(32)).*;
-            try d.skip(try d.decode(u8)); // session id
+            { // legacy session id
+                const len = try d.decode(u8);
+                h.legacy_session_id = dupe(&h.legacy_session_id_buf, try d.slice(len));
+            }
             { // cipher suites
                 const end_idx = try d.decode(u16) + d.idx;
                 while (d.idx < end_idx) {

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"os"
 )
 
@@ -26,18 +27,23 @@ func main() {
 		RootCAs:      cp,
 	}
 
-	conn, err := tls.Dial("tcp", "localhost:8443", conf)
+	conn, err := tls.Dial("tcp", "localhost:9443", conf)
 	if err != nil {
 		panic(err)
 
 	}
 	defer conn.Close()
 
-	buf := make([]byte, 100)
-	n, err := conn.Read(buf)
-	if err != nil {
-		panic(err)
-	}
+	buf := make([]byte, 4096)
+	for {
+		n, err := conn.Read(buf)
 
-	println(string(buf[:n]))
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+		print(string(buf[:n]))
+	}
 }

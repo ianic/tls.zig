@@ -40,7 +40,7 @@ pub const Transcript = struct {
     }
 
     /// Set hash to use in all following function calls.
-    pub fn set(t: *Transcript, tag: HashTag) void {
+    pub fn use(t: *Transcript, tag: HashTag) void {
         t.tag = tag;
     }
 

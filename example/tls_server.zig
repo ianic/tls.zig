@@ -16,7 +16,7 @@ pub fn main() !void {
     const private_key = try tls.PrivateKey.fromFile(gpa, file);
     file.close();
 
-    const port = 8443;
+    const port = 9443;
     const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
     var server = try address.listen(.{
         .reuse_address = true,

@@ -23,7 +23,7 @@ pub fn main() !void {
 
     // Make tcp connection
     const host = "localhost";
-    const port = 8443;
+    const port = 9443;
     var tcp = try std.net.tcpConnectToHost(gpa, host, port);
     defer tcp.close();
 
@@ -31,7 +31,8 @@ pub fn main() !void {
     var cli = tls.client(tcp);
     var stats: tls.Options.Stats = .{};
     try cli.handshake(host, ca_bundle, .{
-        .cipher_suites = &tls.CipherSuite.tls13,
+        //.cipher_suites = &tls.CipherSuite.tls13,
+        .cipher_suites = &.{tls.CipherSuite.AES_256_GCM_SHA384},
         .stats = &stats,
     });
 

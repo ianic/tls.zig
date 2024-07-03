@@ -9,7 +9,8 @@ const Sha384 = crypto.hash.sha2.Sha384;
 
 const Record = @import("record.zig").Record;
 const Transcript = @import("transcript.zig").Transcript;
-const recordHeader = @import("handshake.zig").recordHeader;
+const recordHeader = @import("handshake_common.zig").recordHeader;
+const Side = @import("handshake_common.zig").Side;
 
 // tls 1.2 cbc cipher types
 const CbcAes128Sha1 = CbcType(crypto.core.aes.Aes128, Sha1);
@@ -121,11 +122,6 @@ pub const Cipher = union(CipherSuite) {
             else => return error.TlsIllegalParameter,
         }
     }
-
-    const Side = enum {
-        client,
-        server,
-    };
 
     // tls 1.3 handshake or application cipher
     pub fn initTLS13(tag: CipherSuite, secret: Transcript.Secret, side: Side) !Cipher {

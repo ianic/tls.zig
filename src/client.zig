@@ -6,7 +6,7 @@ const Certificate = crypto.Certificate;
 
 const record = @import("record.zig");
 const Cipher = @import("cipher.zig").Cipher;
-const HandshakeType = @import("handshake.zig").HandshakeType;
+const HandshakeType = @import("handshake_common.zig").HandshakeType;
 const Handshake = @import("handshake.zig").Handshake;
 pub const Options = @import("handshake.zig").Options;
 pub const CipherSuite = @import("cipher.zig").CipherSuite;
