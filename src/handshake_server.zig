@@ -19,14 +19,10 @@ const dupe = common.dupe;
 const recordHeader = common.recordHeader;
 const handshakeHeader = common.handshakeHeader;
 const CertificateMessagesBuilder = common.CertificateMessagesBuilder;
+const Authentication = common.Authentication;
 
 pub const Options = struct {
-    auth: ?Auth = null,
-
-    pub const Auth = struct {
-        certificates: Certificate.Bundle,
-        private_key: PrivateKey,
-    };
+    authentication: ?Authentication,
 };
 
 pub fn Handshake(comptime Stream: type) type {
@@ -64,7 +60,8 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         pub fn handshake(h: *HandshakeT, stream: Stream, opt: Options) !Cipher {
-            if (opt.auth) |a| {
+            if (opt.authentication) |a| {
+                // required signature scheme in client hello
                 h.signature_scheme = a.private_key.signature_scheme;
             }
             try h.readClientHello();
@@ -84,7 +81,7 @@ pub fn Handshake(comptime Stream: type) type {
                     h.transcript.update(encrypted_extensions);
                     try h.writeEncrypted(&w, encrypted_extensions);
                 }
-                if (opt.auth) |a| {
+                if (opt.authentication) |a| {
                     const cm = CertificateMessagesBuilder{
                         .certificates = a.certificates,
                         .private_key = a.private_key,
@@ -306,7 +303,8 @@ pub fn Handshake(comptime Stream: type) type {
                             const signature_scheme = try d.decode(tls.SignatureScheme);
                             if (signature_scheme == h.signature_scheme) found = true;
                         }
-                        if (!found) return error.TlsIllegalParameter;
+                        if (@intFromEnum(h.signature_scheme) != 0 and !found)
+                            return error.TlsIllegalParameter;
                     },
                     .supported_groups => {
                         const end_idx = try d.decode(u16) + d.idx;

@@ -13,7 +13,9 @@ pub fn main() !void {
         var ca_bundle = try cmn.initCaBundle(gpa);
         defer ca_bundle.deinit(gpa);
 
-        try cmn.get(gpa, domain, null, ca_bundle, true, true, .{
+        try cmn.get(gpa, domain, null, true, true, .{
+            .host = "",
+            .root_ca = ca_bundle,
             // to force specific cipher:
             // .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
             // to force cipher from specific tls version:

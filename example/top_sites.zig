@@ -12,8 +12,8 @@ pub fn main() !void {
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = gpa, .n_jobs = 32 });
 
-    var ca_bundle = try cmn.initCaBundle(gpa);
-    defer ca_bundle.deinit(gpa);
+    var root_ca = try cmn.initCaBundle(gpa);
+    defer root_ca.deinit(gpa);
 
     var counter: cmn.Counter = .{};
     for (top_sites.value) |site| {
@@ -22,20 +22,24 @@ pub fn main() !void {
             counter.add(.skip);
             continue;
         }
-        try pool.spawn(run, .{ gpa, domain, ca_bundle, &counter });
+        try pool.spawn(run, .{ gpa, domain, root_ca, &counter });
     }
     pool.deinit();
     counter.show();
 }
 
-pub fn run(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bundle, counter: *cmn.Counter) void {
-    var stats: tls.Options.Stats = .{};
-    var opt: tls.Options = .{ .stats = &stats };
+pub fn run(gpa: std.mem.Allocator, domain: []const u8, root_ca: Certificate.Bundle, counter: *cmn.Counter) void {
+    var diagnostic: tls.ClientOptions.Diagnostic = .{};
+    var opt: tls.ClientOptions = .{
+        .host = "",
+        .root_ca = root_ca,
+        .diagnostic = &diagnostic,
+    };
 
     if (cmn.inList(domain, &cmn.noKeyber)) {
         opt.disable_keyber = true;
     }
-    cmn.get(gpa, domain, null, ca_bundle, false, false, opt) catch |err| {
+    cmn.get(gpa, domain, null, false, false, opt) catch |err| {
         curl(gpa, domain) catch |curl_err| {
             std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
             counter.add(.err);
@@ -48,10 +52,10 @@ pub fn run(gpa: std.mem.Allocator, domain: []const u8, ca_bundle: Certificate.Bu
     counter.add(.success);
     std.debug.print("✔️ {s} {s} {s} {s} {s}\n", .{
         domain,
-        if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
-        if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
-        if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
-        if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
+        if (@intFromEnum(diagnostic.tls_version) == 0) "none" else @tagName(diagnostic.tls_version),
+        if (@intFromEnum(diagnostic.cipher_suite_tag) == 0) "none" else @tagName(diagnostic.cipher_suite_tag),
+        if (@intFromEnum(diagnostic.named_group) == 0) "none" else @tagName(diagnostic.named_group),
+        if (@intFromEnum(diagnostic.signature_scheme) == 0) "none" else @tagName(diagnostic.signature_scheme),
     });
 }
 

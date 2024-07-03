@@ -2,7 +2,7 @@ const std = @import("std");
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 
-pub fn showStats(stats: *tls.Options.Stats, domain: []const u8) void {
+pub fn showDiagnostic(stats: *tls.ClientOptions.Diagnostic, domain: []const u8) void {
     std.debug.print(
         "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n",
         .{
@@ -117,10 +117,9 @@ pub fn get(
     gpa: std.mem.Allocator,
     domain: []const u8,
     port: ?u16,
-    ca_bundle: Certificate.Bundle,
     show_handshake_stat: bool,
     show_response: bool,
-    opt_: tls.Options,
+    opt_: tls.ClientOptions,
 ) !void {
     var opt = opt_;
 
@@ -144,15 +143,15 @@ pub fn get(
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     // Prepare and show handshake stats
-    if (show_handshake_stat and opt.stats == null) {
-        var stats: tls.Options.Stats = .{};
-        opt.stats = &stats;
+    if (show_handshake_stat and opt.diagnostic == null) {
+        var diagnostic: tls.ClientOptions.Diagnostic = .{};
+        opt.diagnostic = &diagnostic;
     }
-    defer if (show_handshake_stat) showStats(opt.stats.?, domain);
+    defer if (show_handshake_stat) showDiagnostic(opt.diagnostic.?, domain);
 
     // Upgrade tcp connection to tls
-    var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle, opt);
+    opt.host = host;
+    var cli = try tls.client(tcp, opt);
 
     // Send http GET request
     var buf: [64]u8 = undefined;

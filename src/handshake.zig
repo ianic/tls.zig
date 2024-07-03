@@ -26,8 +26,19 @@ const handshakeHeader = common.handshakeHeader;
 const SchemeHash = common.SchemeHash;
 const CurveType = common.CurveType;
 const CertificateMessagesBuilder = common.CertificateMessagesBuilder;
+const Authentication = common.Authentication;
 
 pub const Options = struct {
+    host: []const u8,
+    // Set of root certificate authorities that clients use when verifying
+    // server certificates.
+    root_ca: Certificate.Bundle,
+
+    // Controls whether a client verifies the server's certificate chain and
+    // host name.
+    insecure_skip_verify: bool = false,
+
+    // List of cipher suites to use.
     // To use just tls 1.3 cipher suites:
     //   .cipher_suites = &tls.CipherSuite.tls13,
     // To select particular cipher suite:
@@ -45,22 +56,14 @@ pub const Options = struct {
     // possible to those sites.
     disable_keyber: bool = false,
 
-    // Collect stats from handshake.
-    stats: ?*Stats = null,
-
     // Client authentication
-    auth: ?Auth = null,
+    authentication: ?Authentication = null,
 
-    pub const Auth = struct {
-        // Certificate chain to send to the server if server requests client
-        // authentication.
-        certificates: Certificate.Bundle,
-        // Private key of the first certificate in bundle.
-        // Used for creating signature in certificate signature message.
-        private_key: PrivateKey,
-    };
+    // If this structure is provided it will be filled with handshake attributes
+    // at the end of the handshake process.
+    diagnostic: ?*Diagnostic = null,
 
-    pub const Stats = struct {
+    pub const Diagnostic = struct {
         tls_version: tls.ProtocolVersion = @enumFromInt(0),
         cipher_suite_tag: CipherSuite = @enumFromInt(0),
         named_group: tls.NamedGroup = @enumFromInt(0),
@@ -173,31 +176,25 @@ pub fn Handshake(comptime Stream: type) type {
         /// https://datatracker.ietf.org/doc/html/rfc5246#section-7.3
         /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
         ///
-        pub fn handshake(
-            h: *HandshakeT,
-            w: Stream,
-            host: []const u8,
-            ca_bundle: ?Certificate.Bundle,
-            opt: Options,
-        ) !Cipher {
-            defer h.statsUpdate(opt);
+        pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !Cipher {
+            defer h.updateDiagnostic(opt);
 
-            try w.writeAll(try h.makeClientHello(host, opt)); // client flight 1
-            try h.readServerFlight1(ca_bundle, host); // server flight 1
+            try w.writeAll(try h.makeClientHello(opt)); // client flight 1
+            try h.readServerFlight1(opt); // server flight 1
             h.transcript.use(h.cipher_suite.hash());
 
             // tls 1.3 specific handshake part
             if (h.tls_version == .tls_1_3) {
                 try h.generateHandshakeCipher();
-                try h.readEncryptedServerFlight1(ca_bundle, host); // server flight 1
+                try h.readEncryptedServerFlight1(opt); // server flight 1
                 const app_cipher = try h.generateApplicationCipher();
-                try w.writeAll(try h.makeClientFlight2TLS13(opt.auth)); // client flight 2
+                try w.writeAll(try h.makeClientFlight2TLS13(opt.authentication)); // client flight 2
                 return app_cipher;
             }
 
             // tls 1.2 specific handshake part
             try h.generateCipher();
-            try w.writeAll(try h.makeClientFlight2TLS12(opt.auth)); // client flight 2
+            try w.writeAll(try h.makeClientFlight2TLS12(opt.authentication)); // client flight 2
             try h.readServerFlight2(); // server flight 2
             return h.cipher;
         }
@@ -239,7 +236,7 @@ pub fn Handshake(comptime Stream: type) type {
             return try Cipher.initTLS13(h.cipher_suite, application_secret, .client);
         }
 
-        fn makeClientHello(h: *HandshakeT, host: []const u8, opt: Options) ![]const u8 {
+        fn makeClientHello(h: *HandshakeT, opt: Options) ![]const u8 {
             const extension = struct {
                 pub const status_request = [_]u8{ 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00 };
                 pub const ec_point_formats = [_]u8{ 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00 };
@@ -306,7 +303,7 @@ pub fn Handshake(comptime Stream: type) type {
                 };
                 try ext.writeKeyShare(named_groups[0..named_groups_len], keys[0..named_groups_len]);
             }
-            try ext.writeServerName(host);
+            try ext.writeServerName(opt.host);
 
             // Extensions length at the end of the payload.
             try payload.writeInt(@as(u16, @intCast(ext.pos)));
@@ -325,7 +322,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// Read server hello message. If TLS 1.3 is chosen in server hello
         /// return. For TLS 1.2 continue and read certificate, key_exchange
         /// eventual certificate request and hello done messages.
-        fn readServerFlight1(h: *HandshakeT, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
+        fn readServerFlight1(h: *HandshakeT, opt: Options) !void {
             var handshake_state = HandshakeType.server_hello;
 
             while (true) {
@@ -355,7 +352,7 @@ pub fn Handshake(comptime Stream: type) type {
                             handshake_state = .certificate;
                         },
                         .certificate => {
-                            try h.parseServerCertificate(&d, ca_bundle, host);
+                            try h.parseServerCertificate(&d, opt);
                             handshake_state = if (h.cipher_suite.keyExchange() == .rsa)
                                 .server_hello_done
                             else
@@ -431,7 +428,7 @@ pub fn Handshake(comptime Stream: type) type {
             return std.mem.eql(u8, server_random, &tls.hello_retry_request_sequence);
         }
 
-        fn parseServerCertificate(h: *HandshakeT, d: *record.Decoder, ca_bundle: ?Certificate.Bundle, host: []const u8) !void {
+        fn parseServerCertificate(h: *HandshakeT, d: *record.Decoder, opt: Options) !void {
             var trust_chain_established = false;
             var last_cert: ?Certificate.Parsed = null;
             const certs_len = try d.decode(u24);
@@ -460,13 +457,15 @@ pub fn Handshake(comptime Stream: type) type {
                         else => return err,
                     }
                 } else { // first certificate
-                    try subject.verifyHostName(host);
+                    if (!opt.insecure_skip_verify) {
+                        try subject.verifyHostName(opt.host);
+                    }
                     h.cert_pub_key = dupe(&h.cert_pub_key_buf, subject.pubKey());
                     h.cert_pub_key_algo = subject.pub_key_algo;
                     last_cert = subject;
                 }
-                if (ca_bundle) |cb| {
-                    if (cb.verify(last_cert.?, h.now_sec)) |_| {
+                if (!opt.insecure_skip_verify) {
+                    if (opt.root_ca.verify(last_cert.?, h.now_sec)) |_| {
                         trust_chain_established = true;
                     } else |err| switch (err) {
                         error.CertificateIssuerNotFound => {},
@@ -474,7 +473,7 @@ pub fn Handshake(comptime Stream: type) type {
                     }
                 }
             }
-            if (ca_bundle != null and !trust_chain_established) {
+            if (!opt.insecure_skip_verify and !trust_chain_established) {
                 return error.CertificateIssuerNotFound;
             }
         }
@@ -491,11 +490,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// Read encrypted part (after server hello) of the server first flight
         /// for TLS 1.3: change cipher spec, eventual certificate request,
         /// certificate, certificate verify and handshake finished messages.
-        fn readEncryptedServerFlight1(
-            h: *HandshakeT,
-            ca_bundle: ?Certificate.Bundle,
-            host: []const u8,
-        ) !void {
+        fn readEncryptedServerFlight1(h: *HandshakeT, opt: Options) !void {
             var sequence: u64 = 0;
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
@@ -554,7 +549,7 @@ pub fn Handshake(comptime Stream: type) type {
                                 .certificate => {
                                     const request_context = try d.decode(u8);
                                     if (request_context != 0) return error.TlsIllegalParameter;
-                                    try h.parseServerCertificate(&d, ca_bundle, host);
+                                    try h.parseServerCertificate(&d, opt);
                                     handshake_state = .certificate_verify;
                                 },
                                 .certificate_verify => {
@@ -657,7 +652,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// finished messages for tls 1.2.
         /// If client certificate is requested also adds client certificate and
         /// certificate verify messages.
-        fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
+        fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Authentication) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
             var cert_builder: ?CertificateMessagesBuilder = null;
 
@@ -716,7 +711,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// and client certificate verify messages are also created. If the
         /// server has requested certificate but the client is not configured
         /// empty certificate message is sent, as is required by rfc.
-        fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?Options.Auth) ![]const u8 {
+        fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?Authentication) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
 
             // Client change cipher spec message
@@ -808,15 +803,15 @@ pub fn Handshake(comptime Stream: type) type {
             h.write_seq += 1;
         }
 
-        // Copy handshake parameters to opt.stats
-        fn statsUpdate(h: *HandshakeT, opt: Options) void {
-            if (opt.stats) |stats| {
-                stats.tls_version = h.tls_version;
-                stats.cipher_suite_tag = h.cipher_suite;
-                stats.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
-                stats.signature_scheme = h.signature_scheme;
-                if (opt.auth) |a|
-                    stats.client_signature_scheme = a.private_key.signature_scheme;
+        // Copy handshake parameters to opt.diagnostic
+        fn updateDiagnostic(h: *HandshakeT, opt: Options) void {
+            if (opt.diagnostic) |d| {
+                d.tls_version = h.tls_version;
+                d.cipher_suite_tag = h.cipher_suite;
+                d.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
+                d.signature_scheme = h.signature_scheme;
+                if (opt.authentication) |a|
+                    d.client_signature_scheme = a.private_key.signature_scheme;
             }
         }
 
@@ -955,7 +950,7 @@ test "parse tls 1.2 server hello" {
     // Read cipher suite, named group, signature scheme, server random certificate public key
     // Verify host name, signature
     // Calculate key material
-    try h.readServerFlight1(null, "example.ulfheim.net");
+    try h.readServerFlight1(.{ .host = "example.ulfheim.net", .insecure_skip_verify = true, .root_ca = .{} });
     try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite);
     try testing.expectEqual(.x25519, h.named_group.?);
     try testing.expectEqual(.rsa_pkcs1_sha256, h.signature_scheme);
@@ -983,7 +978,7 @@ test "verify google.com certificate" {
     try ca_bundle.rescan(testing.allocator);
     defer ca_bundle.deinit(testing.allocator);
 
-    try h.readServerFlight1(ca_bundle, "google.com");
+    try h.readServerFlight1(.{ .host = "google.com", .insecure_skip_verify = true, .root_ca = .{} });
     try h.verifyCertificateSignatureTLS12();
 }
 
@@ -1034,7 +1029,7 @@ test "init tls 1.3 handshake cipher" {
 
 fn initExampleHandshake(h: *TestHandshake) !void {
     h.cipher_suite = .AES_256_GCM_SHA384;
-    h.transcript.set(h.cipher_suite.hash());
+    h.transcript.use(h.cipher_suite.hash());
     h.transcript.update(data13.client_hello[tls.record_header_len..]);
     h.transcript.update(data13.server_hello[tls.record_header_len..]);
     h.cipher = try Cipher.initTLS13(h.cipher_suite, h.transcript.handshakeSecret(&data13.shared_key), .client);
@@ -1077,7 +1072,7 @@ test "tls 1.3 process server flight" {
     };
 
     try initExampleHandshake(&h);
-    try h.readEncryptedServerFlight1(null, "example.ulfheim.net");
+    try h.readEncryptedServerFlight1(.{ .host = "example.ulfheim.net", .insecure_skip_verify = true, .root_ca = .{} });
 
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
@@ -1110,7 +1105,9 @@ test "create client hello" {
         break :brk try TestHandshake.initWithRandom(&buffer, undefined, random_buf);
     };
 
-    const actual = try h.makeClientHello("google.com", .{
+    const actual = try h.makeClientHello(.{
+        .host = "google.com",
+        .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
         .disable_keyber = true,
     });

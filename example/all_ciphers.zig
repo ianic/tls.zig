@@ -8,18 +8,20 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(gpa);
     defer gpa.free(args);
 
-    var ca_bundle = try cmn.initCaBundle(gpa);
-    defer ca_bundle.deinit(gpa);
+    var root_ca = try cmn.initCaBundle(gpa);
+    defer root_ca.deinit(gpa);
 
     if (args.len > 1) {
-        return try run(gpa, ca_bundle, args[1]);
+        return try run(gpa, root_ca, args[1]);
     }
-    try run(gpa, ca_bundle, "cloudflare.com");
+    try run(gpa, root_ca, "cloudflare.com");
 }
 
-fn run(gpa: std.mem.Allocator, ca_bundle: Certificate.Bundle, domain: []const u8) !void {
+fn run(gpa: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []const u8) !void {
     for (tls.CipherSuite.all) |cs| {
-        cmn.get(gpa, domain, null, ca_bundle, false, false, .{
+        cmn.get(gpa, domain, null, false, false, .{
+            .root_ca = root_ca,
+            .host = "",
             .cipher_suites = &[_]tls.CipherSuite{cs},
         }) catch |err| {
             std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });

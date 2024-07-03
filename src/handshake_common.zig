@@ -43,6 +43,15 @@ pub const CurveType = enum(u8) {
     _,
 };
 
+pub const Authentication = struct {
+    // Chain of one or more certificates, leaf first. Is is sent to the
+    // server if server requests client authentication.
+    certificates: Certificate.Bundle,
+    // Private key of the leaf certificate in bundle.
+    // Used for creating signature in certificate signature message.
+    private_key: PrivateKey,
+};
+
 pub const CertificateMessagesBuilder = struct {
     certificates: Certificate.Bundle,
     private_key: PrivateKey,

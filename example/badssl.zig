@@ -8,8 +8,8 @@ pub fn main() !void {
     const sets = try readBadssl(gpa);
     defer sets.deinit();
 
-    var ca_bundle = try cmn.initCaBundle(gpa);
-    defer ca_bundle.deinit(gpa);
+    var root_ca = try cmn.initCaBundle(gpa);
+    defer root_ca.deinit(gpa);
 
     for (sets.value) |set| {
         std.debug.print("\n{s}\n{s}\n", .{ set.heading, set.description });
@@ -21,7 +21,7 @@ pub fn main() !void {
             var domain_buf: [128]u8 = undefined;
             const domain = try std.fmt.bufPrint(&domain_buf, "{s}.badssl.com", .{sd.subdomain});
 
-            cmn.get(gpa, domain, if (sd.port == 0) null else sd.port, ca_bundle, false, false, .{}) catch |err| {
+            cmn.get(gpa, domain, if (sd.port == 0) null else sd.port, false, false, .{ .root_ca = root_ca, .host = "" }) catch |err| {
                 std.debug.print(
                     "\t{s} {s} {}\n",
                     .{ fail.emoji(), domain, err },

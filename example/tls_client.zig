@@ -17,9 +17,9 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
-    var ca_bundle: Certificate.Bundle = .{};
-    defer ca_bundle.deinit(gpa);
-    try ca_bundle.addCertsFromFilePath(gpa, dir, "minica.pem");
+    var root_ca: Certificate.Bundle = .{};
+    defer root_ca.deinit(gpa);
+    try root_ca.addCertsFromFilePath(gpa, dir, "minica.pem");
 
     // Make tcp connection
     const host = "localhost";
@@ -27,22 +27,23 @@ pub fn main() !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, port);
     defer tcp.close();
 
-    // Upgrade tcp connection to tls client
-    var cli = tls.client(tcp);
-    var stats: tls.Options.Stats = .{};
-    try cli.handshake(host, ca_bundle, .{
-        //.cipher_suites = &tls.CipherSuite.tls13,
+    // Upgrade tcp connection to tls
+    var diagnostic: tls.ClientOptions.Diagnostic = .{};
+    var conn = try tls.client(tcp, .{
+        .host = host,
+        .root_ca = root_ca,
         .cipher_suites = &.{tls.CipherSuite.AES_256_GCM_SHA384},
-        .stats = &stats,
+        .diagnostic = &diagnostic,
     });
 
     // Show response
     var n: usize = 0;
-    while (try cli.next()) |data| {
+    while (try conn.next()) |data| {
         n += data.len;
         std.debug.print("{s}", .{data});
     }
-    try cli.close();
+    try conn.close();
     std.debug.print("{} bytes read\n", .{n});
-    cmn.showStats(&stats, host);
+
+    cmn.showDiagnostic(&diagnostic, host);
 }

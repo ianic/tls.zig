@@ -20,9 +20,9 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
-    var ca_bundle: Certificate.Bundle = .{};
-    defer ca_bundle.deinit(gpa);
-    try ca_bundle.addCertsFromFilePath(gpa, dir, "minica.pem");
+    var root_ca: Certificate.Bundle = .{};
+    defer root_ca.deinit(gpa);
+    try root_ca.addCertsFromFilePath(gpa, dir, "minica.pem");
 
     const host = "localhost";
     const port = 8443;
@@ -49,22 +49,25 @@ pub fn main() !void {
 
             // Prepare client authentication
             const cert_dir = try dir.openDir(sub_path, .{});
-            var client_certificates: Certificate.Bundle = .{};
-            try client_certificates.addCertsFromFilePath(gpa, cert_dir, "cert.pem");
+            var certificates: Certificate.Bundle = .{};
+            defer certificates.deinit(gpa);
+            try certificates.addCertsFromFilePath(gpa, cert_dir, "cert.pem");
+
             const file = try cert_dir.openFile("key.pem", .{});
             defer file.close();
-            const client_private_key = try tls.PrivateKey.fromFile(gpa, file);
+            const private_key = try tls.PrivateKey.fromFile(gpa, file);
 
             // Upgrade tcp connection to tls client
-            var cli = tls.client(tcp);
-            var stats: tls.Options.Stats = .{};
-            try cli.handshake(host, ca_bundle, .{
+            var diagnostic: tls.ClientOptions.Diagnostic = .{};
+            var cli = try tls.client(tcp, .{
+                .host = host,
+                .root_ca = root_ca,
                 .cipher_suites = cipher_suites,
-                .stats = &stats,
-                .auth = .{
-                    .certificates = client_certificates,
-                    .private_key = client_private_key,
+                .authentication = .{
+                    .certificates = certificates,
+                    .private_key = private_key,
                 },
+                .diagnostic = &diagnostic,
             });
 
             // Show response
@@ -75,7 +78,7 @@ pub fn main() !void {
             }
             try cli.close();
             // std.debug.print("{} bytes read\n", .{n});
-            cmn.showStats(&stats, host);
+            cmn.showDiagnostic(&diagnostic, host);
             std.debug.print("{s}\n", .{sub_path});
         }
     }

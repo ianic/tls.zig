@@ -24,25 +24,23 @@ pub fn main() !void {
 
     var buf: [4096]u8 = undefined;
     while (true) {
-        const conn = try server.accept();
-        std.debug.print("accepted {}\n", .{conn.address});
-        defer conn.stream.close();
-        var srv = tls.server(conn.stream);
-        try srv.handshake(.{
-            .auth = .{
-                .certificates = certificates,
-                .private_key = private_key,
-            },
-        });
+        const tcp = try server.accept();
+        std.debug.print("accepted {}\n", .{tcp.address});
+        defer tcp.stream.close();
+
+        var conn = try tls.server(tcp.stream, .{ .authentication = .{
+            .certificates = certificates,
+            .private_key = private_key,
+        } });
 
         const pg_file = try std.fs.cwd().openFile("example/go_tls_server/pg2600.txt", .{});
         defer pg_file.close();
 
         while (true) {
             const n = try pg_file.read(&buf);
-            try srv.writeAll(buf[0..n]);
+            try conn.writeAll(buf[0..n]);
             if (n < buf.len) break;
         }
-        try srv.close();
+        try conn.close();
     }
 }

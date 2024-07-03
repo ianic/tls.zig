@@ -196,7 +196,7 @@ const testing = std.testing;
 const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
 const CipherSuite = @import("cipher.zig").CipherSuite;
-const HandshakeType = @import("handshake.zig").HandshakeType;
+const HandshakeType = @import("handshake_common.zig").HandshakeType;
 
 test Reader {
     var fbs = std.io.fixedBufferStream(&data12.server_responses);
