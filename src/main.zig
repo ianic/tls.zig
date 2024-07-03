@@ -42,6 +42,10 @@ test {
     _ = @import("handshake_common.zig");
     _ = @import("handshake_server.zig");
     _ = @import("handshake.zig");
+
+    _ = @import("connection.zig");
     _ = @import("cipher.zig");
+    _ = @import("record.zig");
+    _ = @import("transcript.zig");
     _ = @import("PrivateKey.zig");
 }
