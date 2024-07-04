@@ -282,17 +282,6 @@ pub fn Handshake(comptime Stream: type) type {
                         if (@intFromEnum(h.signature_scheme) != 0 and !found)
                             return error.TlsIllegalParameter;
                     },
-                    // .supported_groups => {
-                    //     const end_idx = try d.decode(u16) + d.idx;
-                    //     while (d.idx < end_idx) {
-                    //         const named_group = try d.decode(tls.NamedGroup);
-                    //         if (named_group == h.named_group and h.client_pub_key.len == 0) {
-                    //             // TODO: client_pub_key.len 1, named group supported but key not sent
-                    //             // reply with hello retry
-                    //             h.client_pub_key = h.client_pub_key_buf[0..1];
-                    //         }
-                    //     }
-                    // },
                     else => {
                         try d.skip(extension_len);
                     },
