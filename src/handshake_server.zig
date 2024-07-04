@@ -273,14 +273,17 @@ pub fn Handshake(comptime Stream: type) type {
                             return error.TlsIllegalParameter;
                     },
                     .signature_algorithms => {
-                        var found = false;
-                        const end_idx = try d.decode(u16) + d.idx;
-                        while (d.idx < end_idx) {
-                            const signature_scheme = try d.decode(tls.SignatureScheme);
-                            if (signature_scheme == h.signature_scheme) found = true;
+                        if (@intFromEnum(h.signature_scheme) == 0) {
+                            try d.skip(extension_len);
+                        } else {
+                            var found = false;
+                            const end_idx = try d.decode(u16) + d.idx;
+                            while (d.idx < end_idx) {
+                                const signature_scheme = try d.decode(tls.SignatureScheme);
+                                if (signature_scheme == h.signature_scheme) found = true;
+                            }
+                            if (!found) return error.TlsIllegalParameter;
                         }
-                        if (@intFromEnum(h.signature_scheme) != 0 and !found)
-                            return error.TlsIllegalParameter;
                     },
                     else => {
                         try d.skip(extension_len);
