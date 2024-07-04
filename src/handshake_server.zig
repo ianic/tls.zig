@@ -18,7 +18,7 @@ const BufWriter = common.BufWriter;
 const dupe = common.dupe;
 const recordHeader = common.recordHeader;
 const handshakeHeader = common.handshakeHeader;
-const CertificateMessagesBuilder = common.CertificateMessagesBuilder;
+const CertificateBuilder = common.CertificateBuilder;
 const Authentication = common.Authentication;
 
 pub const Options = struct {
@@ -33,7 +33,6 @@ pub fn Handshake(comptime Stream: type) type {
         legacy_session_id_buf: [32]u8 = undefined,
         legacy_session_id: []u8 = "",
         cipher_suite: CipherSuite = @enumFromInt(0),
-
         named_group: tls.NamedGroup = .x25519,
         x25519_kp: X25519.KeyPair = undefined,
         client_pub_key_buf: [X25519.public_length]u8 = undefined,
@@ -82,7 +81,7 @@ pub fn Handshake(comptime Stream: type) type {
                     try h.writeEncrypted(&w, encrypted_extensions);
                 }
                 if (opt.authentication) |a| {
-                    const cm = CertificateMessagesBuilder{
+                    const cm = CertificateBuilder{
                         .certificates = a.certificates,
                         .private_key = a.private_key,
                         .transcript = &h.transcript,

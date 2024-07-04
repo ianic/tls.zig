@@ -6,8 +6,6 @@ const record = @import("record.zig");
 const Cipher = @import("cipher.zig").Cipher;
 const HandshakeType = @import("handshake_common.zig").HandshakeType;
 
-pub const Options = @import("handshake.zig").Options;
-
 pub fn Connection(comptime Stream: type) type {
     return struct {
         stream: Stream, // underlying stream

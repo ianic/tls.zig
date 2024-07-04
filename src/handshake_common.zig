@@ -5,12 +5,6 @@ const crypto = std.crypto;
 const tls = std.crypto.tls;
 const Certificate = crypto.Certificate;
 
-const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
-const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-const Sha256 = crypto.hash.sha2.Sha256;
-const Sha384 = crypto.hash.sha2.Sha384;
-const Sha512 = crypto.hash.sha2.Sha512;
-
 const Transcript = @import("transcript.zig").Transcript;
 const PrivateKey = @import("PrivateKey.zig");
 
@@ -52,14 +46,14 @@ pub const Authentication = struct {
     private_key: PrivateKey,
 };
 
-pub const CertificateMessagesBuilder = struct {
+pub const CertificateBuilder = struct {
     certificates: Certificate.Bundle,
     private_key: PrivateKey,
     transcript: *Transcript,
     tls_version: tls.ProtocolVersion = .tls_1_3,
     side: Side = .client,
 
-    pub fn makeCertificate(h: CertificateMessagesBuilder, buf: []u8) ![]const u8 {
+    pub fn makeCertificate(h: CertificateBuilder, buf: []u8) ![]const u8 {
         var w = BufWriter{ .buf = buf };
         const certs = h.certificates.bytes.items;
         const certs_count = h.certificates.map.size;
@@ -92,7 +86,7 @@ pub const CertificateMessagesBuilder = struct {
         return w.getWritten();
     }
 
-    pub fn makeCertificateVerify(h: CertificateMessagesBuilder, buf: []u8) ![]const u8 {
+    pub fn makeCertificateVerify(h: CertificateBuilder, buf: []u8) ![]const u8 {
         var w = BufWriter{ .buf = buf };
         const signature, const signature_scheme = try h.createSignature();
         try w.writeHandshakeHeader(.certificate_verify, signature.len + 4);
@@ -104,7 +98,7 @@ pub const CertificateMessagesBuilder = struct {
 
     /// Creates signature for client certificate signature message.
     /// Returns signature bytes and signature scheme.
-    inline fn createSignature(h: CertificateMessagesBuilder) !struct { []const u8, tls.SignatureScheme } {
+    inline fn createSignature(h: CertificateBuilder) !struct { []const u8, tls.SignatureScheme } {
         switch (h.private_key.signature_scheme) {
             inline .ecdsa_secp256r1_sha256,
             .ecdsa_secp384r1_sha384,
@@ -136,7 +130,7 @@ pub const CertificateMessagesBuilder = struct {
         }
     }
 
-    fn setSignatureVerifyBytes(h: CertificateMessagesBuilder, signer: anytype) void {
+    fn setSignatureVerifyBytes(h: CertificateBuilder, signer: anytype) void {
         if (h.tls_version == .tls_1_2) {
             // tls 1.2 signature uses current transcript hash value.
             // ref: https://datatracker.ietf.org/doc/html/rfc5246.html#section-7.4.8
@@ -155,6 +149,9 @@ pub const CertificateMessagesBuilder = struct {
     }
 
     fn SchemeEcdsa(comptime scheme: tls.SignatureScheme) type {
+        const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
+        const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
+
         return switch (scheme) {
             .ecdsa_secp256r1_sha256 => EcdsaP256Sha256,
             .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
@@ -164,6 +161,10 @@ pub const CertificateMessagesBuilder = struct {
 };
 
 pub fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
+    const Sha256 = crypto.hash.sha2.Sha256;
+    const Sha384 = crypto.hash.sha2.Sha384;
+    const Sha512 = crypto.hash.sha2.Sha512;
+
     return switch (scheme) {
         .rsa_pkcs1_sha1 => crypto.hash.Sha1,
         .rsa_pss_rsae_sha256, .rsa_pkcs1_sha256 => Sha256,

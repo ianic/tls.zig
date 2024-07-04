@@ -8,31 +8,32 @@ import (
 )
 
 func main() {
-	cp := x509.NewCertPool()
 	data, err := os.ReadFile("../cert/minica.pem")
 	if err != nil {
 		panic(err)
 	}
-	cp.AppendCertsFromPEM(data)
+	clientCAs := x509.NewCertPool()
+	clientCAs.AppendCertsFromPEM(data)
 
-	cer, err := tls.LoadX509KeyPair("../cert/localhost_ec/cert.pem", "../cert/localhost_ec/key.pem")
+	certificate, err := tls.LoadX509KeyPair("../cert/localhost_ec/cert.pem", "../cert/localhost_ec/key.pem")
 	if err != nil {
 		panic(err)
 	}
 
 	config := &tls.Config{
-		ClientAuth:   tls.RequireAndVerifyClientCert, // or tls.RequestClientCert,
-		ClientCAs:    cp,
-		Certificates: []tls.Certificate{cer},
+		InsecureSkipVerify: true,
+		ClientAuth:         tls.RequireAndVerifyClientCert,
+		ClientCAs:          clientCAs,
+		Certificates:       []tls.Certificate{certificate},
 	}
-	ln, err := tls.Listen("tcp", ":8443", config)
+	listener, err := tls.Listen("tcp", ":8443", config)
 	if err != nil {
 		panic(err)
 	}
-	defer ln.Close()
+	defer listener.Close()
 
 	for {
-		conn, err := ln.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			println(err)
 			continue

@@ -14,7 +14,6 @@ const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
-const PrivateKey = @import("PrivateKey.zig");
 const rsa = @import("rsa/rsa.zig");
 
 const common = @import("handshake_common.zig");
@@ -25,7 +24,7 @@ const recordHeader = common.recordHeader;
 const handshakeHeader = common.handshakeHeader;
 const SchemeHash = common.SchemeHash;
 const CurveType = common.CurveType;
-const CertificateMessagesBuilder = common.CertificateMessagesBuilder;
+const CertificateBuilder = common.CertificateBuilder;
 const Authentication = common.Authentication;
 
 pub const Options = struct {
@@ -323,7 +322,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// return. For TLS 1.2 continue and read certificate, key_exchange
         /// eventual certificate request and hello done messages.
         fn readServerFlight1(h: *HandshakeT, opt: Options) !void {
-            var handshake_state = HandshakeType.server_hello;
+            var handshake_states: []const HandshakeType = &.{.server_hello};
 
             while (true) {
                 var d = try h.rec_rdr.nextDecoder();
@@ -334,14 +333,16 @@ pub fn Handshake(comptime Stream: type) type {
                 // Multiple handshake messages can be packed in single tls record.
                 while (!d.eof()) {
                     const handshake_type = try d.decode(HandshakeType);
-                    if (handshake_state == .certificate_request and handshake_type == .server_hello_done)
-                        handshake_state = .server_hello_done; // certificate request is optional
-                    if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
 
                     const length = try d.decode(u24);
                     if (length > tls.max_cipertext_inner_record_len)
                         return error.TlsUnsupportedFragmentedHandshakeMessage;
 
+                    brk: {
+                        for (handshake_states) |state|
+                            if (state == handshake_type) break :brk;
+                        return error.TlsUnexpectedMessage;
+                    }
                     switch (handshake_type) {
                         .server_hello => { // server hello, ref: https://datatracker.ietf.org/doc/html/rfc5246#section-7.4.1.3
                             try h.parseServerHello(&d, length);
@@ -349,23 +350,26 @@ pub fn Handshake(comptime Stream: type) type {
                                 if (!d.eof()) return error.TlsIllegalParameter;
                                 return; // end of tls 1.3 server flight 1
                             }
-                            handshake_state = .certificate;
+                            handshake_states = if (opt.insecure_skip_verify)
+                                &.{ .certificate, .server_key_exchange, .server_hello_done }
+                            else
+                                &.{.certificate};
                         },
                         .certificate => {
                             try h.parseServerCertificate(&d, opt);
-                            handshake_state = if (h.cipher_suite.keyExchange() == .rsa)
-                                .server_hello_done
+                            handshake_states = if (h.cipher_suite.keyExchange() == .rsa)
+                                &.{.server_hello_done}
                             else
-                                .server_key_exchange;
+                                &.{.server_key_exchange};
                         },
                         .server_key_exchange => {
                             try h.parseServerKeyExchange(&d);
-                            handshake_state = .certificate_request;
+                            handshake_states = &.{ .certificate_request, .server_hello_done };
                         },
                         .certificate_request => {
                             h.client_certificate_requested = true;
                             try d.skip(length);
-                            handshake_state = .server_hello_done;
+                            handshake_states = &.{.server_hello_done};
                         },
                         .server_hello_done => {
                             if (length != 0) return error.TlsIllegalParameter;
@@ -495,7 +499,7 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
-            var handshake_state: HandshakeType = .encrypted_extensions;
+            var handshake_states: []const HandshakeType = &.{.encrypted_extensions};
 
             outer: while (true) {
                 // wrapped record decoder
@@ -533,30 +537,38 @@ pub fn Handshake(comptime Stream: type) type {
                                 cleartext_buf_head += handshake_payload.len;
                             }
 
-                            if (handshake_state == .certificate_request and handshake_type == .certificate)
-                                handshake_state = .certificate; // certificate request is optional
-                            if (handshake_state != handshake_type) return error.TlsUnexpectedMessage;
+                            brk: {
+                                for (handshake_states) |state|
+                                    if (state == handshake_type) break :brk;
+                                return error.TlsUnexpectedMessage;
+                            }
                             switch (handshake_type) {
                                 .encrypted_extensions => {
                                     try d.skip(length);
-                                    handshake_state = .certificate_request;
+                                    handshake_states = if (opt.insecure_skip_verify)
+                                        &.{ .certificate_request, .certificate, .finished }
+                                    else
+                                        &.{ .certificate_request, .certificate };
                                 },
                                 .certificate_request => {
                                     h.client_certificate_requested = true;
                                     try d.skip(length);
-                                    handshake_state = .certificate;
+                                    handshake_states = if (opt.insecure_skip_verify)
+                                        &.{ .certificate, .finished }
+                                    else
+                                        &.{.certificate};
                                 },
                                 .certificate => {
                                     const request_context = try d.decode(u8);
                                     if (request_context != 0) return error.TlsIllegalParameter;
                                     try h.parseServerCertificate(&d, opt);
-                                    handshake_state = .certificate_verify;
+                                    handshake_states = &.{.certificate_verify};
                                 },
                                 .certificate_verify => {
                                     h.signature_scheme = try d.decode(tls.SignatureScheme);
                                     h.signature = dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
                                     try h.verifyCertificateSignatureTLS13();
-                                    handshake_state = .finished;
+                                    handshake_states = &.{.finished};
                                 },
                                 .finished => {
                                     const actual = try d.slice(length);
@@ -654,19 +666,14 @@ pub fn Handshake(comptime Stream: type) type {
         /// certificate verify messages.
         fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Authentication) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
-            var cert_builder: ?CertificateMessagesBuilder = null;
+            var cert_builder: ?CertificateBuilder = null;
 
             // Client certificate message
             if (h.client_certificate_requested) {
                 if (auth) |a| {
-                    cert_builder = CertificateMessagesBuilder{
-                        .certificates = a.certificates,
-                        .private_key = a.private_key,
-                        .transcript = &h.transcript,
-                        .side = .client,
-                        .tls_version = .tls_1_2,
-                    };
-                    const client_certificate = try cert_builder.?.makeCertificate(w.getPayload());
+                    const cb = h.certificateBuilder(a);
+                    cert_builder = cb;
+                    const client_certificate = try cb.makeCertificate(w.getPayload());
                     h.transcript.update(client_certificate);
                     try w.advanceRecord(.handshake, client_certificate.len);
                 } else {
@@ -719,12 +726,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             if (h.client_certificate_requested) {
                 if (auth) |a| {
-                    const cb = CertificateMessagesBuilder{
-                        .certificates = a.certificates,
-                        .private_key = a.private_key,
-                        .transcript = &h.transcript,
-                        .side = .client,
-                    };
+                    const cb = h.certificateBuilder(a);
                     {
                         const certificate = try cb.makeCertificate(w.getPayload());
                         h.transcript.update(certificate);
@@ -751,6 +753,16 @@ pub fn Handshake(comptime Stream: type) type {
             }
 
             return w.getWritten();
+        }
+
+        fn certificateBuilder(h: *HandshakeT, auth: Authentication) CertificateBuilder {
+            return .{
+                .certificates = auth.certificates,
+                .private_key = auth.private_key,
+                .transcript = &h.transcript,
+                .tls_version = h.tls_version,
+                .side = .client,
+            };
         }
 
         fn makeClientFinishedTLS13(h: *HandshakeT, buf: []u8) ![]const u8 {
