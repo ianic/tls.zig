@@ -1,55 +1,110 @@
 # tls.zig
 
-Zig library which implements tls 1.2 and tls 1.3 protocol.
+Zig TLS library, implements tls 1.2 and tls 1.3 client and tls 1.3 server.
+Handles client authentication.
+
+# Client
 
 [Here](https://github.com/ianic/tls.zig/blob/main/demo/src/main.zig) is simple example of how to use library.   
-To upgrade existing tcp connection to the tls connection:
+To upgrade existing tcp connection to the tls connection call `tls.client`:
 ```zig
-    var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle, .{});
+    // Establish tcp connection
+    var tcp = try std.net.tcpConnectToHost(gpa, host, port);
+    defer tcp.close();
+
+    // Load system root certificates
+    var root_ca: std.crypto.Certificate.Bundle = .{};
+    try root_ca.rescan(gpa);
+    defer root_ca.deinit(gpa);
+
+    // Upgrade tcp connection to tls
+    var conn = try tls.client(tcp, .{
+        .host = host,
+        .root_ca = root_ca,
+    });
 ```
-After that you can use `cli` read/write methods as on plain tcp connection.
+After that you can use `conn` read/write methods as on plain tcp connection.
 
 ## Options
 
-Third parameter in calling handshake are [tls.Options](https://github.com/ianic/tls.zig/blob/8e06c80a86aa9b50546e652ed7241608113ac734/src/handshake.zig#L25-L45) they can be used to force subset of implemented ciphers. For example to use just ciphers which are graded secure or recommended on  https://ciphersuite.info:
-```zig
-    var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle, .{.cipher_suites = &tls.CipherSuite.secure})
-```
-That can be used to force tls 1.3 only or tls 1.2 only ciphers. Or to reorder cipher preferences.
+Third parameter in calling `tls.client` are [tls.ClientOptions](https://github.com/ianic/tls.zig/blob/a81a6462c1dbcfbfc0ef9ac09b698a2d1c4bb946/src/handshake_client.zig#L30-L72) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates and collect handshake diagnostics.
 
-Stats can be used to inspect which cipher suite and other handshake parameters were chosen by the server:
+### Select cipher suite
+
+To use just ciphers which are graded secure or recommended on  https://ciphersuite.info:
 ```zig
-    var cli = tls.client(tcp);
-    var stats: tls.Stats = .{};
-    try cli.handshake(host, ca_bundle, .{.stats = &stats})
-    // inspect stats
+    var conn = try tls.client(tcp, .{
+        .host = host,
+        .root_ca = root_ca,
+        .cipher_suites = &tls.CipherSuite.secure,
+    });
 ```
+`cipher_suites` can be used to force tls 1.3 only or tls 1.2 only ciphers. Or to reorder cipher preferences.
+
 
 ### Client authentication
 
-If server requires client authentication set `auth` attribute in options. You need to prepare certificate bundle with client certificates and client private key.
+If server requires client authentication set `authentication` attribute in options. You need to prepare certificate bundle with client certificates and client private key.
 
 ```zig
-    // Load client certificate(s) and client private key
-    var client_certificates: Certificate.Bundle = .{};
-    try client_certificates.addCertsFromFilePath(gpa, dir, "client-rsa/cert.pem");
-    const file = try dir.openFile("client-rsa/key.pem", .{});
-    defer file.close();
-    const client_private_key = try tls.PrivateKey.fromFile(gpa, file);
+    // Load client certificate
+    var certificates: Certificate.Bundle = .{};
+    defer certificates.deinit(gpa);
+    try certificates.addCertsFromFilePath(gpa, cert_dir, "cert.pem");
+    // Load client private key
+    const private_key_file = try cert_dir.openFile("key.pem", .{});
+    defer private_key_file.close();
+    const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
 
-    // Handshake with client authentication
-    var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle, .{
-        .auth = .{
-            .certificates = client_certificates,
-            .private_key = client_private_key,
+    var cli = try tls.client(tcp, .{
+        .host = host,
+        .root_ca = root_ca,
+        .authentication = .{
+            .certificates = certificates,
+            .private_key = private_key,
         },
     });
 ```
 
 When client receives certificate request from server during handshake it will respond with client certificates message build from provided certificate bundle and client certificate verify message where verify data is signed with client private key.
+
+# Server
+
+Library has also minimal, tls 1.3 only server implementation. To upgrade tcp to tls connection:
+
+```zig
+    // Load server certificate
+    var certificates: Certificate.Bundle = .{};
+    defer certificates.deinit(gpa);
+    try certificates.addCertsFromFilePath(gpa, dir, "localhost_ec/cert.pem");
+
+    // Load server private key
+    const private_key_file = try dir.openFile("localhost_ec/key.pem", .{});
+    const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
+    private_key_file.close();
+    
+    // Tcp listener
+    const port = 9443;
+    const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
+    var server = try address.listen(.{
+        .reuse_address = true,
+    });
+    
+     // Tcp accept
+     const tcp = try server.accept();
+     defer tcp.stream.close();
+
+     // Upgrade tcp to tls
+     var conn = try tls.server(tcp.stream, .{
+         .authentication = .{
+             .certificates = certificates,
+             .private_key = private_key,
+         },
+     });
+     
+     // use conn
+```
+
 
 # Examples
 
@@ -205,29 +260,30 @@ google.com
 ```
 
 
-## Client certificate example
+## Server and client example
 
 Create local development certificates and keys:
 ```
-$ cd example && ./cert.sh
+$ cd example && ./cert.sh && cd -
 ```
 This uses [minica](https://github.com/jsha/minica) tool. Go compiler and go install dir in the path are required.
 
-Start server from go_tls_server folder:
+Start server and connect to with client to the server.
 ```
- $ cd example/go_tls_server && go run server.go
-```
-That server requires client authentication.
-
-```
-$ zig-out/bin/tls_client
+$ zig build && zig-out/bin/server& ; sleep 1 && zig-out/bin/client ; kill %1
 ```
 
-Tls client reads certificate from example/cert/client-rsa/cert.pem and key from example/cert/client-rsa/key.pem and uses them to authenticate to the server.
+## Client authentication
 
-Equivalent curl is:
+After we have certificates created in previous example, here we will start Go tls server which requires client authentication and connect to that server with various different rsa and ec certificates using both tls 1.2 and 1.3. 
+```
+$ zig build ; cd example/go_tls_server; go run server.go & ; cd - ; sleep 1 && zig-out/bin/client_auth ; kill %1
+
+```
+
+Equivalent `curl` is:
 ```sh
-curl https://localhost:8443 --cacert example/cert/minica.pem --cert example/cert/client-rsa/cert.pem --key example/cert/client-rsa/key.pem
+curl https://localhost:8443 --cacert example/cert/minica.pem --cert example/cert/client_rsa/cert.pem --key example/cert/client_rsa/key.pem
 ```
 
 # Usage with standard library http.Client
@@ -260,8 +316,7 @@ zig-out/bin/std_top_sites
 Tests are created using examples from [The Illustrated TLS 1.2 Connection](https://tls12.xargs.org/) and [The Illustrated TLS 1.3 Connection](https://tls13.xargs.org/). Those are really useful in understanding what each byte means. 
 
 # Memory usage
-
-[handshake](https://github.com/ianic/tls.zig/blob/53885147af325852a4c33c5975e99f5298241aa6/src/client.zig#L62) requires stable pointer to Client type. [Client](https://github.com/ianic/tls.zig/blob/53885147af325852a4c33c5975e99f5298241aa6/src/client.zig#L27) is comptime created over Stream type. From Stream type is required to implement classic read/write methods and ReaderError/WriterError error sets.  
+  
 Client uses two 16K buffers. One in record reader and another for writing output messages. When created over std.net.Stream it statically allocates 33544 bytes.
 
 

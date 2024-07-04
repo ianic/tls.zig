@@ -49,7 +49,7 @@ func main() {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	f, err := os.Open("pg2600.txt")
+	f, err := os.Open("../cert/pg2600.txt")
 	if err != nil {
 		log.Fatal(err)
 	}

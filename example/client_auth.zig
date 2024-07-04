@@ -53,9 +53,9 @@ pub fn main() !void {
             defer certificates.deinit(gpa);
             try certificates.addCertsFromFilePath(gpa, cert_dir, "cert.pem");
 
-            const file = try cert_dir.openFile("key.pem", .{});
-            defer file.close();
-            const private_key = try tls.PrivateKey.fromFile(gpa, file);
+            const private_key_file = try cert_dir.openFile("key.pem", .{});
+            defer private_key_file.close();
+            const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.ClientOptions.Diagnostic = .{};

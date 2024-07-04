@@ -9,17 +9,19 @@ cd minica
 go install
 cd ..
 
+# server certificates, rsa and ec
 minica -ca-alg rsa   -domains localhost
 mv localhost localhost_rsa
 minica -ca-alg ecdsa -domains localhost
 mv localhost localhost_ec
 
+# client certificates, rsa and ec
 minica -ca-alg rsa   -domains client
 mv client client_rsa
 minica -ca-alg ecdsa -domains client
 mv client client_ec
 
-
+# generate more rsa client certificates
 for bits in 2048 3072 4096
 do
     echo "create rsa key $bits bits"
@@ -35,6 +37,7 @@ do
     mv key.pem cert.pem client_rsa_$bits
 done
 
+# generate more ec client certificates
 for alg in prime256v1 secp384r1 secp521r1
 do
     echo "create ec $alg "
@@ -49,3 +52,8 @@ do
     mkdir -p client_ec_$alg
     mv key.pem cert.pem client_ec_$alg/
 done
+
+# download war and peace, larger text file used in tests
+if [[ ! -f pg2600.txt  ]]; then
+  wget https://www.gutenberg.org/cache/epub/2600/pg2600.txt
+fi
