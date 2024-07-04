@@ -13,21 +13,25 @@ pub fn main() !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, port);
     defer tcp.close();
 
+    // Load system root certificates
+    var root_ca: std.crypto.Certificate.Bundle = .{};
+    try root_ca.rescan(gpa);
+    defer root_ca.deinit(gpa);
+
     // Upgrade tcp connection to tls
-    var ca_bundle: std.crypto.Certificate.Bundle = .{};
-    try ca_bundle.rescan(gpa);
-    defer ca_bundle.deinit(gpa);
-    var cli = tls.client(tcp);
-    try cli.handshake(host, ca_bundle, .{});
+    var conn = try tls.client(tcp, .{
+        .host = host,
+        .root_ca = root_ca,
+    });
 
     // Send http GET request
     var buf: [64]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
-    try cli.writeAll(req);
+    try conn.writeAll(req);
 
     // Print response
-    while (try cli.next()) |data| {
+    while (try conn.next()) |data| {
         std.debug.print("{s}", .{data});
     }
-    try cli.close();
+    try conn.close();
 }

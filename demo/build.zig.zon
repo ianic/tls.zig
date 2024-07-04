@@ -52,8 +52,8 @@
         //    .lazy = false,
         //},
         .tls = .{
-            .url = "https://github.com/ianic/tls.zig/archive/7af422935d8ef34576ba3ec764d4aba038af8898.tar.gz",
-            .hash = "12205d78de4111ce58e80785da7461afe3a9c12443af87ae7d1fbcbb3565cb05a53e",
+            .url = "https://github.com/ianic/tls.zig/archive/5e90838242df2028c2fa195ba59b1e0dfd69c143.tar.gz",
+            .hash = "12205a1534163e7f9a16dd1669a94037f8e7c4a2077c6c8180cd25340825b19cccc6",
         },
     },
 
