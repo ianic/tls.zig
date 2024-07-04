@@ -4,7 +4,6 @@ const crypto = std.crypto;
 const mem = std.mem;
 const tls = crypto.tls;
 const Certificate = crypto.Certificate;
-const X25519 = crypto.dh.X25519;
 
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
@@ -20,6 +19,7 @@ const recordHeader = common.recordHeader;
 const handshakeHeader = common.handshakeHeader;
 const CertificateBuilder = common.CertificateBuilder;
 const Authentication = common.Authentication;
+const DhKeyPair = common.DhKeyPair;
 
 pub const Options = struct {
     authentication: ?Authentication,
@@ -28,15 +28,22 @@ pub const Options = struct {
 pub fn Handshake(comptime Stream: type) type {
     const RecordReaderT = record.Reader(Stream);
     return struct {
+        // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97
+        const max_pub_key_len = 97;
+        const supported_named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
+
         server_random: [32]u8 = undefined,
         client_random: [32]u8 = undefined,
         legacy_session_id_buf: [32]u8 = undefined,
         legacy_session_id: []u8 = "",
         cipher_suite: CipherSuite = @enumFromInt(0),
-        named_group: tls.NamedGroup = .x25519,
-        x25519_kp: X25519.KeyPair = undefined,
-        client_pub_key_buf: [X25519.public_length]u8 = undefined,
+
+        named_group: tls.NamedGroup = @enumFromInt(0),
+        client_pub_key_buf: [max_pub_key_len]u8 = undefined,
         client_pub_key: []u8 = "",
+        server_pub_key_buf: [max_pub_key_len]u8 = undefined,
+        server_pub_key: []u8 = "",
+
         signature_scheme: tls.SignatureScheme = @enumFromInt(0),
 
         transcript: Transcript = .{},
@@ -49,12 +56,9 @@ pub fn Handshake(comptime Stream: type) type {
         const HandshakeT = @This();
 
         pub fn init(buf: []u8, rec_rdr: *RecordReaderT) !HandshakeT {
-            var seed: [X25519.seed_length]u8 = undefined;
-            crypto.random.bytes(&seed);
             return .{
                 .rec_rdr = rec_rdr,
                 .buffer = buf,
-                .x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
             };
         }
 
@@ -68,12 +72,23 @@ pub fn Handshake(comptime Stream: type) type {
 
             const server_flight = brk: {
                 var w = BufWriter{ .buf = h.buffer };
+
+                const shared_key = sk_brk: {
+                    var seed: [DhKeyPair.seed_len]u8 = undefined;
+                    crypto.random.bytes(&seed);
+                    var kp = try DhKeyPair.init(seed);
+                    h.server_pub_key = dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
+                    break :sk_brk try kp.sharedKey(h.named_group, h.client_pub_key);
+                };
                 {
                     const hello = try h.makeServerHello(w.getFree());
                     h.transcript.update(hello[tls.record_header_len..]);
                     w.pos += hello.len;
                 }
-                try h.generateHandshakeCipher();
+                {
+                    const handshake_secret = h.transcript.handshakeSecret(shared_key);
+                    h.cipher = try Cipher.initTLS13(h.cipher_suite, handshake_secret, .server);
+                }
                 try w.writeRecord(.change_cipher_spec, &[_]u8{1});
                 {
                     const encrypted_extensions = &handshakeHeader(.encrypted_extensions, 2) ++ [_]u8{ 0, 0 };
@@ -145,40 +160,6 @@ pub fn Handshake(comptime Stream: type) type {
             }
         }
 
-        fn makeFlight(h: *HandshakeT, auth: ?Options.Auth) []const u8 {
-            var w = BufWriter{ .buf = h.buffer };
-            {
-                const hello = try h.makeServerHello(w.getFree());
-                h.transcript.update(hello[tls.record_header_len..]);
-                h.pos += hello.len;
-            }
-            try h.generateHandshakeCipher();
-            try w.writeRecord(.change_cipher_spec, &[_]u8{1});
-            {
-                const encrypted_extensions = &handshakeHeader(.encrypted_extensions, 2) ++ [_]u8{ 0, 0 };
-                h.transcript.update(encrypted_extensions);
-                h.writeEncrypted(&w, encrypted_extensions);
-            }
-            if (auth) |a| {
-                {
-                    const certificate = try h.makeClientCertificate(w.getPayload(), a);
-                    h.transcript.update(certificate);
-                    try h.writeEncrypted(&w, certificate);
-                }
-                {
-                    const certificate_verify = try h.makeClientCertificateVerify(w.getPayload(), a);
-                    h.transcript.update(certificate_verify);
-                    try h.writeEncrypted(&w, certificate_verify);
-                }
-            }
-            {
-                const finished = try h.makeFinished(w.getPayload());
-                h.transcript.update(finished);
-                try h.writeEncrypted(&w, finished);
-            }
-            return w.getWritten();
-        }
-
         fn makeFinished(h: *HandshakeT, buf: []u8) ![]const u8 {
             var w = BufWriter{ .buf = buf };
             const verify_data = h.transcript.serverFinishedTLS13(w.getHandshakePayload());
@@ -191,15 +172,6 @@ pub fn Handshake(comptime Stream: type) type {
             const ciphertext = try h.cipher.encrypt(w.getFree(), h.write_seq, .handshake, cleartext);
             w.pos += ciphertext.len;
             h.write_seq += 1;
-        }
-
-        fn generateHandshakeCipher(h: *HandshakeT) !void {
-            const shared_key = try X25519.scalarmult(
-                h.x25519_kp.secret_key,
-                h.client_pub_key[0..X25519.public_length].*,
-            );
-            const handshake_secret = h.transcript.handshakeSecret(&shared_key);
-            h.cipher = try Cipher.initTLS13(h.cipher_suite, handshake_secret, .server);
         }
 
         fn makeServerHello(h: *HandshakeT, buf: []u8) ![]const u8 {
@@ -222,12 +194,12 @@ pub fn Handshake(comptime Stream: type) type {
                 try e.writeEnum(tls.ProtocolVersion.tls_1_3);
             }
             { // key share extension
-                const key_len: u16 = @intCast(h.x25519_kp.public_key.len);
+                const key_len: u16 = @intCast(h.server_pub_key.len);
                 try e.writeEnum(tls.ExtensionType.key_share);
                 try e.writeInt(key_len + 4);
-                try e.writeEnum(tls.NamedGroup.x25519);
+                try e.writeEnum(h.named_group);
                 try e.writeInt(key_len);
-                try e.write(&h.x25519_kp.public_key);
+                try e.write(h.server_pub_key);
             }
             try w.writeInt(@as(u16, @intCast(e.pos))); // extensions length
 
@@ -284,16 +256,21 @@ pub fn Handshake(comptime Stream: type) type {
                         if (!tls_1_3_supported) return error.TlsIllegalParameter;
                     },
                     .key_share => {
+                        var selected_named_group_idx = supported_named_groups.len;
                         const end_idx = try d.decode(u16) + d.idx;
                         while (d.idx < end_idx) {
                             const named_group = try d.decode(tls.NamedGroup);
-                            const key_len = try d.decode(u16);
-                            if (named_group == h.named_group) {
-                                h.client_pub_key = dupe(&h.client_pub_key_buf, try d.slice(key_len));
-                            } else {
-                                try d.skip(key_len);
+                            const client_pub_key = try d.slice(try d.decode(u16));
+                            for (supported_named_groups, 0..) |supported, idx| {
+                                if (named_group == supported and idx < selected_named_group_idx) {
+                                    h.named_group = named_group;
+                                    h.client_pub_key = dupe(&h.client_pub_key_buf, client_pub_key);
+                                    selected_named_group_idx = idx;
+                                }
                             }
                         }
+                        if (@intFromEnum(h.named_group) == 0)
+                            return error.TlsIllegalParameter;
                     },
                     .signature_algorithms => {
                         var found = false;
@@ -305,17 +282,17 @@ pub fn Handshake(comptime Stream: type) type {
                         if (@intFromEnum(h.signature_scheme) != 0 and !found)
                             return error.TlsIllegalParameter;
                     },
-                    .supported_groups => {
-                        const end_idx = try d.decode(u16) + d.idx;
-                        while (d.idx < end_idx) {
-                            const named_group = try d.decode(tls.NamedGroup);
-                            if (named_group == h.named_group and h.client_pub_key.len == 0) {
-                                // TODO: client_pub_key.len 1, named group supported but key not sent
-                                // reply with hello retry
-                                h.client_pub_key = h.client_pub_key_buf[0..1];
-                            }
-                        }
-                    },
+                    // .supported_groups => {
+                    //     const end_idx = try d.decode(u16) + d.idx;
+                    //     while (d.idx < end_idx) {
+                    //         const named_group = try d.decode(tls.NamedGroup);
+                    //         if (named_group == h.named_group and h.client_pub_key.len == 0) {
+                    //             // TODO: client_pub_key.len 1, named group supported but key not sent
+                    //             // reply with hello retry
+                    //             h.client_pub_key = h.client_pub_key_buf[0..1];
+                    //         }
+                    //     }
+                    // },
                     else => {
                         try d.skip(extension_len);
                     },
@@ -338,9 +315,11 @@ test "read client hello" {
     var buffer: [1024]u8 = undefined;
     var rec_rdr = testReader(&data13.client_hello);
     var h = try TestHandshake.init(&buffer, &rec_rdr);
+    h.signature_scheme = .ecdsa_secp521r1_sha512; // this must be supported in signature_algorithms extension
     try h.readClientHello();
 
     try testing.expectEqual(CipherSuite.AES_256_GCM_SHA384, h.cipher_suite);
+    try testing.expectEqual(.x25519, h.named_group);
     try testing.expectEqualSlices(u8, &data13.client_random, &h.client_random);
     try testing.expectEqualSlices(u8, &data13.client_public_key, h.client_pub_key);
 }
@@ -350,7 +329,9 @@ test "make server hello" {
     var h = try TestHandshake.init(&buffer, undefined);
     h.cipher_suite = .AES_256_GCM_SHA384;
     testu.fillFrom(&h.server_random, 0);
-    testu.fillFrom(&h.x25519_kp.public_key, 0x20);
+    testu.fillFrom(&h.server_pub_key_buf, 0x20);
+    h.named_group = .x25519;
+    h.server_pub_key = h.server_pub_key_buf[0..32];
 
     const actual = try h.makeServerHello(&buffer);
     const expected = &testu.hexToBytes(

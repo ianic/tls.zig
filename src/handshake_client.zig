@@ -3,12 +3,7 @@ const assert = std.debug.assert;
 const crypto = std.crypto;
 const mem = std.mem;
 const tls = crypto.tls;
-
 const Certificate = crypto.Certificate;
-const X25519 = crypto.dh.X25519;
-const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
-const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
@@ -26,6 +21,7 @@ const SchemeHash = common.SchemeHash;
 const CurveType = common.CurveType;
 const CertificateBuilder = common.CertificateBuilder;
 const Authentication = common.Authentication;
+const DhKeyPair = common.DhKeyPair;
 
 pub const Options = struct {
     host: []const u8,
@@ -98,7 +94,7 @@ pub fn Handshake(comptime Stream: type) type {
         cert_pub_key_buf: [600]u8 = undefined,
         cert_pub_key: []const u8 = undefined,
         // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_kyber768d00 = 1120
-        server_pub_key_buf: [1120]u8 = undefined,
+        server_pub_key_buf: [2048]u8 = undefined,
         server_pub_key: []const u8 = undefined,
         signature_buf: [1024]u8 = undefined,
         signature: []const u8 = undefined,
@@ -841,73 +837,6 @@ pub fn Handshake(comptime Stream: type) type {
     };
 }
 
-const DhKeyPair = struct {
-    x25519_kp: X25519.KeyPair = undefined,
-    secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
-    secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
-    kyber768_kp: Kyber768.KeyPair = undefined,
-
-    const seed_len = 64;
-
-    fn init(seed: [seed_len]u8) !DhKeyPair {
-        return .{
-            .x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
-            .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[0..EcdsaP256Sha256.KeyPair.seed_length].*),
-            .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[0..EcdsaP384Sha384.KeyPair.seed_length].*),
-            .kyber768_kp = try Kyber768.KeyPair.create(seed),
-        };
-    }
-
-    inline fn sharedKey(self: DhKeyPair, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
-        return switch (named_group) {
-            .x25519 => brk: {
-                if (server_pub_key.len != X25519.public_length)
-                    return error.TlsIllegalParameter;
-                break :brk &(try X25519.scalarmult(
-                    self.x25519_kp.secret_key,
-                    server_pub_key[0..X25519.public_length].*,
-                ));
-            },
-            .secp256r1 => brk: {
-                const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
-                const mul = try pk.p.mulPublic(self.secp256r1_kp.secret_key.bytes, .big);
-                break :brk &mul.affineCoordinates().x.toBytes(.big);
-            },
-            .secp384r1 => brk: {
-                const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
-                const mul = try pk.p.mulPublic(self.secp384r1_kp.secret_key.bytes, .big);
-                break :brk &mul.affineCoordinates().x.toBytes(.big);
-            },
-            .x25519_kyber768d00 => brk: {
-                const xksl = crypto.dh.X25519.public_length;
-                const hksl = xksl + Kyber768.ciphertext_length;
-                if (server_pub_key.len != hksl)
-                    return error.TlsIllegalParameter;
-
-                break :brk &((crypto.dh.X25519.scalarmult(
-                    self.x25519_kp.secret_key,
-                    server_pub_key[0..xksl].*,
-                ) catch return error.TlsDecryptFailure) ++ (self.kyber768_kp.secret_key.decaps(
-                    server_pub_key[xksl..hksl],
-                ) catch return error.TlsDecryptFailure));
-            },
-
-            else => return error.TlsIllegalParameter,
-        };
-    }
-
-    // Returns 32, 65 or 97 bytes
-    inline fn publicKey(self: DhKeyPair, named_group: tls.NamedGroup) ![]const u8 {
-        return switch (named_group) {
-            .x25519 => &self.x25519_kp.public_key,
-            .secp256r1 => &self.secp256r1_kp.public_key.toUncompressedSec1(),
-            .secp384r1 => &self.secp384r1_kp.public_key.toUncompressedSec1(),
-            .x25519_kyber768d00 => &self.x25519_kp.public_key ++ self.kyber768_kp.public_key.toBytes(),
-            else => return error.TlsIllegalParameter,
-        };
-    }
-};
-
 const RsaSecret = struct {
     secret: [48]u8,
 
@@ -927,15 +856,6 @@ const RsaSecret = struct {
         return try pk.encryptPkcsv1_5(&self.secret, &out);
     }
 };
-
-test "DhKeyPair.x25519" {
-    const seed = testu.hexToBytes("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
-    const server_pub_key = &testu.hexToBytes("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
-    const expected = &testu.hexToBytes("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
-
-    const kp = try DhKeyPair.init(seed[0..64].*);
-    try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
-}
 
 const testing = std.testing;
 const data12 = @import("testdata/tls12.zig");
