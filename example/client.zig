@@ -39,8 +39,6 @@ fn thisLib(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, verbose: b
     var conn = try tls.client(tcp, .{
         .host = host,
         .root_ca = root_ca,
-        //.insecure_skip_verify = true,
-        //.cipher_suites = &.{tls.CipherSuite.CHACHA20_POLY1305_SHA256},
         .diagnostic = &diagnostic,
         .named_groups = &.{ .x25519, .secp256r1, .x25519_kyber768d00 }, // use same set as in std lib
     });
@@ -52,9 +50,10 @@ fn thisLib(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, verbose: b
         if (verbose) std.debug.print("{s}", .{data});
     }
     try conn.close();
-    if (verbose) std.debug.print("{} bytes read\n", .{n});
-
-    if (verbose) cmn.showDiagnostic(&diagnostic, host);
+    if (verbose) {
+        std.debug.print("{} bytes read\n", .{n});
+        cmn.showDiagnostic(&diagnostic, host);
+    }
 }
 
 fn stdLib(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, verbose: bool) !void {

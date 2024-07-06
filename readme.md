@@ -310,6 +310,37 @@ zig build --zig-lib-dir ../zig/lib
 zig-out/bin/std_top_sites 
 ```
 
+# Performance comparison with standard library
+
+Starting local server which will stream a text file (`src/main.zig` in this example) to the connected client:
+```sh
+$ zig build -Doptimize=ReleaseFast && zig-out/bin/server src/main.zig
+```
+
+Running 50 client request to that server by using this library and then by using standard library implementation and comparing them:
+
+```sh
+$ zig build -Doptimize=ReleaseFast && sudo ~/.local/bin/poop './zig-out/bin/client --cycles 50' 'zig-out/bin/client --cycles 50 --std'
+Benchmark 1 (19 runs): ./zig-out/bin/client --cycles 50
+  measurement          mean ± σ            min … max           outliers         delta
+  wall_time           265ms ± 12.7ms     251ms …  294ms          0 ( 0%)        0%
+  peak_rss            828KB ±  131KB     524KB … 1.05MB          0 ( 0%)        0%
+  cpu_cycles          415M  ± 10.2M      376M  …  426M           1 ( 5%)        0%
+  instructions       1.62G  ± 38.3M     1.48G  … 1.64G           1 ( 5%)        0%
+  cache_references    375K  ±  183K     65.9K  …  563K           0 ( 0%)        0%
+  cache_misses       9.55K  ± 2.21K     5.20K  … 14.1K           0 ( 0%)        0%
+  branch_misses       187K  ± 38.3K      124K  …  228K           0 ( 0%)        0%
+Benchmark 2 (19 runs): zig-out/bin/client --cycles 50 --std
+  measurement          mean ± σ            min … max           outliers         delta
+  wall_time           265ms ± 14.3ms     247ms …  296ms          0 ( 0%)          +  0.2% ±  3.4%
+  peak_rss            786KB ±    0       786KB …  786KB          0 ( 0%)          -  5.0% ±  7.4%
+  cpu_cycles          410M  ± 11.7M      364M  …  417M           1 ( 5%)          -  1.1% ±  1.8%
+  instructions       1.61G  ± 51.8M     1.40G  … 1.64G           1 ( 5%)          -  1.0% ±  1.9%
+  cache_references    340K  ±  150K     49.9K  …  487K           0 ( 0%)          -  9.4% ± 29.5%
+  cache_misses       8.77K  ± 1.97K     5.42K  … 12.4K           0 ( 0%)          -  8.2% ± 14.5%
+  branch_misses       189K  ± 38.2K      113K  …  232K           0 ( 0%)          +  1.4% ± 13.6%
+
+```
 
 # Tests
 
