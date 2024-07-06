@@ -55,7 +55,7 @@ pub fn Handshake(comptime Stream: type) type {
 
         const HandshakeT = @This();
 
-        pub fn init(buf: []u8, rec_rdr: *RecordReaderT) !HandshakeT {
+        pub fn init(buf: []u8, rec_rdr: *RecordReaderT) HandshakeT {
             return .{
                 .rec_rdr = rec_rdr,
                 .buffer = buf,
@@ -76,7 +76,7 @@ pub fn Handshake(comptime Stream: type) type {
                 const shared_key = sk_brk: {
                     var seed: [DhKeyPair.seed_len]u8 = undefined;
                     crypto.random.bytes(&seed);
-                    var kp = try DhKeyPair.init(seed);
+                    var kp = try DhKeyPair.init(seed, supported_named_groups);
                     h.server_pub_key = dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
                     break :sk_brk try kp.sharedKey(h.named_group, h.client_pub_key);
                 };

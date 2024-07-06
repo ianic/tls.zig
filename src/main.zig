@@ -14,7 +14,7 @@ pub fn client(stream: anytype, opt: ClientOptions) !Connection(@TypeOf(stream)) 
     };
 
     const Handshake = @import("handshake_client.zig").Handshake(Stream);
-    var h = try Handshake.init(&conn.write_buf, &conn.rec_rdr);
+    var h = Handshake.init(&conn.write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
     if (h.tls_version == .tls_1_2) {
         conn.cipher_client_seq = 1;
@@ -32,7 +32,7 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
     };
 
     const Handshake = @import("handshake_server.zig").Handshake(Stream);
-    var h = try Handshake.init(&conn.write_buf, &conn.rec_rdr);
+    var h = Handshake.init(&conn.write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
 
     return conn;

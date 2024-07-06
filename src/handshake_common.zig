@@ -340,13 +340,17 @@ pub const DhKeyPair = struct {
 
     pub const seed_len = 64;
 
-    pub fn init(seed: [seed_len]u8) !DhKeyPair {
-        return .{
-            .x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
-            .secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[0..EcdsaP256Sha256.KeyPair.seed_length].*),
-            .secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[0..EcdsaP384Sha384.KeyPair.seed_length].*),
-            .kyber768_kp = try Kyber768.KeyPair.create(seed),
-        };
+    pub fn init(seed: [seed_len]u8, named_groups: []const tls.NamedGroup) !DhKeyPair {
+        var kp: DhKeyPair = .{};
+        for (named_groups) |ng|
+            switch (ng) {
+                .x25519 => kp.x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
+                .secp256r1 => kp.secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[0..EcdsaP256Sha256.KeyPair.seed_length].*),
+                .secp384r1 => kp.secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[0..EcdsaP384Sha384.KeyPair.seed_length].*),
+                .x25519_kyber768d00 => kp.kyber768_kp = try Kyber768.KeyPair.create(seed),
+                else => return error.TlsIllegalParameter,
+            };
+        return kp;
     }
 
     pub inline fn sharedKey(self: DhKeyPair, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
@@ -383,7 +387,6 @@ pub const DhKeyPair = struct {
                     server_pub_key[xksl..hksl],
                 ) catch return error.TlsDecryptFailure));
             },
-
             else => return error.TlsIllegalParameter,
         };
     }
@@ -405,6 +408,6 @@ test "DhKeyPair.x25519" {
     const server_pub_key = &testu.hexToBytes("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
     const expected = &testu.hexToBytes("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
 
-    const kp = try DhKeyPair.init(seed[0..64].*);
+    const kp = try DhKeyPair.init(seed[0..64].*, &.{.x25519});
     try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
 }

@@ -6,6 +6,13 @@ const record = @import("record.zig");
 const Cipher = @import("cipher.zig").Cipher;
 const HandshakeType = @import("handshake_common.zig").HandshakeType;
 
+pub fn connection(stream: anytype) Connection(@TypeOf(stream)) {
+    return .{
+        .stream = stream,
+        .rec_rdr = record.reader(stream),
+    };
+}
+
 pub fn Connection(comptime Stream: type) type {
     return struct {
         stream: Stream, // underlying stream
@@ -262,3 +269,101 @@ pub const VecPut = struct {
         }
     }
 };
+
+test "client/server connection" {
+    const BufReaderWriter = struct {
+        buf: []u8,
+        wp: usize = 0,
+        rp: usize = 0,
+
+        const Self = @This();
+
+        pub fn write(self: *Self, bytes: []const u8) !usize {
+            if (self.wp == self.buf.len) return error.NoSpaceLeft;
+
+            const n = @min(bytes.len, self.buf.len - self.wp);
+            @memcpy(self.buf[self.wp..][0..n], bytes[0..n]);
+            self.wp += n;
+            return n;
+        }
+
+        pub fn writeAll(self: *Self, bytes: []const u8) !void {
+            var n: usize = 0;
+            while (n < bytes.len) {
+                n += try self.write(bytes[n..]);
+            }
+        }
+
+        pub fn read(self: *Self, bytes: []u8) !usize {
+            const n = @min(bytes.len, self.wp - self.rp);
+            if (n == 0) return 0;
+            @memcpy(bytes[0..n], self.buf[self.rp..][0..n]);
+            self.rp += n;
+            if (self.rp == self.wp) {
+                self.wp = 0;
+                self.rp = 0;
+            }
+            return n;
+        }
+    };
+
+    const TestStream = struct {
+        inner_stream: *BufReaderWriter,
+        const Self = @This();
+        pub const ReadError = error{};
+        pub const WriteError = error{NoSpaceLeft};
+        pub fn read(self: *Self, bytes: []u8) !usize {
+            return try self.inner_stream.read(bytes);
+        }
+        pub fn writeAll(self: *Self, bytes: []const u8) !void {
+            return try self.inner_stream.writeAll(bytes);
+        }
+    };
+
+    const buf_len = 32 * 1024;
+    const overhead = (std.math.divCeil(comptime_int, buf_len, tls.max_cipertext_inner_record_len) catch unreachable) * 256;
+    var buf: [buf_len + overhead]u8 = undefined;
+    var inner_stream = BufReaderWriter{ .buf = &buf };
+
+    const cipher_client, const cipher_server = brk: {
+        const Transcript = @import("transcript.zig").Transcript;
+        const CipherSuite = @import("cipher.zig").CipherSuite;
+        const cipher_suite: CipherSuite = .AES_256_GCM_SHA384;
+
+        var rnd: [128]u8 = undefined;
+        std.crypto.random.bytes(&rnd);
+        const secret = Transcript.Secret{
+            .client = rnd[0..64],
+            .server = rnd[64..],
+        };
+
+        break :brk .{
+            try Cipher.initTLS13(cipher_suite, secret, .client),
+            try Cipher.initTLS13(cipher_suite, secret, .server),
+        };
+    };
+
+    var conn1 = connection(TestStream{ .inner_stream = &inner_stream });
+    conn1.cipher = cipher_client;
+
+    var conn2 = connection(TestStream{ .inner_stream = &inner_stream });
+    conn2.cipher = cipher_server;
+
+    var prng = std.Random.DefaultPrng.init(0);
+    const random = prng.random();
+    var send_buf: [buf_len]u8 = undefined;
+    var recv_buf: [buf_len]u8 = undefined;
+    random.bytes(&send_buf); // fill send buffer with random bytes
+
+    for (0..16) |_| {
+        const n = random.uintLessThan(usize, buf_len);
+
+        const sent = send_buf[0..n];
+        try conn1.writeAll(sent);
+        const r = try conn2.readAll(&recv_buf);
+        const received = recv_buf[0..r];
+
+        try testing.expectEqual(n, r);
+        try testing.expectEqualSlices(u8, sent, received);
+    }
+}

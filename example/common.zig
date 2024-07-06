@@ -18,15 +18,15 @@ pub fn showDiagnostic(stats: *tls.ClientOptions.Diagnostic, domain: []const u8) 
     }
 }
 
-pub fn initCaBundle(gpa: std.mem.Allocator) !Certificate.Bundle {
+pub fn initCaBundle(allocator: std.mem.Allocator) !Certificate.Bundle {
     var ca_bundle: Certificate.Bundle = .{};
-    try ca_bundle.rescan(gpa);
+    try ca_bundle.rescan(allocator);
     return ca_bundle;
 }
 
-pub fn topSites(gpa: std.mem.Allocator) !std.json.Parsed([]Site) {
+pub fn topSites(allocator: std.mem.Allocator) !std.json.Parsed([]Site) {
     const data = @embedFile("top-sites.json");
-    return std.json.parseFromSlice([]Site, gpa, data, .{ .allocate = .alloc_always });
+    return std.json.parseFromSlice([]Site, allocator, data, .{ .allocate = .alloc_always });
 }
 
 pub const Site = struct {
@@ -114,7 +114,7 @@ pub const Counter = struct {
 };
 
 pub fn get(
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     domain: []const u8,
     port: ?u16,
     show_handshake_stat: bool,
@@ -136,7 +136,7 @@ pub fn get(
     const host = uri.host.?.percent_encoded;
 
     // Establish tcp connection
-    var tcp = try std.net.tcpConnectToHost(gpa, host, if (port) |p| p else 443);
+    var tcp = try std.net.tcpConnectToHost(allocator, host, if (port) |p| p else 443);
     defer tcp.close();
     // Set socket timeout
     const read_timeout: std.posix.timeval = .{ .tv_sec = 10, .tv_usec = 0 };

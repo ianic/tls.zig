@@ -3,13 +3,14 @@ const tls = @import("tls");
 const cmn = @import("common.zig");
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
-    const sets = try readBadssl(gpa);
+    const sets = try readBadssl(allocator);
     defer sets.deinit();
 
-    var root_ca = try cmn.initCaBundle(gpa);
-    defer root_ca.deinit(gpa);
+    var root_ca = try cmn.initCaBundle(allocator);
+    defer root_ca.deinit(allocator);
 
     for (sets.value) |set| {
         std.debug.print("\n{s}\n{s}\n", .{ set.heading, set.description });
@@ -21,7 +22,7 @@ pub fn main() !void {
             var domain_buf: [128]u8 = undefined;
             const domain = try std.fmt.bufPrint(&domain_buf, "{s}.badssl.com", .{sd.subdomain});
 
-            cmn.get(gpa, domain, if (sd.port == 0) null else sd.port, false, false, .{ .root_ca = root_ca, .host = "" }) catch |err| {
+            cmn.get(allocator, domain, if (sd.port == 0) null else sd.port, false, false, .{ .root_ca = root_ca, .host = "" }) catch |err| {
                 std.debug.print(
                     "\t{s} {s} {}\n",
                     .{ fail.emoji(), domain, err },
@@ -68,9 +69,9 @@ const BadsslSet = struct {
 
 // badssl.json is based on from https://badssl.com/dashboard/sets.js
 // file used on https://badssl.com/dashboard/ browser test
-fn readBadssl(gpa: std.mem.Allocator) !std.json.Parsed([]BadsslSet) {
+fn readBadssl(allocator: std.mem.Allocator) !std.json.Parsed([]BadsslSet) {
     const data = @embedFile("badssl.json");
-    return std.json.parseFromSlice([]BadsslSet, gpa, data, .{
+    return std.json.parseFromSlice([]BadsslSet, allocator, data, .{
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });

@@ -15,14 +15,16 @@ const cmn = @import("common.zig");
 //   zig build && zig-out/bin/client_auth
 //
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
     // We are running binary from project root
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
     var root_ca: Certificate.Bundle = .{};
-    defer root_ca.deinit(gpa);
-    try root_ca.addCertsFromFilePath(gpa, dir, "minica.pem");
+    defer root_ca.deinit(allocator);
+    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     const host = "localhost";
     const port = 8443;
@@ -44,18 +46,18 @@ pub fn main() !void {
     }) |cipher_suites| {
         for (client_keys) |sub_path| {
             // Make tcp connection
-            var tcp = try std.net.tcpConnectToHost(gpa, host, port);
+            var tcp = try std.net.tcpConnectToHost(allocator, host, port);
             defer tcp.close();
 
             // Prepare client authentication
             const cert_dir = try dir.openDir(sub_path, .{});
             var certificates: Certificate.Bundle = .{};
-            defer certificates.deinit(gpa);
-            try certificates.addCertsFromFilePath(gpa, cert_dir, "cert.pem");
+            defer certificates.deinit(allocator);
+            try certificates.addCertsFromFilePath(allocator, cert_dir, "cert.pem");
 
             const private_key_file = try cert_dir.openFile("key.pem", .{});
             defer private_key_file.close();
-            const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
+            const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.ClientOptions.Diagnostic = .{};

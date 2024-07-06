@@ -4,22 +4,24 @@ const Certificate = std.crypto.Certificate;
 const cmn = @import("common.zig");
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
-    const args = try std.process.argsAlloc(gpa);
-    defer gpa.free(args);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
-    var root_ca = try cmn.initCaBundle(gpa);
-    defer root_ca.deinit(gpa);
+    const args = try std.process.argsAlloc(allocator);
+    defer allocator.free(args);
+
+    var root_ca = try cmn.initCaBundle(allocator);
+    defer root_ca.deinit(allocator);
 
     if (args.len > 1) {
-        return try run(gpa, root_ca, args[1]);
+        return try run(allocator, root_ca, args[1]);
     }
-    try run(gpa, root_ca, "cloudflare.com");
+    try run(allocator, root_ca, "cloudflare.com");
 }
 
-fn run(gpa: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []const u8) !void {
+fn run(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []const u8) !void {
     for (tls.CipherSuite.all) |cs| {
-        cmn.get(gpa, domain, null, false, false, .{
+        cmn.get(allocator, domain, null, false, false, .{
             .root_ca = root_ca,
             .host = "",
             .cipher_suites = &[_]tls.CipherSuite{cs},

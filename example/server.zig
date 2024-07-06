@@ -3,18 +3,24 @@ const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
+    const args = try std.process.argsAlloc(allocator);
+    defer allocator.free(args);
+
+    const file_name = if (args.len > 1) args[1] else "example/cert/pg2600.txt";
+
+    const dir = try std.fs.cwd().openDir("example/cert", .{});
     // Load server certificate
     var certificates: Certificate.Bundle = .{};
-    defer certificates.deinit(gpa);
-    try certificates.addCertsFromFilePath(gpa, dir, "localhost_ec/cert.pem");
-    // try certificates.addCertsFromFilePath(gpa, dir, "minica.pem");
+    defer certificates.deinit(allocator);
+    try certificates.addCertsFromFilePath(allocator, dir, "localhost_ec/cert.pem");
+    // try certificates.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     // Load server private key
     const private_key_file = try dir.openFile("localhost_ec/key.pem", .{});
-    const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
+    const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
     private_key_file.close();
 
     // Tcp listener
@@ -24,24 +30,28 @@ pub fn main() !void {
         .reuse_address = true,
     });
 
+    const pg_file = try std.fs.cwd().openFile(file_name, .{});
+    defer pg_file.close();
+
     var buf: [4096]u8 = undefined;
     while (true) {
         // Tcp accept
         const tcp = try server.accept();
-        std.debug.print("accepted {}\n", .{tcp.address});
+        // std.debug.print("accepted {}\n", .{tcp.address});
         defer tcp.stream.close();
 
         // Upgrade tcp to tls
-        var conn = try tls.server(tcp.stream, .{
+        var conn = tls.server(tcp.stream, .{
             .authentication = .{
                 .certificates = certificates,
                 .private_key = private_key,
             },
-        });
+        }) catch |err| {
+            std.debug.print("tls failed with {}\n", .{err});
+            continue;
+        };
 
-        const pg_file = try std.fs.cwd().openFile("example/cert/pg2600.txt", .{});
-        defer pg_file.close();
-
+        try pg_file.seekTo(0);
         while (true) {
             const n = try pg_file.read(&buf);
             try conn.writeAll(buf[0..n]);

@@ -40,16 +40,7 @@ pub const Options = struct {
     //   .cipher_suites = &[_]tls.CipherSuite{tls.CipherSuite.CHACHA20_POLY1305_SHA256},
     cipher_suites: []const CipherSuite = &CipherSuite.all,
 
-    // Some sites are not working when sending keyber public key: godaddy.com,
-    // secureserver.net (both have "Server: ATS/9.2.3"). That key is making
-    // hello message big ~1655 bytes instead of 360
-    //
-    // In Wireshark I got window update then tcp re-transmissions of 1440 bytes without ack.
-    // After 17sec and 6 re-transmissions connection is broken.
-    //
-    // This flag disables sending long keyber public key making connection
-    // possible to those sites.
-    disable_keyber: bool = false,
+    named_groups: []const tls.NamedGroup = named_groups_default,
 
     // Client authentication
     authentication: ?Authentication = null,
@@ -57,6 +48,9 @@ pub const Options = struct {
     // If this structure is provided it will be filled with handshake attributes
     // at the end of the handshake process.
     diagnostic: ?*Diagnostic = null,
+
+    pub const named_groups_all = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1, .x25519_kyber768d00 };
+    pub const named_groups_default = &[_]tls.NamedGroup{ .x25519, .secp256r1 };
 
     pub const Diagnostic = struct {
         tls_version: tls.ProtocolVersion = @enumFromInt(0),
@@ -105,23 +99,27 @@ pub fn Handshake(comptime Stream: type) type {
 
         const HandshakeT = @This();
 
-        pub fn init(buf: []u8, rec_rdr: *RecordReaderT) !HandshakeT {
-            var random_buf: [init_random_buf_len]u8 = undefined;
-            crypto.random.bytes(&random_buf);
-            return try initWithRandom(buf, rec_rdr, random_buf);
-        }
-
-        const init_random_buf_len = 32 + 64 + 46;
-
-        fn initWithRandom(buf: []u8, rec_rdr: *RecordReaderT, random_buf: [init_random_buf_len]u8) !HandshakeT {
+        pub fn init(buf: []u8, rec_rdr: *RecordReaderT) HandshakeT {
             return .{
-                .client_random = random_buf[0..32].*,
-                .dh_kp = try DhKeyPair.init(random_buf[32..][0..64].*),
-                .rsa_secret = RsaSecret.init(random_buf[32 + 64 ..][0..46].*),
+                .client_random = undefined,
+                .dh_kp = undefined,
+                .rsa_secret = undefined,
                 .now_sec = std.time.timestamp(),
                 .buffer = buf,
                 .rec_rdr = rec_rdr,
             };
+        }
+
+        const init_keys_buf_len = 32 + 64 + 46;
+
+        fn initKeys(
+            h: *HandshakeT,
+            random_buf: [init_keys_buf_len]u8,
+            named_groups: []const tls.NamedGroup,
+        ) !void {
+            h.client_random = random_buf[0..32].*;
+            h.dh_kp = try DhKeyPair.init(random_buf[32..][0..64].*, named_groups);
+            h.rsa_secret = RsaSecret.init(random_buf[32 + 64 ..][0..46].*);
         }
 
         /// Handshake exchanges messages with server to get agreement about
@@ -173,6 +171,12 @@ pub fn Handshake(comptime Stream: type) type {
         ///
         pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !Cipher {
             defer h.updateDiagnostic(opt);
+
+            {
+                var buf: [init_keys_buf_len]u8 = undefined;
+                crypto.random.bytes(&buf);
+                try h.initKeys(buf, opt.named_groups);
+            }
 
             try w.writeAll(try h.makeClientHello(opt)); // client flight 1
             try h.readServerFlight1(opt); // server flight 1
@@ -286,17 +290,13 @@ pub fn Handshake(comptime Stream: type) type {
                 .rsa_pkcs1_sha384,
             });
 
-            const named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1, .x25519_kyber768d00 };
-            const named_groups_len = named_groups.len - @as(usize, if (opt.disable_keyber) 1 else 0);
-            try ext.writeExtension(.supported_groups, named_groups[0..named_groups_len]);
+            try ext.writeExtension(.supported_groups, opt.named_groups);
             if (tls_versions != .tls_1_2) {
-                const keys = &[_][]const u8{
-                    try h.dh_kp.publicKey(.x25519),
-                    try h.dh_kp.publicKey(.secp256r1),
-                    try h.dh_kp.publicKey(.secp384r1),
-                    try h.dh_kp.publicKey(.x25519_kyber768d00),
-                };
-                try ext.writeKeyShare(named_groups[0..named_groups_len], keys[0..named_groups_len]);
+                var keys: [Options.named_groups_all.len][]const u8 = undefined;
+                for (opt.named_groups, 0..) |ng, i| {
+                    keys[i] = try h.dh_kp.publicKey(ng);
+                }
+                try ext.writeKeyShare(opt.named_groups, keys[0..opt.named_groups.len]);
             }
             try ext.writeServerName(opt.host);
 
@@ -871,7 +871,7 @@ test "parse tls 1.2 server hello" {
     var h = brk: {
         var buffer: [1024]u8 = undefined;
         var rec_rdr = testReader(&data12.server_hello_responses);
-        break :brk try TestHandshake.init(&buffer, &rec_rdr);
+        break :brk TestHandshake.init(&buffer, &rec_rdr);
     };
 
     // Set to known instead of random
@@ -901,7 +901,7 @@ test "verify google.com certificate" {
     var h = brk: {
         var buffer: [1024]u8 = undefined;
         var rec_rdr = testReader(@embedFile("testdata/google.com/server_hello"));
-        break :brk try TestHandshake.init(&buffer, &rec_rdr);
+        break :brk TestHandshake.init(&buffer, &rec_rdr);
     };
     h.now_sec = 1714846451;
     h.client_random = @embedFile("testdata/google.com/client_random").*;
@@ -923,7 +923,7 @@ test "parse tls 1.3 server hello" {
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);
 
-    var h = try TestHandshake.init(undefined, undefined);
+    var h = TestHandshake.init(undefined, undefined);
     try h.parseServerHello(&d, length);
 
     try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite);
@@ -972,7 +972,7 @@ fn initExampleHandshake(h: *TestHandshake) !void {
 
 test "tls 1.3 decrypt wrapped record" {
     var cipher = brk: {
-        var h = try TestHandshake.init(undefined, undefined);
+        var h = TestHandshake.init(undefined, undefined);
         try initExampleHandshake(&h);
         break :brk h.cipher;
     };
@@ -1000,7 +1000,7 @@ test "tls 1.3 process server flight" {
     var buffer: [1024]u8 = undefined;
     var h = brk: {
         var rec_rdr = testReader(&data13.server_flight);
-        break :brk try TestHandshake.init(&buffer, &rec_rdr);
+        break :brk TestHandshake.init(&buffer, &rec_rdr);
     };
 
     try initExampleHandshake(&h);
@@ -1031,17 +1031,19 @@ test "tls 1.3 process server flight" {
 test "create client hello" {
     var h = brk: {
         // init with predictable random data
-        var random_buf: [TestHandshake.init_random_buf_len]u8 = undefined;
+        var random_buf: [TestHandshake.init_keys_buf_len]u8 = undefined;
         testu.random(0).bytes(&random_buf);
         var buffer: [1024]u8 = undefined;
-        break :brk try TestHandshake.initWithRandom(&buffer, undefined, random_buf);
+        var h = TestHandshake.init(&buffer, undefined);
+        try h.initKeys(random_buf, Options.named_groups_all);
+        break :brk h;
     };
 
     const actual = try h.makeClientHello(.{
         .host = "google.com",
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-        .disable_keyber = true,
+        .named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1 },
     });
 
     const expected = testu.hexToBytes(
@@ -1067,7 +1069,7 @@ test "create client hello" {
 test "handshake verify server finished message" {
     var buffer: [1024]u8 = undefined;
     var rec_rdr = testReader(&data12.server_handshake_finished_msgs);
-    var h = try TestHandshake.init(&buffer, &rec_rdr);
+    var h = TestHandshake.init(&buffer, &rec_rdr);
 
     h.cipher_suite = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
     h.master_secret = data12.master_secret;

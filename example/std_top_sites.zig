@@ -5,13 +5,14 @@ const http = std.http;
 const cmn = @import("common.zig");
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
-    const top_sites = try cmn.topSites(gpa);
+    const top_sites = try cmn.topSites(allocator);
     defer top_sites.deinit();
 
     var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = gpa, .n_jobs = 32 });
+    try pool.init(.{ .allocator = allocator, .n_jobs = 32 });
 
     var counter: cmn.Counter = .{};
     for (top_sites.value) |site| {
@@ -20,7 +21,7 @@ pub fn main() !void {
             counter.add(.skip);
             continue;
         }
-        try pool.spawn(run, .{ gpa, domain, &counter });
+        try pool.spawn(run, .{ allocator, domain, &counter });
     }
     pool.deinit();
     counter.show();
@@ -28,8 +29,8 @@ pub fn main() !void {
 
 const header_buffer_size = 16 * 1024;
 
-fn run(gpa: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) void {
-    get(gpa, domain) catch |err| {
+fn run(allocator: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) void {
+    get(allocator, domain) catch |err| {
         switch (err) {
             error.TlsInitializationFailed => {
                 std.debug.print("❌ {s}\n", .{domain});
@@ -46,8 +47,8 @@ fn run(gpa: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) void {
     counter.add(.success);
 }
 
-pub fn get(gpa: std.mem.Allocator, domain: []const u8) !void {
-    var client: http.Client = .{ .allocator = gpa };
+pub fn get(allocator: std.mem.Allocator, domain: []const u8) !void {
+    var client: http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
     var url_buffer: [128]u8 = undefined;

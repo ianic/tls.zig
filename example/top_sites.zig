@@ -4,16 +4,17 @@ const Certificate = std.crypto.Certificate;
 const cmn = @import("common.zig");
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
-    const top_sites = try cmn.topSites(gpa);
+    const top_sites = try cmn.topSites(allocator);
     defer top_sites.deinit();
 
     var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = gpa, .n_jobs = 32 });
+    try pool.init(.{ .allocator = allocator, .n_jobs = 32 });
 
-    var root_ca = try cmn.initCaBundle(gpa);
-    defer root_ca.deinit(gpa);
+    var root_ca = try cmn.initCaBundle(allocator);
+    defer root_ca.deinit(allocator);
 
     var counter: cmn.Counter = .{};
     for (top_sites.value) |site| {
@@ -22,25 +23,21 @@ pub fn main() !void {
             counter.add(.skip);
             continue;
         }
-        try pool.spawn(run, .{ gpa, domain, root_ca, &counter });
+        try pool.spawn(run, .{ allocator, domain, root_ca, &counter });
     }
     pool.deinit();
     counter.show();
 }
 
-pub fn run(gpa: std.mem.Allocator, domain: []const u8, root_ca: Certificate.Bundle, counter: *cmn.Counter) void {
+pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: Certificate.Bundle, counter: *cmn.Counter) void {
     var diagnostic: tls.ClientOptions.Diagnostic = .{};
-    var opt: tls.ClientOptions = .{
+    const opt: tls.ClientOptions = .{
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
     };
-
-    if (cmn.inList(domain, &cmn.noKeyber)) {
-        opt.disable_keyber = true;
-    }
-    cmn.get(gpa, domain, null, false, false, opt) catch |err| {
-        curl(gpa, domain) catch |curl_err| {
+    cmn.get(allocator, domain, null, false, false, opt) catch |err| {
+        curl(allocator, domain) catch |curl_err| {
             std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
             counter.add(.err);
             return;

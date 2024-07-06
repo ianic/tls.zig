@@ -9,13 +9,13 @@ Handles client authentication.
 To upgrade existing tcp connection to the tls connection call `tls.client`:
 ```zig
     // Establish tcp connection
-    var tcp = try std.net.tcpConnectToHost(gpa, host, port);
+    var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
 
     // Load system root certificates
     var root_ca: std.crypto.Certificate.Bundle = .{};
-    try root_ca.rescan(gpa);
-    defer root_ca.deinit(gpa);
+    try root_ca.rescan(allocator);
+    defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
     var conn = try tls.client(tcp, .{
@@ -49,12 +49,12 @@ If server requires client authentication set `authentication` attribute in optio
 ```zig
     // Load client certificate
     var certificates: Certificate.Bundle = .{};
-    defer certificates.deinit(gpa);
-    try certificates.addCertsFromFilePath(gpa, cert_dir, "cert.pem");
+    defer certificates.deinit(allocator);
+    try certificates.addCertsFromFilePath(allocator, cert_dir, "cert.pem");
     // Load client private key
     const private_key_file = try cert_dir.openFile("key.pem", .{});
     defer private_key_file.close();
-    const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
+    const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
 
     var cli = try tls.client(tcp, .{
         .host = host,
@@ -75,12 +75,12 @@ Library has also minimal, tls 1.3 only server implementation. To upgrade tcp to 
 ```zig
     // Load server certificate
     var certificates: Certificate.Bundle = .{};
-    defer certificates.deinit(gpa);
-    try certificates.addCertsFromFilePath(gpa, dir, "localhost_ec/cert.pem");
+    defer certificates.deinit(allocator);
+    try certificates.addCertsFromFilePath(allocator, dir, "localhost_ec/cert.pem");
 
     // Load server private key
     const private_key_file = try dir.openFile("localhost_ec/key.pem", .{});
-    const private_key = try tls.PrivateKey.fromFile(gpa, private_key_file);
+    const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
     private_key_file.close();
     
     // Tcp listener

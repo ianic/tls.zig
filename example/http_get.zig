@@ -3,17 +3,19 @@ const tls = @import("tls");
 const cmn = @import("common.zig");
 
 pub fn main() !void {
-    const gpa = std.heap.page_allocator;
-    const args = try std.process.argsAlloc(gpa);
-    defer gpa.free(args);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer allocator.free(args);
 
     if (args.len > 1) {
         const domain = args[1];
 
-        var ca_bundle = try cmn.initCaBundle(gpa);
-        defer ca_bundle.deinit(gpa);
+        var ca_bundle = try cmn.initCaBundle(allocator);
+        defer ca_bundle.deinit(allocator);
 
-        try cmn.get(gpa, domain, null, true, true, .{
+        try cmn.get(allocator, domain, null, true, true, .{
             .host = "",
             .root_ca = ca_bundle,
             // to force specific cipher:
