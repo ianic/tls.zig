@@ -202,7 +202,7 @@ pub fn Handshake(comptime Stream: type) type {
         fn generateCipher(h: *HandshakeT) !void {
             try h.verifyCertificateSignatureTLS12();
             try h.generateKeyMaterial();
-            h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, crypto.random);
+            h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, crypto.random, .client);
         }
 
         /// Generate TLS 1.2 pre master secret, master secret and key material.
@@ -1084,7 +1084,7 @@ test "handshake verify server finished message" {
     try testing.expectEqualSlices(u8, &data12.client_finished, &handshakeHeader(.finished, 12) ++ client_finished);
 
     // init client with prepared key_material
-    h.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random);
+    h.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random, .client);
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&data12.client_finished);

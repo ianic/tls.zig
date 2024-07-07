@@ -306,7 +306,7 @@ const TestHandshake = Handshake(std.io.FixedBufferStream([]const u8));
 test "read client hello" {
     var buffer: [1024]u8 = undefined;
     var rec_rdr = testReader(&data13.client_hello);
-    var h = try TestHandshake.init(&buffer, &rec_rdr);
+    var h = TestHandshake.init(&buffer, &rec_rdr);
     h.signature_scheme = .ecdsa_secp521r1_sha512; // this must be supported in signature_algorithms extension
     try h.readClientHello();
 
@@ -318,7 +318,7 @@ test "read client hello" {
 
 test "make server hello" {
     var buffer: [1024]u8 = undefined;
-    var h = try TestHandshake.init(&buffer, undefined);
+    var h = TestHandshake.init(&buffer, undefined);
     h.cipher_suite = .AES_256_GCM_SHA384;
     testu.fillFrom(&h.server_random, 0);
     testu.fillFrom(&h.server_pub_key_buf, 0x20);

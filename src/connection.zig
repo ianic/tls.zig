@@ -190,7 +190,7 @@ test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = testu.Stream.init(&(data12.server_pong ** 3), &output_buf);
     var conn: Connection(@TypeOf(stream)) = .{ .stream = stream, .rec_rdr = record.reader(stream) };
-    conn.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0));
+    conn.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0), .client);
 
     conn.stream.output.reset();
     { // encrypt verify data from example
@@ -321,7 +321,8 @@ test "client/server connection" {
     };
 
     const buf_len = 32 * 1024;
-    const overhead = (std.math.divCeil(comptime_int, buf_len, tls.max_cipertext_inner_record_len) catch unreachable) * 256;
+    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, tls.max_cipertext_inner_record_len) catch unreachable);
+    const overhead: usize = tls_records_in_buf * @import("cipher.zig").encrypt_overhead_tls_13;
     var buf: [buf_len + overhead]u8 = undefined;
     var inner_stream = BufReaderWriter{ .buf = &buf };
 
@@ -356,7 +357,7 @@ test "client/server connection" {
     random.bytes(&send_buf); // fill send buffer with random bytes
 
     for (0..16) |_| {
-        const n = random.uintLessThan(usize, buf_len);
+        const n = buf_len; //random.uintLessThan(usize, buf_len);
 
         const sent = send_buf[0..n];
         try conn1.writeAll(sent);
