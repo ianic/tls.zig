@@ -436,7 +436,7 @@ pub fn Handshake(comptime Stream: type) type {
             const start_idx = d.idx;
             while (d.idx - start_idx < certs_len) {
                 const cert_len = try d.decode(u24);
-                // std.debug.print("=> {} {} {} {}\n", .{ certs_len, rec.idx, cert_len, rec.payload.len });
+                // std.debug.print("=> {} {} {} {}\n", .{ certs_len, d.idx, cert_len, d.payload.len });
                 const cert = try d.slice(cert_len);
                 if (h.tls_version == .tls_1_3) {
                     // certificate extensions present in tls 1.3
@@ -521,10 +521,10 @@ pub fn Handshake(comptime Stream: type) type {
                             const handshake_type = try d.decode(HandshakeType);
                             const length = try d.decode(u24);
 
-                            // std.debug.print("handshake loop: {} {} {}\n", .{ handshake_type, length, rec.payload.len });
+                            // std.debug.print("handshake loop: {} {} {} {}\n", .{ handshake_type, length, d.payload.len, d.idx });
                             if (length > tls.max_cipertext_inner_record_len)
                                 return error.TlsUnsupportedFragmentedHandshakeMessage;
-                            if (length > d.payload.len - 4)
+                            if (length > d.rest().len)
                                 continue :outer; // fragmented handshake into multiple records
 
                             defer {
