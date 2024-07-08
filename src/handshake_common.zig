@@ -376,7 +376,6 @@ pub const DhKeyPair = struct {
             .x25519_kyber768d00 => brk: {
                 const xksl = crypto.dh.X25519.public_length;
                 const hksl = xksl + Kyber768.ciphertext_length;
-                std.debug.print("=> xksl: {}, hksl: {}\n", .{ xksl, hksl });
                 if (server_pub_key.len != hksl)
                     return error.TlsIllegalParameter;
 

@@ -436,8 +436,11 @@ fn Aead13Type(comptime AeadType: type) type {
             const iv = ivWithSeq(nonce_len, self.decrypt_iv, seq);
             AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.decrypt_key) catch return error.TlsDecryptError;
 
-            const cleartext = buf[0 .. ciphertext_len - 1];
-            const content_type: tls.ContentType = @enumFromInt(buf[ciphertext_len - 1]);
+            var ct_pos: usize = ciphertext_len - 1; // position of content type
+            while (ct_pos > 0 and buf[ct_pos] == 0) : (ct_pos -= 1) {} // remove zero bytes padding
+
+            const cleartext = buf[0..ct_pos];
+            const content_type: tls.ContentType = @enumFromInt(buf[ct_pos]);
             return .{ content_type, cleartext };
         }
     };
