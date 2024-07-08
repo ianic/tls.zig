@@ -24,9 +24,44 @@ pub fn initCaBundle(allocator: std.mem.Allocator) !Certificate.Bundle {
     return ca_bundle;
 }
 
-pub fn topSites(allocator: std.mem.Allocator) !std.json.Parsed([]Site) {
-    const data = @embedFile("top-sites.json");
-    return std.json.parseFromSlice([]Site, allocator, data, .{ .allocate = .alloc_always });
+pub const CsvReader = struct {
+    data: []const u8,
+    pos: usize = 0,
+
+    pub fn init(data: []const u8) CsvReader {
+        var pos: usize = std.mem.indexOfAnyPos(u8, data, 0, "\n") orelse 0;
+        if (pos > 0) pos += 1;
+        return .{
+            .data = data,
+            .pos = pos,
+        };
+    }
+
+    pub fn next(self: *@This()) ?[]const u8 {
+        if (std.mem.indexOfAnyPos(u8, self.data, self.pos, "\n")) |end| {
+            defer self.pos = end + 1;
+            const line = self.data[self.pos..end];
+            if (std.mem.indexOf(u8, line, ",")) |sep1| {
+                if (std.mem.indexOfPos(u8, line, sep1 + 1, ",")) |sep2| {
+                    if (line[sep1 + 1] == '"') {
+                        return line[sep1 + 2 .. sep2 - 1];
+                    }
+                    return line[sep1 + 1 .. sep2];
+                }
+            }
+            return line;
+        }
+        return null;
+    }
+};
+
+test "read file" {
+    var r = CsvReader.init(@embedFile("ranked_domains.csv"));
+    var i: usize = 1;
+    while (r.next()) |d| {
+        std.debug.print("'{s}' {}\n", .{ d, i });
+        i += 1;
+    }
 }
 
 pub const Site = struct {
@@ -47,7 +82,15 @@ pub const domainsToSkip = [_][]const u8{
     "dw.com", // timeout after long time, fine on www.dw.com
     "alicdn.com",
     "usnews.com",
-    "canada.ca", // SSL certificate problem: unable to get local issuer certificate
+    "canada.ca", //            SSL certificate problem: unable to get local issuer certificate
+    "nhk.or.jp", //            error error.UnknownHostName curl error: error.CouldntResolveHost
+    "army.mil", //             error error.UnknownHostName curl error: error.CouldntResolveHost
+    "my-free.website", //      error error.UnknownHostName curl error: error.CouldntResolveHost
+    "com.be", //               error error.UnknownHostName curl error: error.CouldntResolveHost
+    "ouest-france.fr", //      error error.ConnectionRefused curl error: error.FailedToConnectToHost
+    "gouv.qc.ca", //           error error.ConnectionTimedOut curl error: error.OperationTimeout
+    "jalan.net", //            error error.ConnectionTimedOut curl error: error.OperationTimeout
+    "kroger.com",
 };
 
 pub const domainsWithErrors = [_][]const u8{
@@ -69,9 +112,10 @@ pub fn inList(domain: []const u8, list: []const []const u8) bool {
     return false;
 }
 
-pub const noKeyber = [_][]const u8{
+pub const no_keyber = [_][]const u8{
     "secureserver.net",
     "godaddy.com",
+    "starfieldtech.com",
 };
 
 pub const Counter = struct {
@@ -89,6 +133,9 @@ pub const Counter = struct {
     skip: usize = 0,
     err: usize = 0,
 
+    tls_1_2: usize = 0,
+    tls_1_3: usize = 0,
+
     pub fn add(self: *@This(), res: Result) void {
         self.mu.lock();
         defer self.mu.unlock();
@@ -101,14 +148,26 @@ pub const Counter = struct {
         }
     }
 
+    pub fn addSuccess(self: *@This(), version: std.crypto.tls.ProtocolVersion) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        self.success += 1;
+        switch (version) {
+            .tls_1_2 => self.tls_1_2 += 1,
+            .tls_1_3 => self.tls_1_3 += 1,
+            else => unreachable,
+        }
+    }
+
     pub fn total(self: @This()) usize {
         return self.success + self.fail + self.skip + self.err;
     }
 
     pub fn show(self: @This()) void {
         std.debug.print(
-            "stats:\n\t total: {}\n\t success: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n",
-            .{ self.total(), self.success, self.fail, self.err, self.skip },
+            "stats:\n\t total: {}\n\t success: {}\n\t\t tls 1.2: {}\n\t\t tls 1.3: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n",
+            .{ self.total(), self.success, self.tls_1_2, self.tls_1_3, self.fail, self.err, self.skip },
         );
     }
 };
@@ -136,11 +195,19 @@ pub fn get(
     const host = uri.host.?.percent_encoded;
 
     // Establish tcp connection
-    var tcp = try std.net.tcpConnectToHost(allocator, host, if (port) |p| p else 443);
+    var tcp: std.net.Stream = undefined;
+    while (true) {
+        tcp = std.net.tcpConnectToHost(allocator, host, if (port) |p| p else 443) catch |err| switch (err) {
+            error.TemporaryNameServerFailure => continue,
+            else => return err,
+        };
+        break;
+    }
     defer tcp.close();
     // Set socket timeout
     const read_timeout: std.posix.timeval = .{ .tv_sec = 10, .tv_usec = 0 };
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
+    try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     // Prepare and show handshake stats
     if (show_handshake_stat and opt.diagnostic == null) {
@@ -155,19 +222,26 @@ pub fn get(
 
     // Send http GET request
     var buf: [64]u8 = undefined;
-    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.0\r\nHost: {s}\r\n\r\n", .{host});
+    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
     try cli.writeAll(req);
 
     // Read and print http response
     var n: usize = 0;
     defer if (show_response) std.debug.print("{} bytes read\n", .{n});
-    while (try cli.next()) |data| {
+    while (cli.next() catch |err| switch (err) {
+        error.WouldBlock, error.ConnectionResetByPeer => null,
+        else => return err,
+    }) |data| {
         n += data.len;
         if (show_response) std.debug.print("{s}", .{data});
         if (std.mem.endsWith(u8, data, "</html>\n")) break;
+        if (std.mem.endsWith(u8, data, "</HTML>\n")) break;
     }
 
-    try cli.close();
+    cli.close() catch |err| switch (err) {
+        error.BrokenPipe => return,
+        else => return err,
+    };
 }
 
 fn hasPrefix(str: []const u8, prefixes: []const []const u8) bool {

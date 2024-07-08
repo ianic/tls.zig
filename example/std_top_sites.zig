@@ -8,16 +8,13 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const top_sites = try cmn.topSites(allocator);
-    defer top_sites.deinit();
-
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = allocator, .n_jobs = 32 });
 
     var counter: cmn.Counter = .{};
-    for (top_sites.value) |site| {
-        const domain = site.rootDomain;
-        if (cmn.inList(domain, &(cmn.domainsToSkip))) {
+    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    while (rdr.next()) |domain| {
+        if (cmn.skipDomain(domain)) {
             counter.add(.skip);
             continue;
         }

@@ -397,6 +397,42 @@ https://datatracker.ietf.org/doc/rfc7905/
 Script to rebase branch tls23 to master.
 
 cd ~/Code/zig && zig-merge-upstream.sh && git checkout tls23 && git rebase master && git push -f
+
+
+
+
+
+zig-out/bin/http_get airable.io
+airable.io
+         tls version: tls_1_2
+         cipher: none
+         named group: none
+         signature scheme: none
+error: TlsAlertUnrecognizedName
+/usr/local/zig/zig-linux-x86_64-0.14.0-dev.144+a31fe8aa3/lib/std/crypto/tls.zig:201:9: 0x1087d8e in toError (http_get)
+        return switch (alert) {
+        ^
+/home/ianic/Code/tls.zig/src/record.zig:187:17: 0x1087bce in expectContentType (http_get)
+                try desc.toError();
+                ^
+/home/ianic/Code/tls.zig/src/handshake_client.zig:325:17: 0x108d0b7 in readServerFlight1 (http_get)
+                try d.expectContentType(.handshake);
+                ^
+/home/ianic/Code/tls.zig/src/handshake_client.zig:182:13: 0x10ebb3c in handshake (http_get)
+            try h.readServerFlight1(opt); // server flight 1
+            ^
+/home/ianic/Code/tls.zig/src/main.zig:18:19: 0x10ec741 in client__anon_5656 (http_get)
+    conn.cipher = try h.handshake(conn.stream, opt);
+                  ^
+/home/ianic/Code/tls.zig/example/common.zig:238:15: 0x10ed730 in get (http_get)
+    var cli = try tls.client(tcp, opt);
+              ^
+/home/ianic/Code/tls.zig/example/http_get.zig:18:9: 0x10ef76f in main (http_get)
+        try cmn.get(allocator, domain, null, true, true, .{
+        ^
+
+Ovaj salje warning alert, curl takodjer posalje da je dobio alert ali ide dalje. 
+* TLSv1.3 (IN), TLS alert, unrecognized name (368):
 -->
 
 

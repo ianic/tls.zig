@@ -7,18 +7,21 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const top_sites = try cmn.topSites(allocator);
-    defer top_sites.deinit();
-
     var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = allocator, .n_jobs = 32 });
+    try pool.init(.{ .allocator = allocator, .n_jobs = 128 });
 
     var root_ca = try cmn.initCaBundle(allocator);
     defer root_ca.deinit(allocator);
 
     var counter: cmn.Counter = .{};
-    for (top_sites.value) |site| {
-        const domain = site.rootDomain;
+
+    // source: https://moz.com/top500
+    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    // source: https://dataforseo.com/free-seo-stats/top-1000-websites
+    // var rdr = cmn.CsvReader.init(@embedFile("ranked_domains.csv"));
+    // source: https://radar.cloudflare.com/domains
+    // var rdr = cmn.CsvReader.init(@embedFile("cloudflare-radar-domains-top-10000-20240701-20240708.csv"));
+    while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {
             counter.add(.skip);
             continue;
@@ -35,19 +38,32 @@ pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: Certificat
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
+        .named_groups = if (cmn.inList(domain, &cmn.no_keyber))
+            tls.ClientOptions.named_groups_default
+        else
+            tls.ClientOptions.named_groups_all,
     };
     cmn.get(allocator, domain, null, false, false, opt) catch |err| {
-        curl(allocator, domain) catch |curl_err| {
-            std.debug.print("➖ {s} error {} curl error: {}\n", .{ domain, err, curl_err });
-            counter.add(.err);
-            return;
-        };
-        std.debug.print("❌ {s} ERROR {}\n", .{ domain, err });
+        switch (err) {
+            error.UnknownHostName, error.ConnectionTimedOut, error.ConnectionRefused, error.NetworkUnreachable => {
+                counter.add(.err);
+                std.debug.print("➖ {s:<25} {}\n", .{ domain, err });
+                return;
+            },
+            else => {
+                curl(allocator, domain) catch |curl_err| {
+                    std.debug.print("➖ {s:<25} {} curl error: {}\n", .{ domain, err, curl_err });
+                    counter.add(.err);
+                    return;
+                };
+            },
+        }
+        std.debug.print("❌ {s:<25} ERROR {}\n", .{ domain, err });
         counter.add(.fail);
         return;
     };
-    counter.add(.success);
-    std.debug.print("✔️ {s} {s} {s} {s} {s}\n", .{
+    counter.addSuccess(diagnostic.tls_version);
+    std.debug.print("✔️ {s:<25} {s} {s:<40} {s:<20} {s}\n", .{
         domain,
         if (@intFromEnum(diagnostic.tls_version) == 0) "none" else @tagName(diagnostic.tls_version),
         if (@intFromEnum(diagnostic.cipher_suite_tag) == 0) "none" else @tagName(diagnostic.cipher_suite_tag),
@@ -76,7 +92,9 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
             6 => return error.CouldntResolveHost,
             7 => return error.FailedToConnectToHost,
             18, 28 => return error.OperationTimeout,
+            35 => return error.SslHandshake,
             60 => return error.Certificate,
+            92 => return error.Http2Framing,
             else => {
                 std.debug.print("curl error code {}\n", .{error_code});
                 return error.Unknown;
