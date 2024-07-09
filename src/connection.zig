@@ -22,7 +22,6 @@ pub fn Connection(comptime Stream: type) type {
         cipher_client_seq: usize = 0,
         cipher_server_seq: usize = 0,
 
-        write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
         read_buf: []const u8 = "",
         received_close_notify: bool = false,
 
@@ -30,8 +29,9 @@ pub fn Connection(comptime Stream: type) type {
 
         /// Encrypts and writes single tls record to the stream.
         fn writeRecord(c: *Self, content_type: tls.ContentType, bytes: []const u8) !void {
+            var write_buf: [tls.max_ciphertext_record_len]u8 = undefined;
             assert(bytes.len <= tls.max_cipertext_inner_record_len);
-            const rec = try c.cipher.encrypt(&c.write_buf, c.cipher_client_seq, content_type, bytes);
+            const rec = try c.cipher.encrypt(&write_buf, c.cipher_client_seq, content_type, bytes);
             c.cipher_client_seq += 1;
             try c.stream.writeAll(rec);
         }

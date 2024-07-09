@@ -24,7 +24,7 @@ pub fn main() !void {
         };
 
         const uri = try std.Uri.parse(url);
-        var server_header_buffer: [4 * 1024]u8 = undefined;
+        var server_header_buffer: [16 * 1024]u8 = undefined;
         var req = try client.open(.GET, uri, .{ .server_header_buffer = &server_header_buffer });
         defer req.deinit();
 

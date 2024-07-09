@@ -346,11 +346,6 @@ Benchmark 2 (19 runs): zig-out/bin/client --cycles 50 --std
 
 Tests are created using examples from [The Illustrated TLS 1.2 Connection](https://tls12.xargs.org/) and [The Illustrated TLS 1.3 Connection](https://tls13.xargs.org/). Those are really useful in understanding what each byte means. 
 
-# Memory usage
-  
-Client uses two 16K buffers. One in record reader and another for writing output messages. When created over std.net.Stream it statically allocates 33544 bytes.
-
-
 # Credits
 
  * @jedisct1 for [zig-cbc](https://github.com/jedisct1/zig-cbc) library. Copied to [src/cbc](/src/cbc) with padding changed from pkcs to tls.

@@ -5,36 +5,31 @@ pub const ClientOptions = @import("handshake_client.zig").Options;
 pub const ServerOptions = @import("handshake_server.zig").Options;
 
 const record = @import("record.zig");
+const connection = @import("connection.zig").connection;
+
+const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
+const HandshakeServer = @import("handshake_server.zig").Handshake;
+const HandshakeClient = @import("handshake_client.zig").Handshake;
 
 pub fn client(stream: anytype, opt: ClientOptions) !Connection(@TypeOf(stream)) {
     const Stream = @TypeOf(stream);
-    var conn: Connection(Stream) = .{
-        .stream = stream,
-        .rec_rdr = record.reader(stream),
-    };
-
-    const Handshake = @import("handshake_client.zig").Handshake(Stream);
-    var h = Handshake.init(&conn.write_buf, &conn.rec_rdr);
+    var conn = connection(stream);
+    var write_buf: [max_ciphertext_record_len]u8 = undefined;
+    var h = HandshakeClient(Stream).init(&write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
     if (h.tls_version == .tls_1_2) {
         conn.cipher_client_seq = 1;
         conn.cipher_server_seq = 1;
     }
-
     return conn;
 }
 
 pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) {
     const Stream = @TypeOf(stream);
-    var conn: Connection(Stream) = .{
-        .stream = stream,
-        .rec_rdr = record.reader(stream),
-    };
-
-    const Handshake = @import("handshake_server.zig").Handshake(Stream);
-    var h = Handshake.init(&conn.write_buf, &conn.rec_rdr);
+    var conn = connection(stream);
+    var write_buf: [max_ciphertext_record_len]u8 = undefined;
+    var h = HandshakeServer(Stream).init(&write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
-
     return conn;
 }
 

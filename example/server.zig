@@ -33,7 +33,7 @@ pub fn main() !void {
     const pg_file = try std.fs.cwd().openFile(file_name, .{});
     defer pg_file.close();
 
-    var buf: [4096]u8 = undefined;
+    var buf: [32 * 1024]u8 = undefined;
     while (true) {
         // Tcp accept
         const tcp = try server.accept();

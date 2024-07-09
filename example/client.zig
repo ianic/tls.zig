@@ -62,11 +62,12 @@ fn stdLib(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, verbose: bo
 
     var cli = try std.crypto.tls.Client.init(tcp, root_ca, host);
 
-    var buf: [4096]u8 = undefined;
+    var buf: [16 * 1024]u8 = undefined;
     while (true) {
         const n = try cli.read(tcp, &buf);
         if (verbose) std.debug.print("{s}", .{buf[0..n]});
-        if (n < buf.len) break;
+        //if (n < buf.len) break;
+        if (n == 0) break;
     }
     _ = try cli.writeEnd(tcp, "", true);
 }
