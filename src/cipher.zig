@@ -436,11 +436,12 @@ fn Aead13Type(comptime AeadType: type) type {
             const iv = ivWithSeq(nonce_len, self.decrypt_iv, seq);
             AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.decrypt_key) catch return error.TlsDecryptError;
 
-            var ct_pos: usize = ciphertext_len - 1; // position of content type
-            while (ct_pos > 0 and buf[ct_pos] == 0) : (ct_pos -= 1) {} // remove zero bytes padding
+            // Remove zero bytes padding
+            var content_type_idx: usize = ciphertext_len - 1;
+            while (buf[content_type_idx] == 0 and content_type_idx > 0) : (content_type_idx -= 1) {}
 
-            const cleartext = buf[0..ct_pos];
-            const content_type: tls.ContentType = @enumFromInt(buf[ct_pos]);
+            const cleartext = buf[0..content_type_idx];
+            const content_type: tls.ContentType = @enumFromInt(buf[content_type_idx]);
             return .{ content_type, cleartext };
         }
     };
@@ -605,7 +606,7 @@ fn additionalData(seq: u64, content_type: tls.ContentType, payload_len: usize) [
     return seq_buf ++ header;
 }
 
-// Week, secure, recomended grades are from https://ciphersuite.info/page/faq/
+// Week, secure, recommended grades are from https://ciphersuite.info/page/faq/
 pub const CipherSuite = enum(u16) {
     // tls 1.2 cbc sha1
     ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009, // week
@@ -619,14 +620,14 @@ pub const CipherSuite = enum(u16) {
     ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 = 0xc024, // week
     ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028, // week
     // tls 1.2 gcm
-    ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b, // recomended
-    ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 = 0xc02c, // recomended
+    ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b, // recommended
+    ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 = 0xc02c, // recommended
     ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xc02f, // secure
     ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xc030, // secure
     // tls 1.2 chacha
-    ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9, // recomended
+    ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9, // recommended
     ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca8, // secure
-    // tls 1.3 (all are recomended)
+    // tls 1.3 (all are recommended)
     AES_128_GCM_SHA256 = 0x1301,
     AES_256_GCM_SHA384 = 0x1302,
     CHACHA20_POLY1305_SHA256 = 0x1303,
@@ -634,9 +635,11 @@ pub const CipherSuite = enum(u16) {
     // AEGIS_256_SHA512 = 0x1306,
     _,
 
-    // In the order of preference
+    // In the order of preference. For the preference using grades priority
+    // rules from Go project:
+    // https://github.com/golang/go/blob/73186ba00251b3ed8baaab36e4f5278c7681155b/src/crypto/tls/cipher_suites.go#L226
     pub const tls12_secure = [_]CipherSuite{
-        // recomended
+        // recommended
         .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
         .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -657,13 +660,19 @@ pub const CipherSuite = enum(u16) {
         .RSA_WITH_AES_128_CBC_SHA256,
         .RSA_WITH_AES_128_CBC_SHA,
     };
-    pub const tls13 = [_]CipherSuite{
+    const tls13_aes = [_]CipherSuite{
         .AES_128_GCM_SHA256,
         .AES_256_GCM_SHA384,
         .CHACHA20_POLY1305_SHA256,
         // Excluded because didn't find server which supports it to test
         // .AEGIS_128L_SHA256
     };
+    const tls13_no_aes = [_]CipherSuite{
+        .CHACHA20_POLY1305_SHA256,
+        .AES_128_GCM_SHA256,
+        .AES_256_GCM_SHA384,
+    };
+    pub const tls13 = if (crypto.core.aes.has_hardware_support) tls13_aes else tls13_no_aes;
     pub const tls12 = tls12_secure ++ tls12_week;
     pub const secure = tls13 ++ tls12_secure;
     pub const all = tls13 ++ tls12;
