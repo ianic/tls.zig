@@ -1,7 +1,17 @@
 # tls.zig
 
-Zig TLS library, implements tls 1.2 and tls 1.3 client and tls 1.3 server.
-Handles client authentication.
+Zig TLS library, characteristics:
+* TLS 1.2 and TLS 1.3 client
+* TLS 1.3 server
+* handles client authentication
+* tested with many domains, handles [badssl](https://badssl.com/dashboard/) urls 
+* options to select client cipher sites to use, named groups, ...
+* can configure Wireshark to show decrypted traffic
+* same performance as standard library implementation
+* can be used with standard library http client (with modified std lib copy)
+<!--
+* solved many [issues](https://github.com/ziglang/zig/issues/14172#issuecomment-2181202318) which I found in std 
+-->
 
 # Client
 
@@ -27,7 +37,7 @@ After that you can use `conn` read/write methods as on plain tcp connection.
 
 ## Options
 
-Third parameter in calling `tls.client` are [tls.ClientOptions](https://github.com/ianic/tls.zig/blob/a81a6462c1dbcfbfc0ef9ac09b698a2d1c4bb946/src/handshake_client.zig#L30-L72) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates and collect handshake diagnostics.
+Second parameter in calling `tls.client` are [tls.ClientOptions](https://github.com/ianic/tls.zig/blob/main/src/handshake_client.zig#L28-L73) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates, collect handshake diagnostics, exchange session keys with Wireshark to view decrypted traffic.
 
 ### Select cipher suite
 
@@ -67,6 +77,8 @@ If server requires client authentication set `authentication` attribute in optio
 ```
 
 When client receives certificate request from server during handshake it will respond with client certificates message build from provided certificate bundle and client certificate verify message where verify data is signed with client private key.
+
+If authentication is not provided client will respond with empty certificate message when server requests authentication (as specified in RFC). 
 
 ### Logging tls session keys
 
