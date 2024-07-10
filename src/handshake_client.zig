@@ -197,21 +197,21 @@ pub fn Handshake(comptime Stream: type) type {
             }
 
             // tls 1.2 specific handshake part
-            try h.generateCipher();
+            try h.generateCipher(opt.key_log_callback);
             try w.writeAll(try h.makeClientFlight2TLS12(opt.authentication)); // client flight 2
             try h.readServerFlight2(); // server flight 2
             return h.cipher;
         }
 
         /// Prepare key material and generate cipher for TLS 1.2
-        fn generateCipher(h: *HandshakeT) !void {
+        fn generateCipher(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !void {
             try h.verifyCertificateSignatureTLS12();
-            try h.generateKeyMaterial();
+            try h.generateKeyMaterial(key_log_callback);
             h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, crypto.random, .client);
         }
 
         /// Generate TLS 1.2 pre master secret, master secret and key material.
-        fn generateKeyMaterial(h: *HandshakeT) !void {
+        fn generateKeyMaterial(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !void {
             const pre_master_secret = if (h.named_group) |named_group|
                 try h.dh_kp.sharedKey(named_group, h.server_pub_key)
             else
@@ -225,6 +225,9 @@ pub fn Handshake(comptime Stream: type) type {
                 &h.key_material,
                 h.transcript.keyMaterial(&h.master_secret, h.client_random, h.server_random),
             );
+            if (key_log_callback) |cb| {
+                cb(Options.key_log.label.client_random, &h.client_random, &h.master_secret);
+            }
         }
 
         /// TLS 1.3 cipher used during handshake
@@ -905,7 +908,7 @@ test "parse tls 1.2 server hello" {
     try testing.expectEqualSlices(u8, &data12.cert_pub_key, h.cert_pub_key);
 
     try h.verifyCertificateSignatureTLS12();
-    try h.generateKeyMaterial();
+    try h.generateKeyMaterial(null);
 
     try testing.expectEqualSlices(u8, &data12.key_material, h.key_material[0..data12.key_material.len]);
 }
