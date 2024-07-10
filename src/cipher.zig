@@ -119,7 +119,7 @@ pub const Cipher = union(CipherSuite) {
     AEGIS_128L_SHA256: CipherType(.AEGIS_128L_SHA256),
 
     // tls 1.2 application cipher
-    pub fn initTLS12(tag: CipherSuite, key_material: []const u8, rnd: std.Random, side: Side) !Cipher {
+    pub fn initTLS12(tag: CipherSuite, key_material: []const u8, side: Side) !Cipher {
         switch (tag) {
             inline .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .ECDHE_RSA_WITH_AES_128_CBC_SHA,
@@ -133,10 +133,7 @@ pub const Cipher = union(CipherSuite) {
             .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            => |comptime_tag| {
-                return @unionInit(Cipher, @tagName(comptime_tag), CipherType(comptime_tag).init(key_material, rnd, side));
-            },
-            inline .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+            .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
             .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
             => |comptime_tag| {
                 return @unionInit(Cipher, @tagName(comptime_tag), CipherType(comptime_tag).init(key_material, side));
@@ -207,17 +204,16 @@ fn Aead12Type(comptime AeadType: type) type {
         decrypt_key: [key_len]u8,
         encrypt_iv: [iv_len]u8,
         decrypt_iv: [iv_len]u8,
-        rnd: std.Random,
+        rnd: std.Random = crypto.random,
 
         const Self = @This();
 
-        fn init(key_material: []const u8, rnd: std.Random, side: Side) Self {
+        fn init(key_material: []const u8, side: Side) Self {
             const client_key = key_material[0..key_len].*;
             const server_key = key_material[key_len..][0..key_len].*;
             const client_iv = key_material[2 * key_len ..][0..iv_len].*;
             const server_iv = key_material[2 * key_len + iv_len ..][0..iv_len].*;
             return .{
-                .rnd = rnd,
                 .encrypt_key = if (side == .client) client_key else server_key,
                 .decrypt_key = if (side == .client) server_key else client_key,
                 .encrypt_iv = if (side == .client) client_iv else server_iv,
@@ -469,17 +465,16 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
         decrypt_secret: [mac_len]u8,
         encrypt_key: [key_len]u8,
         decrypt_key: [key_len]u8,
-        rnd: std.Random,
+        rnd: std.Random = crypto.random,
 
         const Self = @This();
 
-        fn init(key_material: []const u8, rnd: std.Random, side: Side) Self {
+        fn init(key_material: []const u8, side: Side) Self {
             const client_secret = key_material[0..mac_len].*;
             const server_secret = key_material[mac_len..][0..mac_len].*;
             const client_key = key_material[2 * mac_len ..][0..key_len].*;
             const server_key = key_material[2 * mac_len + key_len ..][0..key_len].*;
             return .{
-                .rnd = rnd,
                 .encrypt_secret = if (side == .client) client_secret else server_secret,
                 .decrypt_secret = if (side == .client) server_secret else client_secret,
                 .encrypt_key = if (side == .client) client_key else server_key,
@@ -882,8 +877,8 @@ test "client/server encryption tls 1.2" {
     inline for (cipher_suites.tls12) |cs| {
         var key_material: [256]u8 = undefined;
         testu.fill(&key_material);
-        const client_cipher = try Cipher.initTLS12(cs, &key_material, testu.random(0), .client);
-        const server_cipher = try Cipher.initTLS12(cs, &key_material, testu.random(0), .server);
+        const client_cipher = try Cipher.initTLS12(cs, &key_material, .client);
+        const server_cipher = try Cipher.initTLS12(cs, &key_material, .server);
         try encryptDecrypt(client_cipher, server_cipher);
     }
 }

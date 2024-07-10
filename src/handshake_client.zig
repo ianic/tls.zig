@@ -121,16 +121,17 @@ pub fn Handshake(comptime Stream: type) type {
             };
         }
 
-        const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
-
         fn initKeys(
             h: *HandshakeT,
-            random_buf: [init_keys_buf_len]u8,
             named_groups: []const tls.NamedGroup,
         ) !void {
-            h.client_random = random_buf[0..32].*;
-            h.rsa_secret = RsaSecret.init(random_buf[32..][0..46].*);
-            h.dh_kp = try DhKeyPair.init(random_buf[32 + 46 ..][0..DhKeyPair.seed_len].*, named_groups);
+            const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
+            var buf: [init_keys_buf_len]u8 = undefined;
+            crypto.random.bytes(&buf);
+
+            h.client_random = buf[0..32].*;
+            h.rsa_secret = RsaSecret.init(buf[32..][0..46].*);
+            h.dh_kp = try DhKeyPair.init(buf[32 + 46 ..][0..DhKeyPair.seed_len].*, named_groups);
         }
 
         /// Handshake exchanges messages with server to get agreement about
@@ -182,12 +183,7 @@ pub fn Handshake(comptime Stream: type) type {
         ///
         pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !Cipher {
             defer h.updateDiagnostic(opt);
-
-            {
-                var buf: [init_keys_buf_len]u8 = undefined;
-                crypto.random.bytes(&buf);
-                try h.initKeys(buf, opt.named_groups);
-            }
+            try h.initKeys(opt.named_groups);
 
             try w.writeAll(try h.makeClientHello(opt)); // client flight 1
             try h.readServerFlight1(opt); // server flight 1
@@ -213,7 +209,7 @@ pub fn Handshake(comptime Stream: type) type {
         fn generateCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
             try h.verifyCertificateSignatureTLS12();
             try h.generateKeyMaterial(key_log_callback);
-            h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, crypto.random, .client);
+            h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, .client);
         }
 
         /// Generate TLS 1.2 pre master secret, master secret and key material.
@@ -1052,12 +1048,11 @@ test "tls 1.3 process server flight" {
 
 test "create client hello" {
     var h = brk: {
-        // init with predictable random data
-        var random_buf: [TestHandshake.init_keys_buf_len]u8 = undefined;
-        testu.random(0).bytes(&random_buf);
         var buffer: [1024]u8 = undefined;
         var h = TestHandshake.init(&buffer, undefined);
-        try h.initKeys(random_buf, Options.named_groups.all);
+        h.client_random = testu.hexToBytes(
+            \\ 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+        );
         break :brk h;
     };
 
@@ -1106,7 +1101,7 @@ test "handshake verify server finished message" {
     try testing.expectEqualSlices(u8, &data12.client_finished, &handshakeHeader(.finished, 12) ++ client_finished);
 
     // init client with prepared key_material
-    h.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, crypto.random, .client);
+    h.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client);
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&data12.client_finished);

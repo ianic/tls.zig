@@ -190,7 +190,8 @@ test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     const stream = testu.Stream.init(&(data12.server_pong ** 3), &output_buf);
     var conn: Connection(@TypeOf(stream)) = .{ .stream = stream, .rec_rdr = record.reader(stream) };
-    conn.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, testu.random(0), .client);
+    conn.cipher = try Cipher.initTLS12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client);
+    conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.rnd = testu.random(0); // use fixed rng
 
     conn.stream.output.reset();
     { // encrypt verify data from example
