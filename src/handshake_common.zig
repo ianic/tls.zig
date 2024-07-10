@@ -338,16 +338,16 @@ pub const DhKeyPair = struct {
     secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
     kyber768_kp: Kyber768.KeyPair = undefined,
 
-    pub const seed_len = 64;
+    pub const seed_len = 32 + 32 + 48 + 64;
 
     pub fn init(seed: [seed_len]u8, named_groups: []const tls.NamedGroup) !DhKeyPair {
         var kp: DhKeyPair = .{};
         for (named_groups) |ng|
             switch (ng) {
-                .x25519 => kp.x25519_kp = try X25519.KeyPair.create(seed[0..X25519.seed_length].*),
-                .secp256r1 => kp.secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[0..EcdsaP256Sha256.KeyPair.seed_length].*),
-                .secp384r1 => kp.secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[0..EcdsaP384Sha384.KeyPair.seed_length].*),
-                .x25519_kyber768d00 => kp.kyber768_kp = try Kyber768.KeyPair.create(seed),
+                .x25519 => kp.x25519_kp = try X25519.KeyPair.create(seed[0..][0..X25519.seed_length].*),
+                .secp256r1 => kp.secp256r1_kp = try EcdsaP256Sha256.KeyPair.create(seed[32..][0..EcdsaP256Sha256.KeyPair.seed_length].*),
+                .secp384r1 => kp.secp384r1_kp = try EcdsaP384Sha384.KeyPair.create(seed[32 + 32 ..][0..EcdsaP384Sha384.KeyPair.seed_length].*),
+                .x25519_kyber768d00 => kp.kyber768_kp = try Kyber768.KeyPair.create(seed[32 + 32 + 48 ..][0..Kyber768.seed_length].*),
                 else => return error.TlsIllegalParameter,
             };
         return kp;
@@ -403,10 +403,13 @@ pub const DhKeyPair = struct {
 };
 
 test "DhKeyPair.x25519" {
-    const seed = testu.hexToBytes("4f27a0ea9873d11f3330b88f9443811a5f79c2339dc90dc560b5b49d5e7fe73e496c893a4bbaf26f3288432c747d8b2b00000000000000000000000000000000");
+    var seed: [DhKeyPair.seed_len]u8 = undefined;
+    testu.fill(&seed);
     const server_pub_key = &testu.hexToBytes("3303486548531f08d91e675caf666c2dc924ac16f47a861a7f4d05919d143637");
-    const expected = &testu.hexToBytes("f8912817eb835341f70960290b550329968fea80445853bb91de2ab13ad91c15");
-
-    const kp = try DhKeyPair.init(seed[0..64].*, &.{.x25519});
+    const expected = &testu.hexToBytes(
+        \\ F1 67 FB 4A 49 B2 91 77  08 29 45 A1 F7 08 5A 21
+        \\ AF FE 9E 78 C2 03 9B 81  92 40 72 73 74 7A 46 1E
+    );
+    const kp = try DhKeyPair.init(seed, &.{.x25519});
     try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
 }

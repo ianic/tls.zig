@@ -121,7 +121,7 @@ pub fn Handshake(comptime Stream: type) type {
             };
         }
 
-        const init_keys_buf_len = 32 + 64 + 46;
+        const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
 
         fn initKeys(
             h: *HandshakeT,
@@ -129,8 +129,8 @@ pub fn Handshake(comptime Stream: type) type {
             named_groups: []const tls.NamedGroup,
         ) !void {
             h.client_random = random_buf[0..32].*;
-            h.dh_kp = try DhKeyPair.init(random_buf[32..][0..64].*, named_groups);
-            h.rsa_secret = RsaSecret.init(random_buf[32 + 64 ..][0..46].*);
+            h.rsa_secret = RsaSecret.init(random_buf[32..][0..46].*);
+            h.dh_kp = try DhKeyPair.init(random_buf[32 + 46 ..][0..DhKeyPair.seed_len].*, named_groups);
         }
 
         /// Handshake exchanges messages with server to get agreement about
