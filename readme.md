@@ -56,7 +56,7 @@ If server requires client authentication set `authentication` attribute in optio
     defer private_key_file.close();
     const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
 
-    var cli = try tls.client(tcp, .{
+    var conn = try tls.client(tcp, .{
         .host = host,
         .root_ca = root_ca,
         .authentication = .{
@@ -67,6 +67,20 @@ If server requires client authentication set `authentication` attribute in optio
 ```
 
 When client receives certificate request from server during handshake it will respond with client certificates message build from provided certificate bundle and client certificate verify message where verify data is signed with client private key.
+
+### Logging tls session keys
+
+Key logs can be written to file so that external programs can decrypt TLS connections. Wireshark can use these log files to decrypt packets. You can [tell](https://everything.curl.dev/usingcurl/tls/sslkeylogfile.html) Wireshark where to find the key file via Edit→Preferences→Protocols→SSL→(Pre)-Master-Secret log filename.
+
+Key logging is enabled by setting the environment variable SSLKEYLOGFILE to point to a file. And enabling key log callback in client options:
+
+```zig
+    var conn = try tls.client(tcp, .{
+        .host = host,
+        .root_ca = root_ca,
+        .key_log_callback = tls.key_log.callback,
+    });
+```
 
 # Server
 

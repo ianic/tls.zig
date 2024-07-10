@@ -49,6 +49,11 @@ pub const Options = struct {
     // at the end of the handshake process.
     diagnostic: ?*Diagnostic = null,
 
+    // For logging current connection tls keys, so we can share them with
+    // Wireshark and analyze decrypted traffic there.
+    key_log_callback: ?key_log.Callback = null,
+
+    pub const key_log = @import("key_log.zig");
     pub const named_groups_all = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1, .x25519_kyber768d00 };
     pub const named_groups_default = &[_]tls.NamedGroup{ .x25519, .secp256r1 };
 
@@ -184,9 +189,9 @@ pub fn Handshake(comptime Stream: type) type {
 
             // tls 1.3 specific handshake part
             if (h.tls_version == .tls_1_3) {
-                try h.generateHandshakeCipher();
+                try h.generateHandshakeCipher(opt.key_log_callback);
                 try h.readEncryptedServerFlight1(opt); // server flight 1
-                const app_cipher = try h.generateApplicationCipher();
+                const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
                 try w.writeAll(try h.makeClientFlight2TLS13(opt.authentication)); // client flight 2
                 return app_cipher;
             }
@@ -223,15 +228,23 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         /// TLS 1.3 cipher used during handshake
-        fn generateHandshakeCipher(h: *HandshakeT) !void {
+        fn generateHandshakeCipher(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !void {
             const shared_key = try h.dh_kp.sharedKey(h.named_group.?, h.server_pub_key);
             const handshake_secret = h.transcript.handshakeSecret(shared_key);
+            if (key_log_callback) |cb| {
+                cb(Options.key_log.label.server_handshake_traffic_secret, &h.client_random, handshake_secret.server);
+                cb(Options.key_log.label.client_handshake_traffic_secret, &h.client_random, handshake_secret.client);
+            }
             h.cipher = try Cipher.initTLS13(h.cipher_suite, handshake_secret, .client);
         }
 
         /// TLS 1.3 application (client) cipher
-        fn generateApplicationCipher(h: *HandshakeT) !Cipher {
+        fn generateApplicationCipher(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !Cipher {
             const application_secret = h.transcript.applicationSecret();
+            if (key_log_callback) |cb| {
+                cb(Options.key_log.label.server_traffic_secret_0, &h.client_random, application_secret.server);
+                cb(Options.key_log.label.client_traffic_secret_0, &h.client_random, application_secret.client);
+            }
             return try Cipher.initTLS13(h.cipher_suite, application_secret, .client);
         }
 

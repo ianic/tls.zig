@@ -234,8 +234,11 @@ pub fn get(
     }) |data| {
         n += data.len;
         if (show_response) std.debug.print("{s}", .{data});
-        if (std.mem.endsWith(u8, data, "</html>\n")) break;
-        if (std.mem.endsWith(u8, data, "</HTML>\n")) break;
+
+        if (std.ascii.endsWithIgnoreCase(
+            std.mem.trimRight(u8, data, "\r\n"),
+            "</html>",
+        )) break;
     }
 
     cli.close() catch |err| switch (err) {

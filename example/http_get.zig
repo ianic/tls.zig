@@ -24,6 +24,7 @@ pub fn main() !void {
             // .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
             // to force cipher from specific tls version:
             // .cipher_suites = &tls.CipherSuite.tls12,
+            .key_log_callback = tls.key_log.callback,
         });
     }
 }
