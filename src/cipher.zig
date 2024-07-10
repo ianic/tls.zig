@@ -612,6 +612,68 @@ fn additionalData(seq: u64, content_type: tls.ContentType, payload_len: usize) [
     return seq_buf ++ header;
 }
 
+// Cipher suites lists. In the order of preference.
+// For the preference using grades priority and rules from Go project.
+// https://ciphersuite.info/page/faq/
+// https://github.com/golang/go/blob/73186ba00251b3ed8baaab36e4f5278c7681155b/src/crypto/tls/cipher_suites.go#L226
+pub const cipher_suites = struct {
+    const tls12_secure = if (crypto.core.aes.has_hardware_support) [_]CipherSuite{
+        // recommended
+        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        // secure
+        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+    } else [_]CipherSuite{
+        // recommended
+        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+
+        // secure
+        .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    };
+    const tls12_week = [_]CipherSuite{
+        // week
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+        .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+        .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+        .ECDHE_RSA_WITH_AES_128_CBC_SHA,
+
+        .RSA_WITH_AES_128_CBC_SHA256,
+        .RSA_WITH_AES_128_CBC_SHA,
+    };
+    pub const tls13_ = if (crypto.core.aes.has_hardware_support) [_]CipherSuite{
+        .AES_128_GCM_SHA256,
+        .AES_256_GCM_SHA384,
+        .CHACHA20_POLY1305_SHA256,
+        // Excluded because didn't find server which supports it to test
+        // .AEGIS_128L_SHA256
+    } else [_]CipherSuite{
+        .CHACHA20_POLY1305_SHA256,
+        .AES_128_GCM_SHA256,
+        .AES_256_GCM_SHA384,
+    };
+
+    pub const tls13 = &tls13_;
+    pub const tls12 = &(tls12_secure ++ tls12_week);
+    pub const secure = &(tls13_ ++ tls12_secure);
+    pub const all = &(tls13_ ++ tls12_secure ++ tls12_week);
+
+    pub fn includes(list: []const CipherSuite, cs: CipherSuite) bool {
+        for (list) |s| {
+            if (cs == s) return true;
+        }
+        return false;
+    }
+};
+
 // Week, secure, recommended grades are from https://ciphersuite.info/page/faq/
 pub const CipherSuite = enum(u16) {
     // tls 1.2 cbc sha1
@@ -641,59 +703,10 @@ pub const CipherSuite = enum(u16) {
     // AEGIS_256_SHA512 = 0x1306,
     _,
 
-    // In the order of preference. For the preference using grades priority
-    // rules from Go project:
-    // https://github.com/golang/go/blob/73186ba00251b3ed8baaab36e4f5278c7681155b/src/crypto/tls/cipher_suites.go#L226
-    pub const tls12_secure = [_]CipherSuite{
-        // recommended
-        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-        // secure
-        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-        .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-    };
-    pub const tls12_week = [_]CipherSuite{
-        // week
-        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
-        .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
-        .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-        .ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-        .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
-        .ECDHE_RSA_WITH_AES_128_CBC_SHA,
-
-        .RSA_WITH_AES_128_CBC_SHA256,
-        .RSA_WITH_AES_128_CBC_SHA,
-    };
-    const tls13_aes = [_]CipherSuite{
-        .AES_128_GCM_SHA256,
-        .AES_256_GCM_SHA384,
-        .CHACHA20_POLY1305_SHA256,
-        // Excluded because didn't find server which supports it to test
-        // .AEGIS_128L_SHA256
-    };
-    const tls13_no_aes = [_]CipherSuite{
-        .CHACHA20_POLY1305_SHA256,
-        .AES_128_GCM_SHA256,
-        .AES_256_GCM_SHA384,
-    };
-    pub const tls13 = if (crypto.core.aes.has_hardware_support) tls13_aes else tls13_no_aes;
-    pub const tls12 = tls12_secure ++ tls12_week;
-    pub const secure = tls13 ++ tls12_secure;
-    pub const all = tls13 ++ tls12;
-
     pub fn validate(cs: CipherSuite) !void {
-        if (includes(&tls12, cs)) return;
-        if (includes(&tls13, cs)) return;
+        if (cipher_suites.includes(cipher_suites.tls12, cs)) return;
+        if (cipher_suites.includes(cipher_suites.tls13, cs)) return;
         return error.TlsIllegalParameter;
-    }
-
-    pub fn includes(list: []const CipherSuite, cs: CipherSuite) bool {
-        for (list) |s| {
-            if (cs == s) return true;
-        }
-        return false;
     }
 
     pub const Versions = enum {
@@ -703,14 +716,14 @@ pub const CipherSuite = enum(u16) {
     };
 
     // get tls versions from list of cipher suites
-    pub fn versions(cipher_suites: []const CipherSuite) !Versions {
+    pub fn versions(list: []const CipherSuite) !Versions {
         var has_12 = false;
         var has_13 = false;
-        for (cipher_suites) |cs| {
-            if (includes(&tls12, cs)) {
+        for (list) |cs| {
+            if (cipher_suites.includes(cipher_suites.tls12, cs)) {
                 has_12 = true;
             } else {
-                if (includes(&tls13, cs)) has_13 = true;
+                if (cipher_suites.includes(cipher_suites.tls13, cs)) has_13 = true;
             }
         }
         if (has_12 and has_13) return .both;
@@ -770,7 +783,7 @@ test "CipherSuite validate" {
         try testing.expectEqual(.sha256, cs.hash());
         try testing.expectEqual(.ecdhe, cs.keyExchange());
     }
-    for (CipherSuite.tls12) |cs| {
+    for (cipher_suites.tls12) |cs| {
         try cs.validate();
         _ = cs.hash();
         _ = cs.keyExchange();
@@ -852,7 +865,7 @@ fn expectOverhead(T: type, key_len: usize, auth_tag_len: usize, nonce_len: usize
 }
 
 test "client/server encryption tls 1.3" {
-    inline for (CipherSuite.tls13) |cs| {
+    inline for (cipher_suites.tls13) |cs| {
         var buf: [256]u8 = undefined;
         testu.fill(&buf);
         const secret = Transcript.Secret{
@@ -866,7 +879,7 @@ test "client/server encryption tls 1.3" {
 }
 
 test "client/server encryption tls 1.2" {
-    inline for (CipherSuite.tls12) |cs| {
+    inline for (cipher_suites.tls12) |cs| {
         var key_material: [256]u8 = undefined;
         testu.fill(&key_material);
         const client_cipher = try Cipher.initTLS12(cs, &key_material, testu.random(0), .client);

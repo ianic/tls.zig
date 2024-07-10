@@ -39,9 +39,9 @@ pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: Certificat
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .named_groups = if (cmn.inList(domain, &cmn.no_keyber))
-            tls.ClientOptions.named_groups_default
+            tls.named_groups.default
         else
-            tls.ClientOptions.named_groups_all,
+            tls.named_groups.all,
     };
     cmn.get(allocator, domain, null, false, false, opt) catch |err| {
         switch (err) {

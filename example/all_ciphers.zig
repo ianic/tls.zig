@@ -20,7 +20,7 @@ pub fn main() !void {
 }
 
 fn run(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []const u8) !void {
-    for (tls.CipherSuite.all) |cs| {
+    for (tls.cipher_suites.all) |cs| {
         cmn.get(allocator, domain, null, false, false, .{
             .root_ca = root_ca,
             .host = "",

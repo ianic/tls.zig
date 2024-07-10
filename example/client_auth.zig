@@ -41,8 +41,8 @@ pub fn main() !void {
     };
     //
     for ([_][]const tls.CipherSuite{
-        &tls.CipherSuite.tls13,
-        &tls.CipherSuite.tls12,
+        tls.cipher_suites.tls13,
+        tls.cipher_suites.tls12,
     }) |cipher_suites| {
         for (client_keys) |sub_path| {
             // Make tcp connection

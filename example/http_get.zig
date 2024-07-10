@@ -18,12 +18,17 @@ pub fn main() !void {
         try cmn.get(allocator, domain, null, true, true, .{
             .host = "",
             .root_ca = ca_bundle,
-            .named_groups = tls.ClientOptions.named_groups_all,
-            //.named_groups = &[_]std.crypto.tls.NamedGroup{.secp384r1},
+
+            // to force specific named group:
+            // .named_groups = &[_]tls.NamedGroup{.secp384r1},
+            .named_groups = tls.named_groups.all,
+
             // to force specific cipher:
-            // .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
+            //   .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
             // to force cipher from specific tls version:
-            // .cipher_suites = &tls.CipherSuite.tls12,
+            //   .cipher_suites = tls.cipher_suites.tls12,
+            .cipher_suites = tls.cipher_suites.secure,
+
             .key_log_callback = tls.key_log.callback,
         });
     }

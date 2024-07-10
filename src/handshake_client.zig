@@ -7,6 +7,7 @@ const Certificate = crypto.Certificate;
 
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
+const cipher_suites = @import("cipher.zig").cipher_suites;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 const rsa = @import("rsa/rsa.zig");
@@ -22,6 +23,7 @@ const CurveType = common.CurveType;
 const CertificateBuilder = common.CertificateBuilder;
 const Authentication = common.Authentication;
 const DhKeyPair = common.DhKeyPair;
+const key_log = @import("key_log.zig");
 
 pub const Options = struct {
     host: []const u8,
@@ -38,9 +40,12 @@ pub const Options = struct {
     //   .cipher_suites = &tls.CipherSuite.tls13,
     // To select particular cipher suite:
     //   .cipher_suites = &[_]tls.CipherSuite{tls.CipherSuite.CHACHA20_POLY1305_SHA256},
-    cipher_suites: []const CipherSuite = &CipherSuite.all,
+    cipher_suites: []const CipherSuite = cipher_suites.all,
 
-    named_groups: []const tls.NamedGroup = named_groups_default,
+    // List of named groups to use.
+    // To use specific named group:
+    //   .named_groups = &[_]tls.NamedGroup{.secp384r1},
+    named_groups: []const tls.NamedGroup = named_groups.all,
 
     // Client authentication
     authentication: ?Authentication = null,
@@ -53,16 +58,17 @@ pub const Options = struct {
     // Wireshark and analyze decrypted traffic there.
     key_log_callback: ?key_log.Callback = null,
 
-    pub const key_log = @import("key_log.zig");
-    pub const named_groups_all = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1, .x25519_kyber768d00 };
-    pub const named_groups_default = &[_]tls.NamedGroup{ .x25519, .secp256r1 };
-
     pub const Diagnostic = struct {
         tls_version: tls.ProtocolVersion = @enumFromInt(0),
         cipher_suite_tag: CipherSuite = @enumFromInt(0),
         named_group: tls.NamedGroup = @enumFromInt(0),
         signature_scheme: tls.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: tls.SignatureScheme = @enumFromInt(0),
+    };
+
+    pub const named_groups = struct {
+        pub const all = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1, .x25519_kyber768d00 };
+        pub const default = &[_]tls.NamedGroup{ .x25519, .secp256r1 };
     };
 };
 
@@ -204,14 +210,14 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         /// Prepare key material and generate cipher for TLS 1.2
-        fn generateCipher(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !void {
+        fn generateCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
             try h.verifyCertificateSignatureTLS12();
             try h.generateKeyMaterial(key_log_callback);
             h.cipher = try Cipher.initTLS12(h.cipher_suite, &h.key_material, crypto.random, .client);
         }
 
         /// Generate TLS 1.2 pre master secret, master secret and key material.
-        fn generateKeyMaterial(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !void {
+        fn generateKeyMaterial(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
             const pre_master_secret = if (h.named_group) |named_group|
                 try h.dh_kp.sharedKey(named_group, h.server_pub_key)
             else
@@ -226,27 +232,27 @@ pub fn Handshake(comptime Stream: type) type {
                 h.transcript.keyMaterial(&h.master_secret, h.client_random, h.server_random),
             );
             if (key_log_callback) |cb| {
-                cb(Options.key_log.label.client_random, &h.client_random, &h.master_secret);
+                cb(key_log.label.client_random, &h.client_random, &h.master_secret);
             }
         }
 
         /// TLS 1.3 cipher used during handshake
-        fn generateHandshakeCipher(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !void {
+        fn generateHandshakeCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
             const shared_key = try h.dh_kp.sharedKey(h.named_group.?, h.server_pub_key);
             const handshake_secret = h.transcript.handshakeSecret(shared_key);
             if (key_log_callback) |cb| {
-                cb(Options.key_log.label.server_handshake_traffic_secret, &h.client_random, handshake_secret.server);
-                cb(Options.key_log.label.client_handshake_traffic_secret, &h.client_random, handshake_secret.client);
+                cb(key_log.label.server_handshake_traffic_secret, &h.client_random, handshake_secret.server);
+                cb(key_log.label.client_handshake_traffic_secret, &h.client_random, handshake_secret.client);
             }
             h.cipher = try Cipher.initTLS13(h.cipher_suite, handshake_secret, .client);
         }
 
         /// TLS 1.3 application (client) cipher
-        fn generateApplicationCipher(h: *HandshakeT, key_log_callback: ?Options.key_log.Callback) !Cipher {
+        fn generateApplicationCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !Cipher {
             const application_secret = h.transcript.applicationSecret();
             if (key_log_callback) |cb| {
-                cb(Options.key_log.label.server_traffic_secret_0, &h.client_random, application_secret.server);
-                cb(Options.key_log.label.client_traffic_secret_0, &h.client_random, application_secret.client);
+                cb(key_log.label.server_traffic_secret_0, &h.client_random, application_secret.server);
+                cb(key_log.label.client_traffic_secret_0, &h.client_random, application_secret.client);
             }
             return try Cipher.initTLS13(h.cipher_suite, application_secret, .client);
         }
@@ -308,7 +314,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             try ext.writeExtension(.supported_groups, opt.named_groups);
             if (tls_versions != .tls_1_2) {
-                var keys: [Options.named_groups_all.len][]const u8 = undefined;
+                var keys: [Options.named_groups.all.len][]const u8 = undefined;
                 for (opt.named_groups, 0..) |ng, i| {
                     keys[i] = try h.dh_kp.publicKey(ng);
                 }
@@ -1051,7 +1057,7 @@ test "create client hello" {
         testu.random(0).bytes(&random_buf);
         var buffer: [1024]u8 = undefined;
         var h = TestHandshake.init(&buffer, undefined);
-        try h.initKeys(random_buf, Options.named_groups_all);
+        try h.initKeys(random_buf, Options.named_groups.all);
         break :brk h;
     };
 

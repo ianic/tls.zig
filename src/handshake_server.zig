@@ -7,6 +7,7 @@ const Certificate = crypto.Certificate;
 
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
+const cipher_suites = @import("cipher.zig").cipher_suites;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 const PrivateKey = @import("PrivateKey.zig");
@@ -230,7 +231,7 @@ pub fn Handshake(comptime Stream: type) type {
                 while (d.idx < end_idx) {
                     const cipher_suite = try d.decode(CipherSuite);
                     if (@intFromEnum(h.cipher_suite) == 0 and
-                        CipherSuite.includes(&CipherSuite.tls13, cipher_suite))
+                        cipher_suites.includes(cipher_suites.tls13, cipher_suite))
                     {
                         h.cipher_suite = cipher_suite;
                     }
