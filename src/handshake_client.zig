@@ -349,7 +349,7 @@ pub fn Handshake(comptime Stream: type) type {
                     const handshake_type = try d.decode(HandshakeType);
 
                     const length = try d.decode(u24);
-                    if (length > tls.max_cipertext_inner_record_len)
+                    if (length > tls.max_ciphertext_inner_record_len)
                         return error.TlsUnsupportedFragmentedHandshakeMessage;
 
                     brk: {
@@ -540,7 +540,7 @@ pub fn Handshake(comptime Stream: type) type {
                             const length = try d.decode(u24);
 
                             // std.debug.print("handshake loop: {} {} {} {}\n", .{ handshake_type, length, d.payload.len, d.idx });
-                            if (length > tls.max_cipertext_inner_record_len)
+                            if (length > tls.max_ciphertext_inner_record_len)
                                 return error.TlsUnsupportedFragmentedHandshakeMessage;
                             if (length > d.rest().len)
                                 continue :outer; // fragmented handshake into multiple records

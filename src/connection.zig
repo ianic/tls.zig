@@ -30,7 +30,7 @@ pub fn Connection(comptime Stream: type) type {
         /// Encrypts and writes single tls record to the stream.
         fn writeRecord(c: *Self, content_type: tls.ContentType, bytes: []const u8) !void {
             var write_buf: [tls.max_ciphertext_record_len]u8 = undefined;
-            assert(bytes.len <= tls.max_cipertext_inner_record_len);
+            assert(bytes.len <= tls.max_ciphertext_inner_record_len);
             const rec = try c.cipher.encrypt(&write_buf, c.cipher_client_seq, content_type, bytes);
             c.cipher_client_seq += 1;
             try c.stream.writeAll(rec);
@@ -117,7 +117,7 @@ pub fn Connection(comptime Stream: type) type {
         /// tls record. Max single tls record payload length is 1<<14 (16K)
         /// bytes.
         pub fn write(c: *Self, bytes: []const u8) WriteError!usize {
-            const n = @min(bytes.len, tls.max_cipertext_inner_record_len);
+            const n = @min(bytes.len, tls.max_ciphertext_inner_record_len);
             try c.writeRecord(.application_data, bytes[0..n]);
             return n;
         }
