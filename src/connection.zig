@@ -322,7 +322,7 @@ test "client/server connection" {
     };
 
     const buf_len = 32 * 1024;
-    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, tls.max_cipertext_inner_record_len) catch unreachable);
+    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, tls.max_ciphertext_inner_record_len) catch unreachable);
     const overhead: usize = tls_records_in_buf * @import("cipher.zig").encrypt_overhead_tls_13;
     var buf: [buf_len + overhead]u8 = undefined;
     var inner_stream = BufReaderWriter{ .buf = &buf };
