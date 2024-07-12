@@ -5,9 +5,10 @@ const mem = std.mem;
 const tls = crypto.tls;
 const Certificate = crypto.Certificate;
 
-const Cipher = @import("cipher.zig").Cipher;
-const CipherSuite = @import("cipher.zig").CipherSuite;
-const cipher_suites = @import("cipher.zig").cipher_suites;
+const cipher = @import("cipher.zig");
+const Cipher = cipher.Cipher;
+const CipherSuite = cipher.CipherSuite;
+const cipher_suites = cipher.cipher_suites;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 const rsa = @import("rsa/rsa.zig");
@@ -45,7 +46,7 @@ pub const Options = struct {
     // List of named groups to use.
     // To use specific named group:
     //   .named_groups = &[_]tls.NamedGroup{.secp384r1},
-    named_groups: []const tls.NamedGroup = named_groups.all,
+    named_groups: []const tls.NamedGroup = named_groups.default,
 
     // Client authentication
     authentication: ?Authentication = null,
@@ -349,7 +350,7 @@ pub fn Handshake(comptime Stream: type) type {
                     const handshake_type = try d.decode(HandshakeType);
 
                     const length = try d.decode(u24);
-                    if (length > tls.max_ciphertext_inner_record_len)
+                    if (length > cipher.max_ciphertext_inner_record_len)
                         return error.TlsUnsupportedFragmentedHandshakeMessage;
 
                     brk: {
@@ -540,7 +541,7 @@ pub fn Handshake(comptime Stream: type) type {
                             const length = try d.decode(u24);
 
                             // std.debug.print("handshake loop: {} {} {} {}\n", .{ handshake_type, length, d.payload.len, d.idx });
-                            if (length > tls.max_ciphertext_inner_record_len)
+                            if (length > cipher.max_ciphertext_inner_record_len)
                                 return error.TlsUnsupportedFragmentedHandshakeMessage;
                             if (length > d.rest().len)
                                 continue :outer; // fragmented handshake into multiple records
@@ -968,9 +969,9 @@ test "init tls 1.3 handshake cipher" {
     const shared_key = try dh_kp.sharedKey(.x25519, &data13.server_pub_key);
     try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
-    const cipher = try Cipher.initTLS13(cipher_suite_tag, transcript.handshakeSecret(shared_key), .client);
+    const cph = try Cipher.initTLS13(cipher_suite_tag, transcript.handshakeSecret(shared_key), .client);
 
-    const c = &cipher.AES_256_GCM_SHA384;
+    const c = &cph.AES_256_GCM_SHA384;
     try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.decrypt_key);
     try testing.expectEqualSlices(u8, &data13.client_handshake_key, &c.encrypt_key);
     try testing.expectEqualSlices(u8, &data13.server_handshake_iv, &c.decrypt_iv);
@@ -989,7 +990,7 @@ fn initExampleHandshake(h: *TestHandshake) !void {
 }
 
 test "tls 1.3 decrypt wrapped record" {
-    var cipher = brk: {
+    var cph = brk: {
         var h = TestHandshake.init(undefined, undefined);
         try initExampleHandshake(&h);
         break :brk h.cipher;
@@ -1000,7 +1001,7 @@ test "tls 1.3 decrypt wrapped record" {
         const rec = record.Record.init(&data13.server_encrypted_extensions_wrapped);
         const sequence: u64 = 0;
 
-        const content_type, const cleartext = try cipher.decrypt(&cleartext_buf, sequence, rec);
+        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, sequence, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_encrypted_extensions, cleartext);
     }
@@ -1008,7 +1009,7 @@ test "tls 1.3 decrypt wrapped record" {
         const rec = record.Record.init(&data13.server_certificate_wrapped);
         const sequence: u64 = 1;
 
-        const content_type, const cleartext = try cipher.decrypt(&cleartext_buf, sequence, rec);
+        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, sequence, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_certificate, cleartext);
     }
@@ -1027,14 +1028,14 @@ test "tls 1.3 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cipher = try Cipher.initTLS13(h.cipher_suite, h.transcript.applicationSecret(), .client);
-        const c = &cipher.AES_256_GCM_SHA384;
+        const cph = try Cipher.initTLS13(h.cipher_suite, h.transcript.applicationSecret(), .client);
+        const c = &cph.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &data13.server_application_key, &c.decrypt_key);
         try testing.expectEqualSlices(u8, &data13.client_application_key, &c.encrypt_key);
         try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.decrypt_iv);
         try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.encrypt_iv);
 
-        const encrypted = try cipher.encrypt(&buffer, 0, .application_data, "ping");
+        const encrypted = try cph.encrypt(&buffer, 0, .application_data, "ping");
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message

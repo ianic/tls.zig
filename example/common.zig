@@ -116,6 +116,7 @@ pub const no_keyber = [_][]const u8{
     "secureserver.net",
     "godaddy.com",
     "starfieldtech.com",
+    "sedoparking.com",
 };
 
 pub const Counter = struct {

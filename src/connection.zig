@@ -3,7 +3,8 @@ const assert = std.debug.assert;
 const tls = std.crypto.tls;
 
 const record = @import("record.zig");
-const Cipher = @import("cipher.zig").Cipher;
+const cipher = @import("cipher.zig");
+const Cipher = cipher.Cipher;
 const HandshakeType = @import("handshake_common.zig").HandshakeType;
 const handshakeHeader = @import("handshake_common.zig").handshakeHeader;
 
@@ -32,8 +33,8 @@ pub fn Connection(comptime Stream: type) type {
 
         /// Encrypts and writes single tls record to the stream.
         fn writeRecord(c: *Self, content_type: tls.ContentType, bytes: []const u8) !void {
-            assert(bytes.len <= tls.max_ciphertext_inner_record_len);
-            var write_buf: [tls.max_ciphertext_record_len]u8 = undefined;
+            assert(bytes.len <= cipher.max_ciphertext_inner_record_len);
+            var write_buf: [cipher.max_ciphertext_record_len]u8 = undefined;
             // If key update is requested send key update message and update
             // my encryption keys.
             if (c.encrypt_seq >= c.max_encrypt_seq or @atomicLoad(bool, &c.key_update_requested, .monotonic)) {
@@ -163,7 +164,7 @@ pub fn Connection(comptime Stream: type) type {
         /// tls record. Max single tls record payload length is 1<<14 (16K)
         /// bytes.
         pub fn write(c: *Self, bytes: []const u8) WriteError!usize {
-            const n = @min(bytes.len, tls.max_ciphertext_inner_record_len);
+            const n = @min(bytes.len, cipher.max_ciphertext_inner_record_len);
             try c.writeRecord(.application_data, bytes[0..n]);
             return n;
         }
@@ -368,7 +369,7 @@ test "client/server connection" {
     };
 
     const buf_len = 32 * 1024;
-    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, tls.max_ciphertext_inner_record_len) catch unreachable);
+    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, cipher.max_ciphertext_inner_record_len) catch unreachable);
     const overhead: usize = tls_records_in_buf * @import("cipher.zig").encrypt_overhead_tls_13;
     var buf: [buf_len + overhead]u8 = undefined;
     var inner_stream = BufReaderWriter{ .buf = &buf };

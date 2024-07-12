@@ -43,12 +43,14 @@ pub const encrypt_overhead_tls_13: comptime_int = @max(
     ChaChaSha256.encrypt_overhead,
     Aegis128Sha256.encrypt_overhead,
 );
-pub const max_ciphertext_record_len_tls_13 = (1 << 14) +
-    tls.record_header_len +
-    encrypt_overhead_tls_13;
-pub const max_ciphertext_record_len = (1 << 14) +
-    tls.record_header_len +
-    @max(encrypt_overhead_tls_13, encrypt_overhead_tls_12);
+
+pub const max_ciphertext_inner_record_len = 1 << 14;
+pub const max_ciphertext_record_len_tls_13 =
+    max_ciphertext_inner_record_len + tls.record_header_len + encrypt_overhead_tls_13;
+pub const max_ciphertext_len =
+    max_ciphertext_inner_record_len + @max(encrypt_overhead_tls_13, encrypt_overhead_tls_12);
+pub const max_ciphertext_record_len =
+    tls.record_header_len + max_ciphertext_len;
 
 /// Returns type for cipher suite tag.
 fn CipherType(comptime tag: CipherSuite) type {

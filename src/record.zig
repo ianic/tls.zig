@@ -1,7 +1,8 @@
 const std = @import("std");
 const tls = std.crypto.tls;
 const mem = std.mem;
-const Cipher = @import("cipher.zig").Cipher;
+const cipher = @import("cipher.zig");
+const Cipher = cipher.Cipher;
 
 pub fn reader(inner_reader: anytype) Reader(@TypeOf(inner_reader)) {
     return .{ .inner_reader = inner_reader };
@@ -11,7 +12,7 @@ pub fn Reader(comptime InnerReader: type) type {
     return struct {
         inner_reader: InnerReader,
 
-        buffer: [tls.max_ciphertext_record_len]u8 = undefined,
+        buffer: [cipher.max_ciphertext_record_len]u8 = undefined,
         start: usize = 0,
         end: usize = 0,
 
@@ -71,11 +72,11 @@ pub fn Reader(comptime InnerReader: type) type {
             }
         }
 
-        pub fn nextDecrypt(r: *ReaderT, cipher: Cipher, cipher_seq: u64) !?struct { tls.ContentType, []const u8 } {
+        pub fn nextDecrypt(r: *ReaderT, cph: Cipher, cipher_seq: u64) !?struct { tls.ContentType, []const u8 } {
             const rec = (try r.next()) orelse return null;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
-            return try cipher.decrypt(
+            return try cph.decrypt(
                 // Reuse reader buffer for cleartext. `rec.header` and
                 // `rec.payload`(ciphertext) are also pointing somewhere in
                 // this buffer. Decrypter is first reading then writing a
