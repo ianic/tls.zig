@@ -11,6 +11,7 @@ Zig TLS library, characteristics:
 * can be used with standard library http client (with modified std lib copy)
 <!--
 * solved many [issues](https://github.com/ziglang/zig/issues/14172#issuecomment-2181202318) which I found in std 
+https://github.com/ziglang/zig/issues/15226#issuecomment-2218809140
 -->
 
 # Client
@@ -82,7 +83,7 @@ If authentication is not provided client will respond with empty certificate mes
 
 ### Logging tls session keys
 
-Key logs can be written to file so that external programs can decrypt TLS connections. Wireshark can use these log files to decrypt packets. You can [tell](https://everything.curl.dev/usingcurl/tls/sslkeylogfile.html) Wireshark where to find the key file via Edit→Preferences→Protocols→SSL→(Pre)-Master-Secret log filename.
+Session keys can be written to file so that external programs can decrypt TLS connections. Wireshark can use these log files to decrypt packets. You can [tell](https://everything.curl.dev/usingcurl/tls/sslkeylogfile.html) Wireshark where to find the key file via Edit→Preferences→Protocols→SSL→(Pre)-Master-Secret log filename.
 
 Key logging is enabled by setting the environment variable SSLKEYLOGFILE to point to a file. And enabling key log callback in client options:
 
@@ -96,7 +97,7 @@ Key logging is enabled by setting the environment variable SSLKEYLOGFILE to poin
 
 # Server
 
-Library has also minimal, tls 1.3 only server implementation. To upgrade tcp to tls connection:
+Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to tls connection:
 
 ```zig
     // Load server certificate
@@ -136,43 +137,47 @@ Library has also minimal, tls 1.3 only server implementation. To upgrade tcp to 
 
 ## Top sites
 
-Uses [list](https://github.com/Kikobeats/top-sites/blob/master/top-sites.json) of top 500 domains and pages on the web. , based on [Moz Top 500](https://moz.com/top500). Tries to establish https connection to each site. If the connection fails runs curl on the same domain, if curl can't connect it is count as error, if curl connect counts as fail.   
+Starting from cloudflare [list](https://radar.cloudflare.com/domains) of 10000 top domains, filtering those which can't be resolved got list of ~6k domains which are used to test establishing tls connection. If the connection fails test runs curl on the same domain, if curl can't connect it is count as error, if curl connect counts as fail.
+For each domain test reports tls handshake parameters (tls version, cipher suite used, named group and signature scheme).
 
 ```
 $ zig-out/bin/top_sites
-stats:
-         total: 500
-         success: 483
-         fail: 0
-         error: 14
-         skip: 3
-```
-Domains on which we fail to establish tls connection are also failing when using curl. Errors are: 7 UnknownHostName, 4 ConnectionRefused, 2 CertificateHostMismatch, 1 CertificateIssuerNotFound.
-    
-### top sites with std lib 
+✔️ facebook.com              tls_1_3 AES_128_GCM_SHA256                       x25519               ecdsa_secp256r1_sha256
+✔️ ebay.com                  tls_1_3 AES_128_GCM_SHA256                       x25519               rsa_pss_rsae_sha256
+✔️ live.com                  tls_1_3 AES_256_GCM_SHA384                       secp384r1            rsa_pss_rsae_sha256
+✔️ drive.google.com          tls_1_3 AES_128_GCM_SHA256                       x25519_kyber768d00   ecdsa_secp256r1_sha256
+✔️ github.com                tls_1_3 AES_128_GCM_SHA256                       x25519               ecdsa_secp256r1_sha256
+...
 
-Tls implementation in Zig standard library is currently tls 1.3 only. Trying to connect to all top 500 domains gives:
-```
-$ zig-out/bin/std_top_sites
 stats:
-         total: 500
-         success: 360
-         fail: 120
-         error: 12
-         skip: 8
+         total: 6250
+         success: 6247
+                 tls 1.2: 1530
+                 tls 1.3: 4717
+         fail: 1
+         error: 2
+         skip: 0
 ```
 
-If we change standard library tls implementation to the one which uses this tls library we can connect to tls 1.2 sites also:
+When I found domain which fails I use http_get example to test wether it is transient error or point to something interesting. Now only transient errors are left in that domains group. 
+
+## http get
+
+This example will connect to the domain, show response and tls statistic. You can change tls options to force tls version or specific cipher.
+
 ```
-$ zig build --zig-lib-dir ../zig/lib 
-$ zig-out/bin/std_top_sites
-stats:
-         total: 500
-         success: 480
-         fail: 5
-         error: 12
-         skip: 3
+$ zig-out/bin/http_get google.com    
+HTTP/1.0 301 Moved Permanently
+
+832 bytes read
+
+google.com
+         tls version: tls_1_3
+         cipher: AES_128_GCM_SHA256
+         named group: x25519_kyber768d00
+         signature scheme: ecdsa_secp256r1_sha256
 ```
+
 
 ## badssl
 
@@ -266,24 +271,6 @@ $ zig-out/bin/all_ciphers cloudflare.com
 ✔️ RSA_WITH_AES_128_CBC_SHA cloudflare.com
 ```
 Using cloudflare.com as example because it supports all implemented ciphers.
-
-## http get
-
-This example will connect to the domain, show response and tls statistic. You
-can change tls options to force tls version or specific cipher.
-
-```
-$ zig-out/bin/http_get google.com    
-HTTP/1.0 301 Moved Permanently
-
-832 bytes read
-
-google.com
-         tls version: tls_1_3
-         cipher: AES_128_GCM_SHA256
-         named group: x25519_kyber768d00
-         signature scheme: ecdsa_secp256r1_sha256
-```
 
 
 ## Server and client example
@@ -417,10 +404,17 @@ https://datatracker.ietf.org/doc/rfc7905/
 
 Script to rebase branch tls23 to master.
 
-cd ~/Code/zig && zig-merge-upstream.sh && git checkout tls23 && git rebase master && git push -f
+
+-->
 
 
+<!--
+This one `airable.io` sends TlsAlertUnrecognizedName which is ignored by curl and Chrome.
 
+curl notes that it receives alert, but continues and succeeds:
+* TLSv1.3 (IN), TLS alert, unrecognized name (368):
+
+Noting it as issue without action right now.
 
 
 zig-out/bin/http_get airable.io
@@ -451,9 +445,6 @@ error: TlsAlertUnrecognizedName
 /home/ianic/Code/tls.zig/example/http_get.zig:18:9: 0x10ef76f in main (http_get)
         try cmn.get(allocator, domain, null, true, true, .{
         ^
-
-Ovaj salje warning alert, curl takodjer posalje da je dobio alert ali ide dalje. 
-* TLSv1.3 (IN), TLS alert, unrecognized name (368):
 -->
 
 

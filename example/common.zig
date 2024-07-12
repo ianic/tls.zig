@@ -91,6 +91,7 @@ pub const domainsToSkip = [_][]const u8{
     "gouv.qc.ca", //           error error.ConnectionTimedOut curl error: error.OperationTimeout
     "jalan.net", //            error error.ConnectionTimedOut curl error: error.OperationTimeout
     "kroger.com",
+    "signalfx.com", // has expired 1.2 certificate, sometime sends 1.3 sometime 1.2, strange
 };
 
 pub const domainsWithErrors = [_][]const u8{
@@ -117,6 +118,9 @@ pub const no_keyber = [_][]const u8{
     "godaddy.com",
     "starfieldtech.com",
     "sedoparking.com",
+    "wshareit.com",
+    "ushareit.com",
+    "platinumai.net",
 };
 
 pub const Counter = struct {

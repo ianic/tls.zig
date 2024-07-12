@@ -12,7 +12,7 @@ pub fn main() !void {
     try pool.init(.{ .allocator = allocator, .n_jobs = 32 });
 
     var counter: cmn.Counter = .{};
-    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    var rdr = cmn.CsvReader.init(@embedFile("domains_tls_1_3"));
     while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {
             counter.add(.skip);

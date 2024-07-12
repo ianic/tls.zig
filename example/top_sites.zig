@@ -16,16 +16,18 @@ pub fn main() !void {
     var counter: cmn.Counter = .{};
 
     // source: https://moz.com/top500
-    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    // var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     // source: https://dataforseo.com/free-seo-stats/top-1000-websites
     // var rdr = cmn.CsvReader.init(@embedFile("ranked_domains.csv"));
     // source: https://radar.cloudflare.com/domains
     // var rdr = cmn.CsvReader.init(@embedFile("cloudflare-radar-domains-top-10000-20240701-20240708.csv"));
+    var rdr = cmn.CsvReader.init(@embedFile("domains"));
     while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {
             counter.add(.skip);
             continue;
         }
+        if (domain.len == 0) continue;
         try pool.spawn(run, .{ allocator, domain, root_ca, &counter });
     }
     pool.deinit();
@@ -90,6 +92,7 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
         .Exited => |error_code| switch (error_code) {
             0 => return,
             6 => return error.CouldntResolveHost,
+            3 => return error.UrlMalformed,
             7 => return error.FailedToConnectToHost,
             18, 28 => return error.OperationTimeout,
             35 => return error.SslHandshake,
