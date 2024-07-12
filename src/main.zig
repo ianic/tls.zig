@@ -24,8 +24,8 @@ pub fn client(stream: anytype, opt: ClientOptions) !Connection(@TypeOf(stream)) 
     var h = HandshakeClient(Stream).init(&write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
     if (h.tls_version == .tls_1_2) {
-        conn.cipher_client_seq = 1;
-        conn.cipher_server_seq = 1;
+        conn.encrypt_seq = 1;
+        conn.decrypt_seq = 1;
     }
     return conn;
 }

@@ -23,10 +23,10 @@ const Aead12Aes256Gcm = Aead12Type(crypto.aead.aes_gcm.Aes256Gcm);
 // tls 1.2 chacha cipher type
 const Aead12ChaCha = Aead12ChaChaType(crypto.aead.chacha_poly.ChaCha20Poly1305);
 // tls 1.3 cipher types
-const Aead13Aes128Gcm = Aead13Type(crypto.aead.aes_gcm.Aes128Gcm);
-const Aead13Aes256Gcm = Aead13Type(crypto.aead.aes_gcm.Aes256Gcm);
-const Aead13ChaCha = Aead13Type(crypto.aead.chacha_poly.ChaCha20Poly1305);
-const Aead13Ageis128 = Aead13Type(crypto.aead.aegis.Aegis128L);
+const Aes128GcmSha256 = Aead13Type(crypto.aead.aes_gcm.Aes128Gcm, Sha256);
+const Aes256GcmSha384 = Aead13Type(crypto.aead.aes_gcm.Aes256Gcm, Sha384);
+const ChaChaSha256 = Aead13Type(crypto.aead.chacha_poly.ChaCha20Poly1305, Sha256);
+const Aegis128Sha256 = Aead13Type(crypto.aead.aegis.Aegis128L, Sha256);
 
 pub const encrypt_overhead_tls_12: comptime_int = @max(
     CbcAes128Sha1.encrypt_overhead,
@@ -38,10 +38,10 @@ pub const encrypt_overhead_tls_12: comptime_int = @max(
     Aead12ChaCha.encrypt_overhead,
 );
 pub const encrypt_overhead_tls_13: comptime_int = @max(
-    Aead13Aes128Gcm.encrypt_overhead,
-    Aead13Aes256Gcm.encrypt_overhead,
-    Aead13ChaCha.encrypt_overhead,
-    Aead13Ageis128.encrypt_overhead,
+    Aes128GcmSha256.encrypt_overhead,
+    Aes256GcmSha384.encrypt_overhead,
+    ChaChaSha256.encrypt_overhead,
+    Aegis128Sha256.encrypt_overhead,
 );
 pub const max_ciphertext_record_len_tls_13 = (1 << 14) +
     tls.record_header_len +
@@ -80,10 +80,10 @@ fn CipherType(comptime tag: CipherSuite) type {
         => Aead12ChaCha,
 
         // tls 1.3
-        .AES_128_GCM_SHA256 => Aead13Aes128Gcm,
-        .AES_256_GCM_SHA384 => Aead13Aes256Gcm,
-        .CHACHA20_POLY1305_SHA256 => Aead13ChaCha,
-        .AEGIS_128L_SHA256 => Aead13Ageis128,
+        .AES_128_GCM_SHA256 => Aes128GcmSha256,
+        .AES_256_GCM_SHA384 => Aes256GcmSha384,
+        .CHACHA20_POLY1305_SHA256 => ChaChaSha256,
+        .AEGIS_128L_SHA256 => Aegis128Sha256,
 
         else => unreachable,
     };
@@ -150,18 +150,7 @@ pub const Cipher = union(CipherSuite) {
             .CHACHA20_POLY1305_SHA256,
             .AEGIS_128L_SHA256,
             => |comptime_tag| {
-                const Hkdf = Transcript.Hkdf(comptime_tag.hash());
-                const T = CipherType(comptime_tag);
-                const client_key = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "key", "", T.key_len);
-                const server_key = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "key", "", T.key_len);
-                const client_iv = hkdfExpandLabel(Hkdf, secret.client[0..Hkdf.prk_length].*, "iv", "", T.nonce_len);
-                const server_iv = hkdfExpandLabel(Hkdf, secret.server[0..Hkdf.prk_length].*, "iv", "", T.nonce_len);
-                return @unionInit(Cipher, @tagName(comptime_tag), .{
-                    .encrypt_key = if (side == .client) client_key else server_key,
-                    .decrypt_key = if (side == .client) server_key else client_key,
-                    .encrypt_iv = if (side == .client) client_iv else server_iv,
-                    .decrypt_iv = if (side == .client) server_iv else client_iv,
-                });
+                return @unionInit(Cipher, @tagName(comptime_tag), CipherType(comptime_tag).init(secret, side));
             },
             else => return error.TlsIllegalParameter,
         };
@@ -187,6 +176,29 @@ pub const Cipher = union(CipherSuite) {
     ) !struct { tls.ContentType, []u8 } {
         return switch (c) {
             inline else => |f| try f.decrypt(buf, seq, rec),
+        };
+    }
+
+    pub fn keyUpdateEncrypt(c: *Cipher) !void {
+        return switch (c.*) {
+            inline .AES_128_GCM_SHA256,
+            .AES_256_GCM_SHA384,
+            .CHACHA20_POLY1305_SHA256,
+            .AEGIS_128L_SHA256,
+            => |*f| f.keyUpdateEncrypt(),
+            // can't happen on tls 1.2
+            else => return error.TlsUnexpectedMessage,
+        };
+    }
+    pub fn keyUpdateDecrypt(c: *Cipher) !void {
+        return switch (c.*) {
+            inline .AES_128_GCM_SHA256,
+            .AES_256_GCM_SHA384,
+            .CHACHA20_POLY1305_SHA256,
+            .AEGIS_128L_SHA256,
+            => |*f| f.keyUpdateDecrypt(),
+            // can't happen on tls 1.2
+            else => return error.TlsUnexpectedMessage,
         };
     }
 };
@@ -366,19 +378,55 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
     };
 }
 
-fn Aead13Type(comptime AeadType: type) type {
+fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
     return struct {
+        const Hmac = crypto.auth.hmac.Hmac(Hash);
+        const Hkdf = crypto.kdf.hkdf.Hkdf(Hmac);
+
         const key_len = AeadType.key_length;
         const auth_tag_len = AeadType.tag_length;
         const nonce_len = AeadType.nonce_length;
+        const digest_len = Hash.digest_length;
         const encrypt_overhead = tls.record_header_len + 1 + auth_tag_len;
 
+        encrypt_secret: [digest_len]u8,
+        decrypt_secret: [digest_len]u8,
         encrypt_key: [key_len]u8,
         decrypt_key: [key_len]u8,
         encrypt_iv: [nonce_len]u8,
         decrypt_iv: [nonce_len]u8,
 
         const Self = @This();
+
+        pub fn init(secret: Transcript.Secret, side: Side) Self {
+            var self = Self{
+                .encrypt_secret = if (side == .client) secret.client[0..digest_len].* else secret.server[0..digest_len].*,
+                .decrypt_secret = if (side == .server) secret.client[0..digest_len].* else secret.server[0..digest_len].*,
+                .encrypt_key = undefined,
+                .decrypt_key = undefined,
+                .encrypt_iv = undefined,
+                .decrypt_iv = undefined,
+            };
+            self.keyGenerate();
+            return self;
+        }
+
+        fn keyGenerate(self: *Self) void {
+            self.encrypt_key = hkdfExpandLabel(Hkdf, self.encrypt_secret, "key", "", key_len);
+            self.decrypt_key = hkdfExpandLabel(Hkdf, self.decrypt_secret, "key", "", key_len);
+            self.encrypt_iv = hkdfExpandLabel(Hkdf, self.encrypt_secret, "iv", "", nonce_len);
+            self.decrypt_iv = hkdfExpandLabel(Hkdf, self.decrypt_secret, "iv", "", nonce_len);
+        }
+
+        pub fn keyUpdateEncrypt(self: *Self) void {
+            self.encrypt_secret = hkdfExpandLabel(Hkdf, self.encrypt_secret, "traffic upd", "", digest_len);
+            self.keyGenerate();
+        }
+
+        pub fn keyUpdateDecrypt(self: *Self) void {
+            self.decrypt_secret = hkdfExpandLabel(Hkdf, self.decrypt_secret, "traffic upd", "", digest_len);
+            self.keyGenerate();
+        }
 
         /// Returns encrypted tls record in format:
         ///   ------------ buf -------------
@@ -844,10 +892,10 @@ test "cbc 1.2 encrypt overhead" {
 
 test "overhead tls 1.3" {
     try testing.expectEqual(22, encrypt_overhead_tls_13);
-    try expectOverhead(Aead13Aes128Gcm, 16, 16, 12, 22);
-    try expectOverhead(Aead13Aes256Gcm, 32, 16, 12, 22);
-    try expectOverhead(Aead13ChaCha, 32, 16, 12, 22);
-    try expectOverhead(Aead13Ageis128, 16, 16, 16, 22);
+    try expectOverhead(Aes128GcmSha256, 16, 16, 12, 22);
+    try expectOverhead(Aes256GcmSha384, 32, 16, 12, 22);
+    try expectOverhead(ChaChaSha256, 32, 16, 12, 22);
+    try expectOverhead(Aegis128Sha256, 16, 16, 16, 22);
     // and tls 1.2 chacha
     try expectOverhead(Aead12ChaCha, 32, 16, 12, 21);
 }
@@ -867,8 +915,16 @@ test "client/server encryption tls 1.3" {
             .client = buf[0..128],
             .server = buf[128..],
         };
-        const client_cipher = try Cipher.initTLS13(cs, secret, .client);
-        const server_cipher = try Cipher.initTLS13(cs, secret, .server);
+        var client_cipher = try Cipher.initTLS13(cs, secret, .client);
+        var server_cipher = try Cipher.initTLS13(cs, secret, .server);
+        try encryptDecrypt(client_cipher, server_cipher);
+
+        try client_cipher.keyUpdateEncrypt();
+        try server_cipher.keyUpdateDecrypt();
+        try encryptDecrypt(client_cipher, server_cipher);
+
+        try client_cipher.keyUpdateDecrypt();
+        try server_cipher.keyUpdateEncrypt();
         try encryptDecrypt(client_cipher, server_cipher);
     }
 }
@@ -906,10 +962,10 @@ fn encryptDecrypt(client_cipher: Cipher, server_cipher: Cipher) !void {
                     Aead12Aes128Gcm,
                     Aead12Aes256Gcm,
                     Aead12ChaCha,
-                    Aead13Aes128Gcm,
-                    Aead13Aes256Gcm,
-                    Aead13ChaCha,
-                    Aead13Ageis128,
+                    Aes128GcmSha256,
+                    Aes256GcmSha384,
+                    ChaChaSha256,
+                    Aegis128Sha256,
                     => cleartext.len + T.encrypt_overhead,
                     else => unreachable,
                 };

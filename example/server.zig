@@ -50,6 +50,8 @@ pub fn main() !void {
             std.debug.print("tls failed with {}\n", .{err});
             continue;
         };
+        // for testing key update
+        // conn.max_encrypt_seq = 10;
 
         try pg_file.seekTo(0);
         while (true) {
