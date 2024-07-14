@@ -165,9 +165,9 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
             var handshake_states: []const HandshakeType = &.{.finished};
-            var cert: CertificateParser = .{};
+            var cert: CertificateParser = undefined;
             if (opt.client_auth) |client_auth| {
-                cert.root_ca = client_auth.root_ca;
+                cert = .{ .root_ca = client_auth.root_ca, .host = "" };
                 handshake_states = if (client_auth.auth_type == .require)
                     &.{.certificate}
                 else
@@ -215,7 +215,7 @@ pub fn Handshake(comptime Stream: type) type {
 
                             switch (handshake_type) {
                                 .certificate => {
-                                    try cert.parseCertificate(&d);
+                                    try cert.parseCertificate(&d, .tls_1_3);
                                     handshake_states = &.{.certificate_verify};
                                 },
                                 .certificate_verify => {
