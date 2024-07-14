@@ -44,7 +44,7 @@ pub const CurveType = enum(u8) {
     _,
 };
 
-pub const Authentication = struct {
+pub const Auth = struct {
     // Chain of one or more certificates, leaf first. Is is sent to the
     // server if server requests client authentication.
     certificates: Certificate.Bundle,

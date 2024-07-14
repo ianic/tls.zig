@@ -65,7 +65,7 @@ pub fn main() !void {
                 .host = host,
                 .root_ca = root_ca,
                 .cipher_suites = cipher_suites,
-                .authentication = .{
+                .auth = .{
                     .certificates = certificates,
                     .private_key = private_key,
                 },

@@ -48,7 +48,7 @@ pub fn main() !void {
             //     .auth_type = .request,
             //     .root_ca = client_root_ca,
             // },
-            .authentication = .{
+            .auth = .{
                 .certificates = certificates,
                 .private_key = private_key,
             },

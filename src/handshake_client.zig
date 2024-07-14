@@ -24,7 +24,7 @@ const SchemeHash = common.SchemeHash;
 const CurveType = common.CurveType;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
-const Authentication = common.Authentication;
+const Auth = common.Auth;
 const DhKeyPair = common.DhKeyPair;
 
 pub const Options = struct {
@@ -49,8 +49,8 @@ pub const Options = struct {
     //   .named_groups = &[_]tls.NamedGroup{.secp384r1},
     named_groups: []const tls.NamedGroup = named_groups.default,
 
-    // Client authentication
-    authentication: ?Authentication = null,
+    // Client authentication certificates and private key.
+    auth: ?Auth = null,
 
     // If this structure is provided it will be filled with handshake attributes
     // at the end of the handshake process.
@@ -194,13 +194,13 @@ pub fn Handshake(comptime Stream: type) type {
                 try h.generateHandshakeCipher(opt.key_log_callback);
                 try h.readEncryptedServerFlight1(); // server flight 1
                 const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
-                try w.writeAll(try h.makeClientFlight2TLS13(opt.authentication)); // client flight 2
+                try w.writeAll(try h.makeClientFlight2TLS13(opt.auth)); // client flight 2
                 return app_cipher;
             }
 
             // tls 1.2 specific handshake part
             try h.generateCipher(opt.key_log_callback);
-            try w.writeAll(try h.makeClientFlight2TLS12(opt.authentication)); // client flight 2
+            try w.writeAll(try h.makeClientFlight2TLS12(opt.auth)); // client flight 2
             try h.readServerFlight2(); // server flight 2
             return h.cipher;
         }
@@ -569,7 +569,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// finished messages for tls 1.2.
         /// If client certificate is requested also adds client certificate and
         /// certificate verify messages.
-        fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Authentication) ![]const u8 {
+        fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Auth) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
             var cert_builder: ?CertificateBuilder = null;
 
@@ -623,7 +623,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// and client certificate verify messages are also created. If the
         /// server has requested certificate but the client is not configured
         /// empty certificate message is sent, as is required by rfc.
-        fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?Authentication) ![]const u8 {
+        fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?Auth) ![]const u8 {
             var w = BufWriter{ .buf = h.buffer };
 
             // Client change cipher spec message
@@ -660,7 +660,7 @@ pub fn Handshake(comptime Stream: type) type {
             return w.getWritten();
         }
 
-        fn certificateBuilder(h: *HandshakeT, auth: Authentication) CertificateBuilder {
+        fn certificateBuilder(h: *HandshakeT, auth: Auth) CertificateBuilder {
             return .{
                 .certificates = auth.certificates,
                 .private_key = auth.private_key,
@@ -727,7 +727,7 @@ pub fn Handshake(comptime Stream: type) type {
                 d.cipher_suite_tag = h.cipher_suite;
                 d.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
                 d.signature_scheme = h.cert.signature_scheme;
-                if (opt.authentication) |a|
+                if (opt.auth) |a|
                     d.client_signature_scheme = a.private_key.signature_scheme;
             }
         }

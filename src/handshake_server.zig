@@ -20,15 +20,18 @@ const dupe = common.dupe;
 const recordHeader = common.recordHeader;
 const handshakeHeader = common.handshakeHeader;
 const CertificateBuilder = common.CertificateBuilder;
-const Authentication = common.Authentication;
+const Auth = common.Auth;
 const DhKeyPair = common.DhKeyPair;
 const CertificateParser = common.CertificateParser;
 
 pub const Options = struct {
-    // If not null server will request client certificate.
-    client_auth: ?ClientAuth = null,
+    // Server authentication. If null server will not send certificate and
+    // certificate verify message.
+    auth: ?Auth,
 
-    authentication: ?Authentication,
+    // If not null server will request client certificate. If auth_type is
+    // .request empty client certificate message will be accepted.
+    client_auth: ?ClientAuth = null,
 };
 
 const ClientAuth = struct {
@@ -86,7 +89,7 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         pub fn handshake(h: *HandshakeT, stream: Stream, opt: Options) !Cipher {
-            if (opt.authentication) |a| {
+            if (opt.auth) |a| {
                 // required signature scheme in client hello
                 h.signature_scheme = a.private_key.signature_scheme;
             }
@@ -128,7 +131,7 @@ pub fn Handshake(comptime Stream: type) type {
                     h.transcript.update(certificate_request);
                     try h.writeEncrypted(&w, certificate_request);
                 }
-                if (opt.authentication) |a| {
+                if (opt.auth) |a| {
                     const cm = CertificateBuilder{
                         .certificates = a.certificates,
                         .private_key = a.private_key,

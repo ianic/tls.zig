@@ -55,7 +55,7 @@ To use just ciphers which are graded secure or recommended on  https://ciphersui
 
 ### Client authentication
 
-If server requires client authentication set `authentication` attribute in options. You need to prepare certificate bundle with client certificates and client private key.
+If server requires client authentication set `auth` attribute in options. You need to prepare certificate bundle with client certificates and client private key.
 
 ```zig
     // Load client certificate
@@ -70,7 +70,7 @@ If server requires client authentication set `authentication` attribute in optio
     var conn = try tls.client(tcp, .{
         .host = host,
         .root_ca = root_ca,
-        .authentication = .{
+        .auth = .{
             .certificates = certificates,
             .private_key = private_key,
         },
@@ -123,7 +123,7 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
 
      // Upgrade tcp to tls
      var conn = try tls.server(tcp.stream, .{
-         .authentication = .{
+         .auth = .{
              .certificates = certificates,
              .private_key = private_key,
          },
