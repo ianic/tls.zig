@@ -41,6 +41,7 @@ fn thisLib(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, verbose: b
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .named_groups = &.{ .x25519, .secp256r1, .x25519_kyber768d00 }, // use same set as in std lib
+        .key_log_callback = tls.key_log.callback,
     });
 
     // Show response

@@ -20,10 +20,10 @@ pub fn main() !void {
     const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
     private_key_file.close();
 
-    // Load ca to check client certificate
-    var client_root_ca: Certificate.Bundle = .{};
-    defer client_root_ca.deinit(allocator);
-    try client_root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
+    // // Load ca to check client certificate
+    // var client_root_ca: Certificate.Bundle = .{};
+    // defer client_root_ca.deinit(allocator);
+    // try client_root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     // Tcp listener
     const port = 9443;
@@ -44,9 +44,10 @@ pub fn main() !void {
 
         // Upgrade tcp to tls
         var conn = tls.server(tcp.stream, .{
-            .client_auth = .{
-                .root_ca = client_root_ca,
-            },
+            // .client_auth = .{
+            //     .auth_type = .request,
+            //     .root_ca = client_root_ca,
+            // },
             .authentication = .{
                 .certificates = certificates,
                 .private_key = private_key,

@@ -90,7 +90,12 @@ pub fn Handshake(comptime Stream: type) type {
                 // required signature scheme in client hello
                 h.signature_scheme = a.private_key.signature_scheme;
             }
-            try h.readClientHello();
+
+            h.readClientHello() catch |err| {
+                const alert = recordHeader(.alert, 2) ++
+                    [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+                stream.writeAll(&alert) catch {};
+            };
             h.transcript.use(h.cipher_suite.hash());
 
             const server_flight = brk: {
@@ -155,8 +160,44 @@ pub fn Handshake(comptime Stream: type) type {
                 break :brk try Cipher.initTLS13(h.cipher_suite, application_secret, .server);
             };
 
-            try h.readClientFlight2(opt);
+            h.readClientFlight2(opt) catch |err| {
+                const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+                const ciphertext = try app_cipher.encrypt(h.buffer, 0, .alert, &cleartext);
+                stream.writeAll(ciphertext) catch {};
+                return err;
+            };
             return app_cipher;
+        }
+
+        fn errorToAlert(err: anyerror) tls.AlertDescription {
+            return switch (err) {
+                error.TlsUnexpectedMessage => .unexpected_message,
+                error.TlsBadRecordMac => .bad_record_mac,
+                error.TlsRecordOverflow => .record_overflow,
+                error.TlsHandshakeFailure => .handshake_failure,
+                error.TlsBadCertificate => .bad_certificate,
+                error.TlsUnsupportedCertificate => .unsupported_certificate,
+                error.TlsCertificateRevoked => .certificate_revoked,
+                error.TlsCertificateExpired => .certificate_expired,
+                error.TlsCertificateUnknown => .certificate_unknown,
+                error.TlsIllegalParameter => .illegal_parameter,
+                error.TlsUnknownCa => .unknown_ca,
+                error.TlsAccessDenied => .access_denied,
+                error.TlsDecodeError => .decode_error,
+                error.TlsDecryptError => .decrypt_error,
+                error.TlsProtocolVersion => .protocol_version,
+                error.TlsInsufficientSecurity => .insufficient_security,
+                error.TlsInternalError => .internal_error,
+                error.TlsInappropriateFallback => .inappropriate_fallback,
+                error.TlsMissingExtension => .missing_extension,
+                error.TlsUnsupportedExtension => .unsupported_extension,
+                error.TlsUnrecognizedName => .unrecognized_name,
+                error.TlsBadCertificateStatusResponse => .bad_certificate_status_response,
+                error.TlsUnknownPskIdentity => .unknown_psk_identity,
+                error.TlsCertificateRequired => .certificate_required,
+                error.TlsNoApplicationProtocol => .no_application_protocol,
+                else => .internal_error,
+            };
         }
 
         fn readClientFlight2(h: *HandshakeT, opt: Options) !void {
@@ -164,19 +205,16 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
-            var handshake_states: []const HandshakeType = &.{.finished};
+            var handshake_state: HandshakeType = .finished;
             var cert: CertificateParser = undefined;
             if (opt.client_auth) |client_auth| {
                 cert = .{ .root_ca = client_auth.root_ca, .host = "" };
-                handshake_states = if (client_auth.auth_type == .require)
-                    &.{.certificate}
-                else
-                    &.{ .certificate, .finished };
+                handshake_state = .certificate;
             }
 
             outer: while (true) {
                 const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+                if (rec.protocol_version != .tls_1_2) return error.TlsProtocolVersion;
 
                 switch (rec.content_type) {
                     .change_cipher_spec => {},
@@ -197,7 +235,7 @@ pub fn Handshake(comptime Stream: type) type {
                             const length = try d.decode(u24);
 
                             if (length > cipher.max_ciphertext_inner_record_len)
-                                return error.TlsUnsupportedFragmentedHandshakeMessage;
+                                return error.TlsRecordOverflow;
                             if (length > d.rest().len)
                                 continue :outer; // fragmented handshake into multiple records
 
@@ -207,21 +245,26 @@ pub fn Handshake(comptime Stream: type) type {
                                 cleartext_buf_head += handshake_payload.len;
                             }
 
-                            brk: {
-                                for (handshake_states) |state|
-                                    if (state == handshake_type) break :brk;
+                            if (handshake_state != handshake_type)
                                 return error.TlsUnexpectedMessage;
-                            }
 
                             switch (handshake_type) {
                                 .certificate => {
-                                    try cert.parseCertificate(&d, .tls_1_3);
-                                    handshake_states = &.{.certificate_verify};
+                                    if (length == 4) {
+                                        // got empty certificate message
+                                        if (opt.client_auth.?.auth_type == .require)
+                                            return error.TlsCertificateRequired;
+                                        try d.skip(length);
+                                        handshake_state = .finished;
+                                    } else {
+                                        try cert.parseCertificate(&d, .tls_1_3);
+                                        handshake_state = .certificate_verify;
+                                    }
                                 },
                                 .certificate_verify => {
                                     try cert.parseCertificateVerify(&d);
                                     try cert.verifySignature(h.transcript.clientCertificateVerify());
-                                    handshake_states = &.{.finished};
+                                    handshake_state = .finished;
                                 },
                                 .finished => {
                                     const actual = try d.slice(length);
@@ -328,7 +371,7 @@ pub fn Handshake(comptime Stream: type) type {
             const handshake_type = try d.decode(HandshakeType);
             if (handshake_type != .client_hello) return error.TlsUnexpectedMessage;
             _ = try d.decode(u24); // handshake length
-            if (try d.decode(tls.ProtocolVersion) != .tls_1_2) return error.TlsBadVersion;
+            if (try d.decode(tls.ProtocolVersion) != .tls_1_2) return error.TlsProtocolVersion;
 
             h.client_random = (try d.array(32)).*;
             { // legacy session id
@@ -344,6 +387,9 @@ pub fn Handshake(comptime Stream: type) type {
                     {
                         h.cipher_suite = cipher_suite;
                     }
+                }
+                if (@intFromEnum(h.cipher_suite) == 0) {
+                    return error.TlsIllegalParameter;
                 }
             }
             try d.skip(2); // compression methods
@@ -363,7 +409,7 @@ pub fn Handshake(comptime Stream: type) type {
                                 tls_1_3_supported = true;
                             }
                         }
-                        if (!tls_1_3_supported) return error.TlsIllegalParameter;
+                        if (!tls_1_3_supported) return error.TlsProtocolVersion;
                     },
                     .key_share => {
                         var selected_named_group_idx = supported_named_groups.len;

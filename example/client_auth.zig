@@ -70,6 +70,7 @@ pub fn main() !void {
                     .private_key = private_key,
                 },
                 .diagnostic = &diagnostic,
+                .key_log_callback = tls.key_log.callback,
             });
 
             // Show response
