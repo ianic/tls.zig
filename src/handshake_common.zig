@@ -162,6 +162,150 @@ pub const CertificateBuilder = struct {
     }
 };
 
+const record = @import("record.zig");
+const rsa = @import("rsa/rsa.zig");
+
+pub const CertificateParser = struct {
+    tls_version: tls.ProtocolVersion = .tls_1_3,
+    cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
+    cert_pub_key_buf: [600]u8 = undefined,
+    cert_pub_key: []const u8 = undefined,
+
+    root_ca: Certificate.Bundle = .{},
+    host: []const u8 = "",
+    skip_verify: bool = false,
+    now_sec: i64 = 0,
+
+    signature_scheme: tls.SignatureScheme = @enumFromInt(0),
+    signature_buf: [1024]u8 = undefined,
+    signature: []const u8 = undefined,
+
+    pub fn parseCertificate(h: *CertificateParser, d: *record.Decoder) !void {
+        if (h.now_sec == 0) {
+            h.now_sec = std.time.timestamp();
+        }
+        if (h.tls_version == .tls_1_3) {
+            const request_context = try d.decode(u8);
+            if (request_context != 0) return error.TlsIllegalParameter;
+        }
+
+        var trust_chain_established = false;
+        var last_cert: ?Certificate.Parsed = null;
+        const certs_len = try d.decode(u24);
+        const start_idx = d.idx;
+        while (d.idx - start_idx < certs_len) {
+            const cert_len = try d.decode(u24);
+            // std.debug.print("=> {} {} {} {}\n", .{ certs_len, d.idx, cert_len, d.payload.len });
+            const cert = try d.slice(cert_len);
+            if (h.tls_version == .tls_1_3) {
+                // certificate extensions present in tls 1.3
+                try d.skip(try d.decode(u16));
+            }
+            if (trust_chain_established)
+                continue;
+
+            const subject = try (Certificate{ .buffer = cert, .index = 0 }).parse();
+            if (last_cert) |pc| {
+                if (pc.verify(subject, h.now_sec)) {
+                    last_cert = subject;
+                } else |err| switch (err) {
+                    error.CertificateIssuerMismatch => {
+                        // skip certificate which is not part of the chain
+                        continue;
+                    },
+                    else => return err,
+                }
+            } else { // first certificate
+                if (!h.skip_verify and h.host.len > 0) {
+                    try subject.verifyHostName(h.host);
+                }
+                h.cert_pub_key = dupe(&h.cert_pub_key_buf, subject.pubKey());
+                h.cert_pub_key_algo = subject.pub_key_algo;
+                last_cert = subject;
+            }
+            if (!h.skip_verify) {
+                if (h.root_ca.verify(last_cert.?, h.now_sec)) |_| {
+                    trust_chain_established = true;
+                } else |err| switch (err) {
+                    error.CertificateIssuerNotFound => {},
+                    else => return err,
+                }
+            }
+        }
+        if (!h.skip_verify and !trust_chain_established) {
+            return error.CertificateIssuerNotFound;
+        }
+    }
+
+    pub fn parseCertificateVerify(h: *CertificateParser, d: *record.Decoder) !void {
+        h.signature_scheme = try d.decode(tls.SignatureScheme);
+        h.signature = dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
+    }
+
+    pub fn verifySignature(h: *CertificateParser, verify_bytes: []const u8) !void {
+        switch (h.signature_scheme) {
+            inline .ecdsa_secp256r1_sha256,
+            .ecdsa_secp384r1_sha384,
+            => |comptime_scheme| {
+                if (h.cert_pub_key_algo != .X9_62_id_ecPublicKey) return error.TlsBadSignatureScheme;
+                const cert_named_curve = h.cert_pub_key_algo.X9_62_id_ecPublicKey;
+                switch (cert_named_curve) {
+                    inline .secp384r1, .X9_62_prime256v1 => |comptime_cert_named_curve| {
+                        const Ecdsa = SchemeEcdsaCert(comptime_scheme, comptime_cert_named_curve);
+                        const key = try Ecdsa.PublicKey.fromSec1(h.cert_pub_key);
+                        const sig = try Ecdsa.Signature.fromDer(h.signature);
+                        try sig.verify(verify_bytes, key);
+                    },
+                    else => return error.TlsUnknownSignatureScheme,
+                }
+            },
+            .ed25519 => {
+                if (h.cert_pub_key_algo != .curveEd25519) return error.TlsBadSignatureScheme;
+                const Eddsa = crypto.sign.Ed25519;
+                if (h.signature.len != Eddsa.Signature.encoded_length) return error.InvalidEncoding;
+                const sig = Eddsa.Signature.fromBytes(h.signature[0..Eddsa.Signature.encoded_length].*);
+                if (h.cert_pub_key.len != Eddsa.PublicKey.encoded_length) return error.InvalidEncoding;
+                const key = try Eddsa.PublicKey.fromBytes(h.cert_pub_key[0..Eddsa.PublicKey.encoded_length].*);
+                try sig.verify(verify_bytes, key);
+            },
+            inline .rsa_pss_rsae_sha256,
+            .rsa_pss_rsae_sha384,
+            .rsa_pss_rsae_sha512,
+            => |comptime_scheme| {
+                if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
+                const Hash = SchemeHash(comptime_scheme);
+                const pk = try rsa.PublicKey.fromDer(h.cert_pub_key);
+                const sig = rsa.Pss(Hash).Signature{ .bytes = h.signature };
+                try sig.verify(verify_bytes, pk, null);
+            },
+            inline .rsa_pkcs1_sha1,
+            .rsa_pkcs1_sha256,
+            .rsa_pkcs1_sha384,
+            .rsa_pkcs1_sha512,
+            => |comptime_scheme| {
+                if (h.cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
+                const Hash = SchemeHash(comptime_scheme);
+                const pk = try rsa.PublicKey.fromDer(h.cert_pub_key);
+                const sig = rsa.PKCS1v1_5(Hash).Signature{ .bytes = h.signature };
+                try sig.verify(verify_bytes, pk);
+            },
+            else => return error.TlsUnknownSignatureScheme,
+        }
+    }
+
+    fn SchemeEcdsaCert(comptime scheme: tls.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
+        const Sha256 = crypto.hash.sha2.Sha256;
+        const Sha384 = crypto.hash.sha2.Sha384;
+        const Ecdsa = crypto.sign.ecdsa.Ecdsa;
+
+        return switch (scheme) {
+            .ecdsa_secp256r1_sha256 => Ecdsa(cert_named_curve.Curve(), Sha256),
+            .ecdsa_secp384r1_sha384 => Ecdsa(cert_named_curve.Curve(), Sha384),
+            else => @compileError("bad scheme"),
+        };
+    }
+};
+
 pub fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
     const Sha256 = crypto.hash.sha2.Sha256;
     const Sha384 = crypto.hash.sha2.Sha384;

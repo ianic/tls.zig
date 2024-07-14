@@ -5,7 +5,8 @@ const mem = std.mem;
 const tls = crypto.tls;
 const Certificate = crypto.Certificate;
 
-const Cipher = @import("cipher.zig").Cipher;
+const cipher = @import("cipher.zig");
+const Cipher = cipher.Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
 const cipher_suites = @import("cipher.zig").cipher_suites;
 const Transcript = @import("transcript.zig").Transcript;
@@ -21,9 +22,30 @@ const handshakeHeader = common.handshakeHeader;
 const CertificateBuilder = common.CertificateBuilder;
 const Authentication = common.Authentication;
 const DhKeyPair = common.DhKeyPair;
+const CertificateParser = common.CertificateParser;
 
 pub const Options = struct {
+    // If not null server will request client certificate.
+    client_auth: ?ClientAuth = null,
+
     authentication: ?Authentication,
+};
+
+const ClientAuth = struct {
+    // Set of root certificate authorities that server use when verifying
+    // client certificates.
+    root_ca: Certificate.Bundle,
+
+    auth_type: Type = .require,
+
+    pub const Type = enum {
+        // Client certificate will be requested during the handshake, but does
+        // not require that the client send any certificates.
+        request,
+        // Client certificate will be requested during the handshake, and client
+        // has to send valid certificate.
+        require,
+    };
 };
 
 pub fn Handshake(comptime Stream: type) type {
@@ -96,6 +118,11 @@ pub fn Handshake(comptime Stream: type) type {
                     h.transcript.update(encrypted_extensions);
                     try h.writeEncrypted(&w, encrypted_extensions);
                 }
+                if (opt.client_auth) |_| {
+                    const certificate_request = try makeCertificateRequest(w.getPayload());
+                    h.transcript.update(certificate_request);
+                    try h.writeEncrypted(&w, certificate_request);
+                }
                 if (opt.authentication) |a| {
                     const cm = CertificateBuilder{
                         .certificates = a.certificates,
@@ -128,33 +155,87 @@ pub fn Handshake(comptime Stream: type) type {
                 break :brk try Cipher.initTLS13(h.cipher_suite, application_secret, .server);
             };
 
-            try h.readClientFlight2();
+            try h.readClientFlight2(opt);
             return app_cipher;
         }
 
-        fn readClientFlight2(h: *HandshakeT) !void {
-            while (true) {
+        fn readClientFlight2(h: *HandshakeT, opt: Options) !void {
+            var read_seq: u64 = 0;
+            var cleartext_buf = h.buffer;
+            var cleartext_buf_head: usize = 0;
+            var cleartext_buf_tail: usize = 0;
+            var handshake_states: []const HandshakeType = &.{.finished};
+            var cert: CertificateParser = .{};
+            if (opt.client_auth) |client_auth| {
+                cert.root_ca = client_auth.root_ca;
+                handshake_states = if (client_auth.auth_type == .require)
+                    &.{.certificate}
+                else
+                    &.{ .certificate, .finished };
+            }
+
+            outer: while (true) {
                 const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+
                 switch (rec.content_type) {
                     .change_cipher_spec => {},
                     .application_data => {
-                        const content_type, const cleartext = try h.cipher.decrypt(h.buffer, 0, rec);
-                        var d = record.Decoder.init(content_type, cleartext);
+                        const content_type, const cleartext = try h.cipher.decrypt(
+                            cleartext_buf[cleartext_buf_tail..],
+                            read_seq,
+                            rec,
+                        );
+                        read_seq += 1;
+                        cleartext_buf_tail += cleartext.len;
+
+                        var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
                         try d.expectContentType(.handshake);
+                        while (!d.eof()) {
+                            const start_idx = d.idx;
+                            const handshake_type = try d.decode(HandshakeType);
+                            const length = try d.decode(u24);
 
-                        const handshake_type = try d.decode(HandshakeType);
-                        const length = try d.decode(u24);
-                        if (handshake_type != .finished) return error.TlsUnexpectedMessage;
+                            if (length > cipher.max_ciphertext_inner_record_len)
+                                return error.TlsUnsupportedFragmentedHandshakeMessage;
+                            if (length > d.rest().len)
+                                continue :outer; // fragmented handshake into multiple records
 
-                        const actual = try d.slice(length);
-                        var buf: [Transcript.max_mac_length]u8 = undefined;
-                        const expected = h.transcript.clientFinishedTLS13(&buf);
-                        if (!mem.eql(u8, expected, actual))
-                            return error.TlsDecryptError;
+                            defer {
+                                const handshake_payload = d.payload[start_idx..d.idx];
+                                h.transcript.update(handshake_payload);
+                                cleartext_buf_head += handshake_payload.len;
+                            }
 
-                        h.transcript.update(cleartext);
-                        return;
+                            brk: {
+                                for (handshake_states) |state|
+                                    if (state == handshake_type) break :brk;
+                                return error.TlsUnexpectedMessage;
+                            }
+
+                            switch (handshake_type) {
+                                .certificate => {
+                                    try cert.parseCertificate(&d);
+                                    handshake_states = &.{.certificate_verify};
+                                },
+                                .certificate_verify => {
+                                    try cert.parseCertificateVerify(&d);
+                                    try cert.verifySignature(h.transcript.clientCertificateVerify());
+                                    handshake_states = &.{.finished};
+                                },
+                                .finished => {
+                                    const actual = try d.slice(length);
+                                    var buf: [Transcript.max_mac_length]u8 = undefined;
+                                    const expected = h.transcript.clientFinishedTLS13(&buf);
+                                    if (!mem.eql(u8, expected, actual))
+                                        return error.TlsDecryptError;
+                                    return;
+                                },
+                                else => return error.TlsUnexpectedMessage,
+                            }
+                        }
+                        cleartext_buf_head = 0;
+                        cleartext_buf_tail = 0;
                     },
                     else => return error.TlsUnexpectedMessage,
                 }
@@ -209,6 +290,34 @@ pub fn Handshake(comptime Stream: type) type {
                 handshakeHeader(.server_hello, payload_len);
 
             return buf[0 .. header_len + payload_len];
+        }
+
+        fn makeCertificateRequest(buf: []u8) ![]const u8 {
+            // handshake header + context length + extensions length
+            const header_len = 4 + 1 + 2;
+
+            // First write extensions, leave space for header.
+            var ext = BufWriter{ .buf = buf[header_len..] };
+            try ext.writeExtension(.signature_algorithms, &[_]tls.SignatureScheme{
+                .ecdsa_secp256r1_sha256,
+                .ecdsa_secp384r1_sha384,
+                .rsa_pss_rsae_sha256,
+                .rsa_pss_rsae_sha384,
+                .rsa_pss_rsae_sha512,
+                .ed25519,
+                .rsa_pkcs1_sha1,
+                .rsa_pkcs1_sha256,
+                .rsa_pkcs1_sha384,
+            });
+
+            var w = BufWriter{ .buf = buf };
+            try w.writeHandshakeHeader(.certificate_request, ext.pos + 3);
+            try w.writeInt(@as(u8, 0)); // certificate request context length = 0
+            try w.writeInt(@as(u16, @intCast(ext.pos))); // extensions length
+            assert(w.pos == header_len);
+            w.pos += ext.pos;
+
+            return w.getWritten();
         }
 
         fn readClientHello(h: *HandshakeT) !void {
@@ -318,7 +427,7 @@ test "read client hello" {
 }
 
 test "make server hello" {
-    var buffer: [1024]u8 = undefined;
+    var buffer: [128]u8 = undefined;
     var h = TestHandshake.init(&buffer, undefined);
     h.cipher_suite = .AES_256_GCM_SHA384;
     testu.fillFrom(&h.server_random, 0);
@@ -338,4 +447,18 @@ test "make server hello" {
         \\ 20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f 30 31 32 33 34 35 36 37 38 39 3a 3b 3c 3d 3e 3f
     );
     try testing.expectEqualSlices(u8, expected, actual);
+}
+
+test "make certificate request" {
+    var buffer: [32]u8 = undefined;
+
+    const expected = testu.hexToBytes("0d 00 00 1b" ++ // handshake header
+        "00 00 18" ++ // extension length
+        "00 0d" ++ // signature algorithms extension
+        "00 14" ++ // extension length
+        "00 12" ++ // list length 6 * 2 bytes
+        "04 03 05 03 08 04 08 05 08 06 08 07 02 01 04 01 05 01" // signature schemes
+    );
+    const actual = try TestHandshake.makeCertificateRequest(&buffer);
+    try testing.expectEqualSlices(u8, &expected, actual);
 }
