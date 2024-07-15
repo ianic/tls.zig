@@ -43,7 +43,7 @@ pub fn Reader(comptime InnerReader: type) type {
                 if (buffer.len >= tls.record_header_len) {
                     const record_header = buffer[0..tls.record_header_len];
                     const payload_len = mem.readInt(u16, record_header[3..5], .big);
-                    if (payload_len > tls.max_ciphertext_len)
+                    if (payload_len > cipher.max_ciphertext_len)
                         return error.TlsRecordOverflow;
                     const record_len = tls.record_header_len + payload_len;
                     // If we have whole record
@@ -72,7 +72,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
         }
 
-        pub fn nextDecrypt(r: *ReaderT, cph: Cipher, cipher_seq: u64) !?struct { tls.ContentType, []const u8 } {
+        pub fn nextDecrypt(r: *ReaderT, cph: *Cipher) !?struct { tls.ContentType, []const u8 } {
             const rec = (try r.next()) orelse return null;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
@@ -84,7 +84,6 @@ pub fn Reader(comptime InnerReader: type) type {
                 // cleartext starts from the beginning of the buffer, so
                 // ciphertext is always ahead of cleartext.
                 r.buffer[0..r.start],
-                cipher_seq,
                 rec,
             );
         }

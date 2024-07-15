@@ -23,10 +23,6 @@ pub fn client(stream: anytype, opt: ClientOptions) !Connection(@TypeOf(stream)) 
     var write_buf: [max_ciphertext_record_len]u8 = undefined;
     var h = HandshakeClient(Stream).init(&write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
-    if (h.tls_version == .tls_1_2) {
-        conn.encrypt_seq = 1;
-        conn.decrypt_seq = 1;
-    }
     return conn;
 }
 

@@ -63,21 +63,17 @@ pub fn Handshake(comptime Stream: type) type {
         legacy_session_id_buf: [32]u8 = undefined,
         legacy_session_id: []u8 = "",
         cipher_suite: CipherSuite = @enumFromInt(0),
-
+        signature_scheme: tls.SignatureScheme = @enumFromInt(0),
         named_group: tls.NamedGroup = @enumFromInt(0),
         client_pub_key_buf: [max_pub_key_len]u8 = undefined,
         client_pub_key: []u8 = "",
         server_pub_key_buf: [max_pub_key_len]u8 = undefined,
         server_pub_key: []u8 = "",
 
-        signature_scheme: tls.SignatureScheme = @enumFromInt(0),
-
+        cipher: Cipher = undefined,
         transcript: Transcript = .{},
         rec_rdr: *RecordReaderT,
         buffer: []u8,
-
-        cipher: Cipher = undefined,
-        write_seq: u64 = 0,
 
         const HandshakeT = @This();
 
@@ -158,14 +154,14 @@ pub fn Handshake(comptime Stream: type) type {
             };
             try stream.writeAll(server_flight);
 
-            const app_cipher = brk: {
+            var app_cipher = brk: {
                 const application_secret = h.transcript.applicationSecret();
                 break :brk try Cipher.initTLS13(h.cipher_suite, application_secret, .server);
             };
 
             h.readClientFlight2(opt) catch |err| {
                 const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
-                const ciphertext = try app_cipher.encrypt(h.buffer, 0, .alert, &cleartext);
+                const ciphertext = try app_cipher.encrypt(h.buffer, .alert, &cleartext);
                 stream.writeAll(ciphertext) catch {};
                 return err;
             };
@@ -204,7 +200,6 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn readClientFlight2(h: *HandshakeT, opt: Options) !void {
-            var read_seq: u64 = 0;
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
@@ -224,10 +219,8 @@ pub fn Handshake(comptime Stream: type) type {
                     .application_data => {
                         const content_type, const cleartext = try h.cipher.decrypt(
                             cleartext_buf[cleartext_buf_tail..],
-                            read_seq,
                             rec,
                         );
-                        read_seq += 1;
                         cleartext_buf_tail += cleartext.len;
 
                         var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
@@ -297,9 +290,8 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Write encrypted handshake message into `w`
         fn writeEncrypted(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
-            const ciphertext = try h.cipher.encrypt(w.getFree(), h.write_seq, .handshake, cleartext);
+            const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
             w.pos += ciphertext.len;
-            h.write_seq += 1;
         }
 
         fn makeServerHello(h: *HandshakeT, buf: []u8) ![]const u8 {

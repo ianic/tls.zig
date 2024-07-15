@@ -19,10 +19,8 @@ pub fn Connection(comptime Stream: type) type {
     return struct {
         stream: Stream, // underlying stream
         rec_rdr: record.Reader(Stream),
-
         cipher: Cipher = undefined,
-        encrypt_seq: u64 = 0,
-        decrypt_seq: u64 = 0,
+
         max_encrypt_seq: u64 = std.math.maxInt(u64),
         key_update_requested: bool = false,
 
@@ -37,7 +35,7 @@ pub fn Connection(comptime Stream: type) type {
             var write_buf: [cipher.max_ciphertext_record_len]u8 = undefined;
             // If key update is requested send key update message and update
             // my encryption keys.
-            if (c.encrypt_seq >= c.max_encrypt_seq or @atomicLoad(bool, &c.key_update_requested, .monotonic)) {
+            if (c.cipher.encryptSeq() >= c.max_encrypt_seq or @atomicLoad(bool, &c.key_update_requested, .monotonic)) {
                 @atomicStore(bool, &c.key_update_requested, false, .monotonic);
 
                 // If the request_update field is set to "update_requested",
@@ -50,13 +48,11 @@ pub fn Connection(comptime Stream: type) type {
                 //
                 // rfc: https://datatracker.ietf.org/doc/html/rfc8446#autoid-57
                 const key_update = &handshakeHeader(.key_update, 1) ++ [_]u8{0};
-                const rec = try c.cipher.encrypt(&write_buf, c.encrypt_seq, .handshake, key_update);
+                const rec = try c.cipher.encrypt(&write_buf, .handshake, key_update);
                 try c.stream.writeAll(rec);
                 try c.cipher.keyUpdateEncrypt();
-                c.encrypt_seq = 0;
             }
-            const rec = try c.cipher.encrypt(&write_buf, c.encrypt_seq, content_type, bytes);
-            c.encrypt_seq += 1;
+            const rec = try c.cipher.encrypt(&write_buf, content_type, bytes);
             try c.stream.writeAll(rec);
         }
 
@@ -72,8 +68,7 @@ pub fn Connection(comptime Stream: type) type {
         fn nextRecord(c: *Self) ReadError!?struct { tls.ContentType, []const u8 } {
             if (c.eof()) return null;
             while (true) {
-                const content_type, const cleartext = try c.rec_rdr.nextDecrypt(c.cipher, c.decrypt_seq) orelse return null;
-                c.decrypt_seq +%= 1;
+                const content_type, const cleartext = try c.rec_rdr.nextDecrypt(&c.cipher) orelse return null;
 
                 switch (content_type) {
                     .application_data => {},
@@ -87,7 +82,6 @@ pub fn Connection(comptime Stream: type) type {
                                 // rfc: Upon receiving a KeyUpdate, the receiver MUST
                                 // update its receiving keys.
                                 try c.cipher.keyUpdateDecrypt();
-                                c.decrypt_seq = 0;
                                 const key: tls.KeyUpdateRequest = @enumFromInt(cleartext[4]);
                                 switch (key) {
                                     .update_requested => {
@@ -242,7 +236,6 @@ test "encrypt decrypt" {
 
     conn.stream.output.reset();
     { // encrypt verify data from example
-        conn.encrypt_seq = 0; //
         _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
         try conn.writeRecord(.handshake, &data12.client_finished);
         try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, conn.stream.output.getWritten());
@@ -252,24 +245,24 @@ test "encrypt decrypt" {
     { // encrypt ping
         const cleartext = "ping";
         _ = testu.random(0); // sets iv to 00, 01, ... 0f
-        conn.encrypt_seq = 1;
+        //conn.encrypt_seq = 1;
 
         try conn.writeAll(cleartext);
         try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.stream.output.getWritten());
     }
     { // decrypt server pong message
-        conn.decrypt_seq = 1;
+        conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
         try testing.expectEqualStrings("pong", (try conn.next()).?);
     }
     { // test reader interface
-        conn.decrypt_seq = 1;
+        conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
         var rdr = conn.reader();
         var buffer: [4]u8 = undefined;
         const n = try rdr.readAll(&buffer);
         try testing.expectEqualStrings("pong", buffer[0..n]);
     }
     { // test readv interface
-        conn.decrypt_seq = 1;
+        conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
         var buffer: [9]u8 = undefined;
         var iovecs = [_]std.posix.iovec{
             .{ .base = &buffer, .len = 3 },

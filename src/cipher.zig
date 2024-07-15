@@ -159,25 +159,29 @@ pub const Cipher = union(CipherSuite) {
     }
 
     pub fn encrypt(
-        c: Cipher,
+        c: *Cipher,
         buf: []u8,
-        seq: u64,
         content_type: tls.ContentType,
         cleartext: []const u8,
     ) ![]const u8 {
-        return switch (c) {
-            inline else => |f| try f.encrypt(buf, seq, content_type, cleartext),
+        return switch (c.*) {
+            inline else => |*f| try f.encrypt(buf, content_type, cleartext),
         };
     }
 
     pub fn decrypt(
-        c: Cipher,
+        c: *Cipher,
         buf: []u8,
-        seq: u64,
         rec: Record,
     ) !struct { tls.ContentType, []u8 } {
+        return switch (c.*) {
+            inline else => |*f| try f.decrypt(buf, rec),
+        };
+    }
+
+    pub fn encryptSeq(c: Cipher) u64 {
         return switch (c) {
-            inline else => |f| try f.decrypt(buf, seq, rec),
+            inline else => |f| f.encrypt_seq,
         };
     }
 
@@ -218,6 +222,8 @@ fn Aead12Type(comptime AeadType: type) type {
         decrypt_key: [key_len]u8,
         encrypt_iv: [iv_len]u8,
         decrypt_iv: [iv_len]u8,
+        encrypt_seq: u64 = 0,
+        decrypt_seq: u64 = 0,
         rnd: std.Random = crypto.random,
 
         const Self = @This();
@@ -244,9 +250,8 @@ fn Aead12Type(comptime AeadType: type) type {
         /// ciphertext: same length as cleartext
         /// auth_tag: 16 bytes
         pub fn encrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) ![]const u8 {
@@ -261,8 +266,9 @@ fn Aead12Type(comptime AeadType: type) type {
             header.* = recordHeader(content_type, explicit_iv_len + cleartext.len + auth_tag_len);
             self.rnd.bytes(explicit_iv);
             const iv = self.encrypt_iv ++ explicit_iv.*;
-            const ad = additionalData(seq, content_type, cleartext.len);
+            const ad = additionalData(self.encrypt_seq, content_type, cleartext.len);
             AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, self.encrypt_key);
+            self.encrypt_seq +%= 1;
 
             return buf[0..record_len];
         }
@@ -273,9 +279,8 @@ fn Aead12Type(comptime AeadType: type) type {
         ///   header | ----------- payload ---------------
         ///   header | explicit_iv | ciphertext | auth_tag
         pub fn decrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             rec: Record,
         ) !struct { tls.ContentType, []u8 } {
             const overhead = explicit_iv_len + auth_tag_len;
@@ -288,10 +293,10 @@ fn Aead12Type(comptime AeadType: type) type {
             const auth_tag = rec.payload[explicit_iv_len + cleartext_len ..][0..auth_tag_len];
 
             const iv = self.decrypt_iv ++ explicit_iv.*;
-            const ad = additionalData(seq, rec.content_type, cleartext_len);
+            const ad = additionalData(self.decrypt_seq, rec.content_type, cleartext_len);
             const cleartext = buf[0..cleartext_len];
             AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.decrypt_key) catch return error.TlsDecryptError;
-
+            self.decrypt_seq +%= 1;
             return .{ rec.content_type, cleartext };
         }
     };
@@ -308,6 +313,8 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
         decrypt_key: [key_len]u8,
         encrypt_iv: [nonce_len]u8,
         decrypt_iv: [nonce_len]u8,
+        encrypt_seq: u64 = 0,
+        decrypt_seq: u64 = 0,
 
         const Self = @This();
 
@@ -332,9 +339,8 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
         /// ciphertext: same length as cleartext
         /// auth_tag: 16 bytes
         pub fn encrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) ![]const u8 {
@@ -344,9 +350,10 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             const ciphertext = buf[tls.record_header_len..][0..cleartext.len];
             const auth_tag = buf[tls.record_header_len + ciphertext.len ..][0..auth_tag_len];
 
-            const ad = additionalData(seq, content_type, cleartext.len);
-            const iv = ivWithSeq(nonce_len, self.encrypt_iv, seq);
+            const ad = additionalData(self.encrypt_seq, content_type, cleartext.len);
+            const iv = ivWithSeq(nonce_len, self.encrypt_iv, self.encrypt_seq);
             AeadType.encrypt(ciphertext, auth_tag, cleartext, &ad, iv, self.encrypt_key);
+            self.encrypt_seq +%= 1;
 
             buf[0..tls.record_header_len].* = recordHeader(content_type, ciphertext.len + auth_tag.len);
             return buf[0..record_len];
@@ -358,9 +365,8 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
         ///   header | ----- payload -------
         ///   header | ciphertext | auth_tag
         pub fn decrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             rec: Record,
         ) !struct { tls.ContentType, []u8 } {
             const overhead = auth_tag_len;
@@ -372,9 +378,10 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             const auth_tag = rec.payload[cleartext_len..][0..auth_tag_len];
             const cleartext = buf[0..cleartext_len];
 
-            const ad = additionalData(seq, rec.content_type, cleartext_len);
-            const iv = ivWithSeq(nonce_len, self.decrypt_iv, seq);
+            const ad = additionalData(self.decrypt_seq, rec.content_type, cleartext_len);
+            const iv = ivWithSeq(nonce_len, self.decrypt_iv, self.decrypt_seq);
             AeadType.decrypt(cleartext, ciphertext, auth_tag.*, &ad, iv, self.decrypt_key) catch return error.TlsDecryptError;
+            self.decrypt_seq +%= 1;
             return .{ rec.content_type, cleartext };
         }
     };
@@ -397,6 +404,8 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
         decrypt_key: [key_len]u8,
         encrypt_iv: [nonce_len]u8,
         decrypt_iv: [nonce_len]u8,
+        encrypt_seq: u64 = 0,
+        decrypt_seq: u64 = 0,
 
         const Self = @This();
 
@@ -422,11 +431,13 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
 
         pub fn keyUpdateEncrypt(self: *Self) void {
             self.encrypt_secret = hkdfExpandLabel(Hkdf, self.encrypt_secret, "traffic upd", "", digest_len);
+            self.encrypt_seq = 0;
             self.keyGenerate();
         }
 
         pub fn keyUpdateDecrypt(self: *Self) void {
             self.decrypt_secret = hkdfExpandLabel(Hkdf, self.decrypt_secret, "traffic upd", "", digest_len);
+            self.decrypt_seq = 0;
             self.keyGenerate();
         }
 
@@ -438,9 +449,8 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
         /// ciphertext: cleartext len + 1 byte content type
         /// auth_tag: 16 bytes
         pub fn encrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) ![]const u8 {
@@ -459,8 +469,9 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             const ciphertext = buf[tls.record_header_len..][0 .. cleartext.len + 1];
             const auth_tag = buf[tls.record_header_len + ciphertext.len ..][0..auth_tag_len];
 
-            const iv = ivWithSeq(nonce_len, self.encrypt_iv, seq);
+            const iv = ivWithSeq(nonce_len, self.encrypt_iv, self.encrypt_seq);
             AeadType.encrypt(ciphertext, auth_tag, ciphertext, header, iv, self.encrypt_key);
+            self.encrypt_seq +%= 1;
             return buf[0..record_len];
         }
 
@@ -472,9 +483,8 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
         ///   header | cleartext + ct | auth_tag
         /// Ciphertext after decryption contains cleartext and content type (1 byte).
         pub fn decrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             rec: Record,
         ) !struct { tls.ContentType, []u8 } {
             const overhead = auth_tag_len + 1;
@@ -485,7 +495,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             const ciphertext = rec.payload[0..ciphertext_len];
             const auth_tag = rec.payload[ciphertext_len..][0..auth_tag_len];
 
-            const iv = ivWithSeq(nonce_len, self.decrypt_iv, seq);
+            const iv = ivWithSeq(nonce_len, self.decrypt_iv, self.decrypt_seq);
             AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.decrypt_key) catch return error.TlsDecryptError;
 
             // Remove zero bytes padding
@@ -494,6 +504,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
 
             const cleartext = buf[0..content_type_idx];
             const content_type: tls.ContentType = @enumFromInt(buf[content_type_idx]);
+            self.decrypt_seq +%= 1;
             return .{ content_type, cleartext };
         }
     };
@@ -515,6 +526,8 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
         decrypt_secret: [mac_len]u8,
         encrypt_key: [key_len]u8,
         decrypt_key: [key_len]u8,
+        encrypt_seq: u64 = 0,
+        decrypt_seq: u64 = 0,
         rnd: std.Random = crypto.random,
 
         const Self = @This();
@@ -548,9 +561,8 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
         /// aes_128_cbc_sha256 => 16 + 32 + 16 = 64
         /// aes_256_cbc_sha384 => 16 + 48 + 16 = 80
         pub fn encrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             content_type: tls.ContentType,
             cleartext: []const u8,
         ) ![]const u8 {
@@ -562,11 +574,12 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             { // calculate mac from (ad + cleartext)
                 // ...     | ad | cleartext | mac | ...
                 //         | -- mac msg --  | mac |
-                const ad = additionalData(seq, content_type, cleartext.len);
+                const ad = additionalData(self.encrypt_seq, content_type, cleartext.len);
                 const mac_msg = buf[cleartext_idx - ad.len ..][0 .. ad.len + cleartext.len];
                 @memcpy(mac_msg[0..ad.len], &ad);
                 const mac = buf[cleartext_idx + cleartext.len ..][0..mac_len];
                 Hmac.create(mac, mac_msg, &self.encrypt_secret);
+                self.encrypt_seq +%= 1;
             }
 
             // ...         | cleartext | mac |  ...
@@ -594,9 +607,8 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
         /// Decrypts payload into cleartext. Returns tls record content type and
         /// cleartext.
         pub fn decrypt(
-            self: Self,
+            self: *Self,
             buf: []u8,
-            seq: u64,
             rec: Record,
         ) !struct { tls.ContentType, []u8 } {
             if (rec.payload.len < iv_len + mac_len + 1) return error.TlsDecryptError;
@@ -624,9 +636,10 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             const mac = plaintext[cleartext_len..][0..mac_len];
 
             // write ad to the buf
-            var ad = additionalData(seq, rec.content_type, cleartext_len);
+            var ad = additionalData(self.decrypt_seq, rec.content_type, cleartext_len);
             @memcpy(buf[0..ad.len], &ad);
             const mac_msg = buf[0 .. ad.len + cleartext_len];
+            self.decrypt_seq +%= 1;
 
             // calculate expected mac and compare with received mac
             var expected_mac: [mac_len]u8 = undefined;
@@ -919,15 +932,15 @@ test "client/server encryption tls 1.3" {
         };
         var client_cipher = try Cipher.initTLS13(cs, secret, .client);
         var server_cipher = try Cipher.initTLS13(cs, secret, .server);
-        try encryptDecrypt(client_cipher, server_cipher);
+        try encryptDecrypt(&client_cipher, &server_cipher);
 
         try client_cipher.keyUpdateEncrypt();
         try server_cipher.keyUpdateDecrypt();
-        try encryptDecrypt(client_cipher, server_cipher);
+        try encryptDecrypt(&client_cipher, &server_cipher);
 
         try client_cipher.keyUpdateDecrypt();
         try server_cipher.keyUpdateEncrypt();
-        try encryptDecrypt(client_cipher, server_cipher);
+        try encryptDecrypt(&client_cipher, &server_cipher);
     }
 }
 
@@ -935,13 +948,13 @@ test "client/server encryption tls 1.2" {
     inline for (cipher_suites.tls12) |cs| {
         var key_material: [256]u8 = undefined;
         testu.fill(&key_material);
-        const client_cipher = try Cipher.initTLS12(cs, &key_material, .client);
-        const server_cipher = try Cipher.initTLS12(cs, &key_material, .server);
-        try encryptDecrypt(client_cipher, server_cipher);
+        var client_cipher = try Cipher.initTLS12(cs, &key_material, .client);
+        var server_cipher = try Cipher.initTLS12(cs, &key_material, .server);
+        try encryptDecrypt(&client_cipher, &server_cipher);
     }
 }
 
-fn encryptDecrypt(client_cipher: Cipher, server_cipher: Cipher) !void {
+fn encryptDecrypt(client_cipher: *Cipher, server_cipher: *Cipher) !void {
     const cleartext =
         \\ Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
         \\ eiusmod tempor incididunt ut labore et dolore magna aliqua.
@@ -949,10 +962,9 @@ fn encryptDecrypt(client_cipher: Cipher, server_cipher: Cipher) !void {
     var buf: [256]u8 = undefined;
 
     { // client to server
-        const seq: u64 = 1234;
         // encrypt
-        const encrypted = try client_cipher.encrypt(&buf, seq, .application_data, cleartext);
-        const expected_encrypted_len = switch (client_cipher) {
+        const encrypted = try client_cipher.encrypt(&buf, .application_data, cleartext);
+        const expected_encrypted_len = switch (client_cipher.*) {
             inline else => |f| brk: {
                 const T = @TypeOf(f);
                 break :brk switch (T) {
@@ -975,15 +987,14 @@ fn encryptDecrypt(client_cipher: Cipher, server_cipher: Cipher) !void {
         };
         try testing.expectEqual(expected_encrypted_len, encrypted.len);
         // decrypt
-        const content_type, const decrypted = try server_cipher.decrypt(&buf, seq, Record.init(encrypted));
+        const content_type, const decrypted = try server_cipher.decrypt(&buf, Record.init(encrypted));
         try testing.expectEqualSlices(u8, cleartext, decrypted);
         try testing.expectEqual(.application_data, content_type);
     }
     // server to client
     {
-        const seq = 5678;
-        const encrypted = try server_cipher.encrypt(&buf, seq, .application_data, cleartext);
-        const content_type, const decrypted = try client_cipher.decrypt(&buf, seq, Record.init(encrypted));
+        const encrypted = try server_cipher.encrypt(&buf, .application_data, cleartext);
+        const content_type, const decrypted = try client_cipher.decrypt(&buf, Record.init(encrypted));
         try testing.expectEqualSlices(u8, cleartext, decrypted);
         try testing.expectEqual(.application_data, content_type);
     }

@@ -93,7 +93,6 @@ pub fn Handshake(comptime Stream: type) type {
         rsa_secret: RsaSecret,
         tls_version: tls.ProtocolVersion = .tls_1_2,
         cipher: Cipher = undefined,
-        write_seq: u64 = 0,
         cert: CertificateParser = undefined,
         client_certificate_requested: bool = false,
         // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_kyber768d00 = 1120
@@ -459,7 +458,6 @@ pub fn Handshake(comptime Stream: type) type {
         /// for TLS 1.3: change cipher spec, eventual certificate request,
         /// certificate, certificate verify and handshake finished messages.
         fn readEncryptedServerFlight1(h: *HandshakeT) !void {
-            var sequence: u64 = 0;
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
@@ -475,11 +473,8 @@ pub fn Handshake(comptime Stream: type) type {
                     .application_data => {
                         const content_type, const cleartext = try h.cipher.decrypt(
                             cleartext_buf[cleartext_buf_tail..],
-                            sequence,
                             rec,
                         );
-
-                        sequence += 1;
                         cleartext_buf_tail += cleartext.len;
 
                         var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
@@ -704,7 +699,7 @@ pub fn Handshake(comptime Stream: type) type {
             // hash and master secret.
             {
                 const content_type, const server_finished =
-                    try h.rec_rdr.nextDecrypt(h.cipher, 0) orelse return error.EndOfStream;
+                    try h.rec_rdr.nextDecrypt(&h.cipher) orelse return error.EndOfStream;
                 if (content_type != .handshake)
                     return error.TlsUnexpectedMessage;
                 const expected = handshakeHeader(.finished, 12) ++ h.transcript.serverFinishedTLS12(&h.master_secret);
@@ -715,9 +710,8 @@ pub fn Handshake(comptime Stream: type) type {
 
         /// Write encrypted handshake message into `w`
         fn writeEncrypted(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
-            const ciphertext = try h.cipher.encrypt(w.getFree(), h.write_seq, .handshake, cleartext);
+            const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
             w.pos += ciphertext.len;
-            h.write_seq += 1;
         }
 
         // Copy handshake parameters to opt.diagnostic
@@ -878,17 +872,15 @@ test "tls 1.3 decrypt wrapped record" {
     var cleartext_buf: [1024]u8 = undefined;
     {
         const rec = record.Record.init(&data13.server_encrypted_extensions_wrapped);
-        const sequence: u64 = 0;
 
-        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, sequence, rec);
+        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_encrypted_extensions, cleartext);
     }
     {
         const rec = record.Record.init(&data13.server_certificate_wrapped);
-        const sequence: u64 = 1;
 
-        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, sequence, rec);
+        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_certificate, cleartext);
     }
@@ -908,21 +900,21 @@ test "tls 1.3 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        const cph = try Cipher.initTLS13(h.cipher_suite, h.transcript.applicationSecret(), .client);
+        var cph = try Cipher.initTLS13(h.cipher_suite, h.transcript.applicationSecret(), .client);
         const c = &cph.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &data13.server_application_key, &c.decrypt_key);
         try testing.expectEqualSlices(u8, &data13.client_application_key, &c.encrypt_key);
         try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.decrypt_iv);
         try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.encrypt_iv);
 
-        const encrypted = try cph.encrypt(&buffer, 0, .application_data, "ping");
+        const encrypted = try cph.encrypt(&buffer, .application_data, "ping");
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
         var buf: [4 + Transcript.max_mac_length]u8 = undefined;
         const client_finished = try h.makeClientFinishedTLS13(&buf);
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
-        const encrypted = try h.cipher.encrypt(&buffer, 0, .handshake, client_finished);
+        const encrypted = try h.cipher.encrypt(&buffer, .handshake, client_finished);
         try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, encrypted);
     }
 }
