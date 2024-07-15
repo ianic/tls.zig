@@ -21,7 +21,7 @@ pub fn Connection(comptime Stream: type) type {
         rec_rdr: record.Reader(Stream),
         cipher: Cipher = undefined,
 
-        max_encrypt_seq: u64 = std.math.maxInt(u64),
+        max_encrypt_seq: u64 = std.math.maxInt(u64) - 1,
         key_update_requested: bool = false,
 
         read_buf: []const u8 = "",
