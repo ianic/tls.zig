@@ -40,6 +40,16 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    const integration_tests = b.addTest(.{
+        .root_source_file = b.path("example/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    integration_tests.root_module.addImport("tls", tls_module);
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    const integration_test_step = b.step("integration", "Run integration tests");
+    integration_test_step.dependOn(&run_integration_tests.step);
 }
 
 // Copied from: https://github.com/karlseguin/mqttz/blob/master/build.zig
