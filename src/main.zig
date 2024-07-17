@@ -16,6 +16,7 @@ const connection = @import("connection.zig").connection;
 const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
 const HandshakeServer = @import("handshake_server.zig").Handshake;
 const HandshakeClient = @import("handshake_client.zig").Handshake;
+const Certificate = std.crypto.Certificate;
 
 pub fn client(stream: anytype, opt: ClientOptions) !Connection(@TypeOf(stream)) {
     const Stream = @TypeOf(stream);
@@ -33,6 +34,23 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
     var h = HandshakeServer(Stream).init(&write_buf, &conn.rec_rdr);
     conn.cipher = try h.handshake(conn.stream, opt);
     return conn;
+}
+
+pub fn loadX509KeyPair(
+    allocator: std.mem.Allocator,
+    dir: std.fs.Dir,
+    cert_path: []const u8,
+    key_path: []const u8,
+) !struct { Certificate.Bundle, PrivateKey } {
+    var cert: Certificate.Bundle = .{};
+
+    try cert.addCertsFromFilePath(allocator, dir, cert_path);
+
+    const key_file = try dir.openFile(key_path, .{});
+    const key = try PrivateKey.fromFile(allocator, key_file);
+    key_file.close();
+
+    return .{ cert, key };
 }
 
 test {

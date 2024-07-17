@@ -55,7 +55,7 @@ pub fn Handshake(comptime Stream: type) type {
     const RecordReaderT = record.Reader(Stream);
     return struct {
         // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97
-        const max_pub_key_len = 97;
+        const max_pub_key_len = 98;
         const supported_named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
 
         server_random: [32]u8 = undefined,
@@ -84,6 +84,18 @@ pub fn Handshake(comptime Stream: type) type {
             };
         }
 
+        fn writeAlert(h: *HandshakeT, stream: Stream, cph: ?*Cipher, err: anyerror) !void {
+            if (cph) |c| {
+                const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+                const ciphertext = try c.encrypt(h.buffer, .alert, &cleartext);
+                stream.writeAll(ciphertext) catch {};
+            } else {
+                const alert = recordHeader(.alert, 2) ++
+                    [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+                stream.writeAll(&alert) catch {};
+            }
+        }
+
         pub fn handshake(h: *HandshakeT, stream: Stream, opt: Options) !Cipher {
             if (opt.auth) |a| {
                 // required signature scheme in client hello
@@ -91,21 +103,17 @@ pub fn Handshake(comptime Stream: type) type {
             }
 
             h.readClientHello() catch |err| {
-                const alert = recordHeader(.alert, 2) ++
-                    [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
-                stream.writeAll(&alert) catch {};
+                try h.writeAlert(stream, null, err);
+                return err;
             };
             h.transcript.use(h.cipher_suite.hash());
 
             const server_flight = brk: {
                 var w = BufWriter{ .buf = h.buffer };
 
-                const shared_key = sk_brk: {
-                    var seed: [DhKeyPair.seed_len]u8 = undefined;
-                    crypto.random.bytes(&seed);
-                    var kp = try DhKeyPair.init(seed, supported_named_groups);
-                    h.server_pub_key = dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
-                    break :sk_brk try kp.sharedKey(h.named_group, h.client_pub_key);
+                const shared_key = h.sharedKey() catch |err| {
+                    try h.writeAlert(stream, null, err);
+                    return err;
                 };
                 {
                     const hello = try h.makeServerHello(w.getFree());
@@ -160,12 +168,18 @@ pub fn Handshake(comptime Stream: type) type {
             };
 
             h.readClientFlight2(opt) catch |err| {
-                const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
-                const ciphertext = try app_cipher.encrypt(h.buffer, .alert, &cleartext);
-                stream.writeAll(ciphertext) catch {};
+                try h.writeAlert(stream, &app_cipher, err);
                 return err;
             };
             return app_cipher;
+        }
+
+        inline fn sharedKey(h: *HandshakeT) ![]const u8 {
+            var seed: [DhKeyPair.seed_len]u8 = undefined;
+            crypto.random.bytes(&seed);
+            var kp = try DhKeyPair.init(seed, supported_named_groups);
+            h.server_pub_key = dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
+            return try kp.sharedKey(h.named_group, h.client_pub_key);
         }
 
         fn errorToAlert(err: anyerror) tls.AlertDescription {
@@ -179,7 +193,10 @@ pub fn Handshake(comptime Stream: type) type {
                 error.TlsCertificateRevoked => .certificate_revoked,
                 error.TlsCertificateExpired => .certificate_expired,
                 error.TlsCertificateUnknown => .certificate_unknown,
-                error.TlsIllegalParameter => .illegal_parameter,
+                error.TlsIllegalParameter,
+                error.IdentityElement,
+                error.InvalidEncoding,
+                => .illegal_parameter,
                 error.TlsUnknownCa => .unknown_ca,
                 error.TlsAccessDenied => .access_denied,
                 error.TlsDecodeError => .decode_error,
@@ -267,7 +284,10 @@ pub fn Handshake(comptime Stream: type) type {
                                     var buf: [Transcript.max_mac_length]u8 = undefined;
                                     const expected = h.transcript.clientFinishedTLS13(&buf);
                                     if (!mem.eql(u8, expected, actual))
-                                        return error.TlsDecryptError;
+                                        return if (expected.len == actual.len)
+                                            error.TlsDecryptError
+                                        else
+                                            error.TlsDecodeError;
                                     return;
                                 },
                                 else => return error.TlsUnexpectedMessage,
@@ -394,6 +414,7 @@ pub fn Handshake(comptime Stream: type) type {
             while (d.idx < extensions_end_idx) {
                 const extension_type = try d.decode(tls.ExtensionType);
                 const extension_len = try d.decode(u16);
+                //std.debug.print("extension: {} {}\n", .{ extension_type, extension_len });
 
                 switch (extension_type) {
                     .supported_versions => {
@@ -441,6 +462,9 @@ pub fn Handshake(comptime Stream: type) type {
                     },
                 }
             }
+
+            if (@intFromEnum(h.named_group) == 0)
+                return error.TlsIllegalParameter;
         }
     };
 }

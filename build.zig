@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
         "all_ciphers",
         "client_auth",
         "client_std",
+        "fuzz_server",
     };
     inline for (examples) |name| {
         const source_file = "example/" ++ name ++ ".zig";
