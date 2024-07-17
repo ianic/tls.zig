@@ -395,17 +395,17 @@ pub fn Handshake(comptime Stream: type) type {
             }
             { // cipher suites
                 const end_idx = try d.decode(u16) + d.idx;
+
                 while (d.idx < end_idx) {
                     const cipher_suite = try d.decode(CipherSuite);
-                    if (@intFromEnum(h.cipher_suite) == 0 and
-                        cipher_suites.includes(cipher_suites.tls13, cipher_suite))
+                    if (cipher_suites.includes(cipher_suites.tls13, cipher_suite) and
+                        @intFromEnum(h.cipher_suite) == 0)
                     {
                         h.cipher_suite = cipher_suite;
                     }
                 }
-                if (@intFromEnum(h.cipher_suite) == 0) {
-                    return error.TlsIllegalParameter;
-                }
+                if (@intFromEnum(h.cipher_suite) == 0)
+                    return error.TlsHandshakeFailure;
             }
             try d.skip(2); // compression methods
 
