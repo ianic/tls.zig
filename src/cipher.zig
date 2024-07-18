@@ -44,13 +44,13 @@ pub const encrypt_overhead_tls_13: comptime_int = @max(
     Aegis128Sha256.encrypt_overhead,
 );
 
-pub const max_ciphertext_inner_record_len = 1 << 14;
-pub const max_ciphertext_record_len_tls_13 =
-    max_ciphertext_inner_record_len + tls.record_header_len + encrypt_overhead_tls_13;
-pub const max_ciphertext_len =
-    max_ciphertext_inner_record_len + @max(encrypt_overhead_tls_13, encrypt_overhead_tls_12);
-pub const max_ciphertext_record_len =
-    tls.record_header_len + max_ciphertext_len;
+// ref (length): https://www.rfc-editor.org/rfc/rfc8446#section-5.1
+pub const max_cleartext_len = 1 << 14;
+// ref (length): https://www.rfc-editor.org/rfc/rfc8446#section-5.2
+// The sum of the lengths of the content and the padding, plus one for the inner
+// content type, plus any expansion added by the AEAD algorithm.
+pub const max_ciphertext_len = max_cleartext_len + 256;
+pub const max_ciphertext_record_len = tls.record_header_len + max_ciphertext_len;
 
 /// Returns type for cipher suite tag.
 fn CipherType(comptime tag: CipherSuite) type {
@@ -175,7 +175,11 @@ pub const Cipher = union(CipherSuite) {
         rec: Record,
     ) !struct { tls.ContentType, []u8 } {
         return switch (c.*) {
-            inline else => |*f| try f.decrypt(buf, rec),
+            inline else => |*f| {
+                const content_type, const cleartext = try f.decrypt(buf, rec);
+                if (cleartext.len > max_cleartext_len) return error.TlsRecordOverflow;
+                return .{ content_type, cleartext };
+            },
         };
     }
 

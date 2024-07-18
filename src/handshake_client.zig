@@ -348,7 +348,7 @@ pub fn Handshake(comptime Stream: type) type {
                     const handshake_type = try d.decode(HandshakeType);
 
                     const length = try d.decode(u24);
-                    if (length > cipher.max_ciphertext_inner_record_len)
+                    if (length > cipher.max_cleartext_len)
                         return error.TlsUnsupportedFragmentedHandshakeMessage;
 
                     brk: {
@@ -476,6 +476,7 @@ pub fn Handshake(comptime Stream: type) type {
                             rec,
                         );
                         cleartext_buf_tail += cleartext.len;
+                        if (cleartext_buf_tail > cleartext.len) return error.TlsRecordOverflow;
 
                         var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
                         try d.expectContentType(.handshake);
@@ -485,7 +486,7 @@ pub fn Handshake(comptime Stream: type) type {
                             const length = try d.decode(u24);
 
                             // std.debug.print("handshake loop: {} {} {} {}\n", .{ handshake_type, length, d.payload.len, d.idx });
-                            if (length > cipher.max_ciphertext_inner_record_len)
+                            if (length > cipher.max_cleartext_len)
                                 return error.TlsUnsupportedFragmentedHandshakeMessage;
                             if (length > d.rest().len)
                                 continue :outer; // fragmented handshake into multiple records

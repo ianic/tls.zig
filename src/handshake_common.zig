@@ -555,3 +555,37 @@ test "DhKeyPair.x25519" {
     const kp = try DhKeyPair.init(seed, &.{.x25519});
     try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
 }
+
+pub fn errorToAlert(err: anyerror) tls.AlertDescription {
+    return switch (err) {
+        error.TlsUnexpectedMessage => .unexpected_message,
+        error.TlsBadRecordMac => .bad_record_mac,
+        error.TlsRecordOverflow => .record_overflow,
+        error.TlsHandshakeFailure => .handshake_failure,
+        error.TlsBadCertificate => .bad_certificate,
+        error.TlsUnsupportedCertificate => .unsupported_certificate,
+        error.TlsCertificateRevoked => .certificate_revoked,
+        error.TlsCertificateExpired => .certificate_expired,
+        error.TlsCertificateUnknown => .certificate_unknown,
+        error.TlsIllegalParameter,
+        error.IdentityElement,
+        error.InvalidEncoding,
+        => .illegal_parameter,
+        error.TlsUnknownCa => .unknown_ca,
+        error.TlsAccessDenied => .access_denied,
+        error.TlsDecodeError => .decode_error,
+        error.TlsDecryptError => .decrypt_error,
+        error.TlsProtocolVersion => .protocol_version,
+        error.TlsInsufficientSecurity => .insufficient_security,
+        error.TlsInternalError => .internal_error,
+        error.TlsInappropriateFallback => .inappropriate_fallback,
+        error.TlsMissingExtension => .missing_extension,
+        error.TlsUnsupportedExtension => .unsupported_extension,
+        error.TlsUnrecognizedName => .unrecognized_name,
+        error.TlsBadCertificateStatusResponse => .bad_certificate_status_response,
+        error.TlsUnknownPskIdentity => .unknown_psk_identity,
+        error.TlsCertificateRequired => .certificate_required,
+        error.TlsNoApplicationProtocol => .no_application_protocol,
+        else => .internal_error,
+    };
+}

@@ -7,6 +7,7 @@ const cipher = @import("cipher.zig");
 const Cipher = cipher.Cipher;
 const HandshakeType = @import("handshake_common.zig").HandshakeType;
 const handshakeHeader = @import("handshake_common.zig").handshakeHeader;
+const errorToAlert = @import("handshake_common.zig").errorToAlert;
 
 pub fn connection(stream: anytype) Connection(@TypeOf(stream)) {
     return .{
@@ -31,7 +32,7 @@ pub fn Connection(comptime Stream: type) type {
 
         /// Encrypts and writes single tls record to the stream.
         fn writeRecord(c: *Self, content_type: tls.ContentType, bytes: []const u8) !void {
-            assert(bytes.len <= cipher.max_ciphertext_inner_record_len);
+            assert(bytes.len <= cipher.max_cleartext_len);
             var write_buf: [cipher.max_ciphertext_record_len]u8 = undefined;
             // If key update is requested send key update message and update
             // my encryption keys.
@@ -56,11 +57,21 @@ pub fn Connection(comptime Stream: type) type {
             try c.stream.writeAll(rec);
         }
 
+        fn writeAlert(c: *Self, err: anyerror) !void {
+            const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+            var buf: [128]u8 = undefined;
+            const ciphertext = try c.cipher.encrypt(&buf, .alert, &cleartext);
+            c.stream.writeAll(ciphertext) catch {};
+        }
+
         /// Returns next record of cleartext data.
         /// Can be used in iterator like loop without memcpy to another buffer:
         ///   while (try client.next()) |buf| { ... }
         pub fn next(c: *Self) ReadError!?[]const u8 {
-            const content_type, const data = try c.nextRecord() orelse return null;
+            const content_type, const data = c.nextRecord() catch |err| {
+                try c.writeAlert(err);
+                return err;
+            } orelse return null;
             if (content_type != .application_data) return error.TlsUnexpectedMessage;
             return data;
         }
@@ -158,7 +169,7 @@ pub fn Connection(comptime Stream: type) type {
         /// tls record. Max single tls record payload length is 1<<14 (16K)
         /// bytes.
         pub fn write(c: *Self, bytes: []const u8) WriteError!usize {
-            const n = @min(bytes.len, cipher.max_ciphertext_inner_record_len);
+            const n = @min(bytes.len, cipher.max_cleartext_len);
             try c.writeRecord(.application_data, bytes[0..n]);
             return n;
         }
@@ -362,7 +373,7 @@ test "client/server connection" {
     };
 
     const buf_len = 32 * 1024;
-    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, cipher.max_ciphertext_inner_record_len) catch unreachable);
+    const tls_records_in_buf = (std.math.divCeil(comptime_int, buf_len, cipher.max_cleartext_len) catch unreachable);
     const overhead: usize = tls_records_in_buf * @import("cipher.zig").encrypt_overhead_tls_13;
     var buf: [buf_len + overhead]u8 = undefined;
     var inner_stream = BufReaderWriter{ .buf = &buf };

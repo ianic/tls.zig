@@ -23,6 +23,7 @@ const CertificateBuilder = common.CertificateBuilder;
 const Auth = common.Auth;
 const DhKeyPair = common.DhKeyPair;
 const CertificateParser = common.CertificateParser;
+const errorToAlert = common.errorToAlert;
 
 pub const Options = struct {
     // Server authentication. If null server will not send certificate and
@@ -182,40 +183,6 @@ pub fn Handshake(comptime Stream: type) type {
             return try kp.sharedKey(h.named_group, h.client_pub_key);
         }
 
-        fn errorToAlert(err: anyerror) tls.AlertDescription {
-            return switch (err) {
-                error.TlsUnexpectedMessage => .unexpected_message,
-                error.TlsBadRecordMac => .bad_record_mac,
-                error.TlsRecordOverflow => .record_overflow,
-                error.TlsHandshakeFailure => .handshake_failure,
-                error.TlsBadCertificate => .bad_certificate,
-                error.TlsUnsupportedCertificate => .unsupported_certificate,
-                error.TlsCertificateRevoked => .certificate_revoked,
-                error.TlsCertificateExpired => .certificate_expired,
-                error.TlsCertificateUnknown => .certificate_unknown,
-                error.TlsIllegalParameter,
-                error.IdentityElement,
-                error.InvalidEncoding,
-                => .illegal_parameter,
-                error.TlsUnknownCa => .unknown_ca,
-                error.TlsAccessDenied => .access_denied,
-                error.TlsDecodeError => .decode_error,
-                error.TlsDecryptError => .decrypt_error,
-                error.TlsProtocolVersion => .protocol_version,
-                error.TlsInsufficientSecurity => .insufficient_security,
-                error.TlsInternalError => .internal_error,
-                error.TlsInappropriateFallback => .inappropriate_fallback,
-                error.TlsMissingExtension => .missing_extension,
-                error.TlsUnsupportedExtension => .unsupported_extension,
-                error.TlsUnrecognizedName => .unrecognized_name,
-                error.TlsBadCertificateStatusResponse => .bad_certificate_status_response,
-                error.TlsUnknownPskIdentity => .unknown_psk_identity,
-                error.TlsCertificateRequired => .certificate_required,
-                error.TlsNoApplicationProtocol => .no_application_protocol,
-                else => .internal_error,
-            };
-        }
-
         fn readClientFlight2(h: *HandshakeT, opt: Options) !void {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
@@ -239,6 +206,7 @@ pub fn Handshake(comptime Stream: type) type {
                             rec,
                         );
                         cleartext_buf_tail += cleartext.len;
+                        if (cleartext_buf_tail > cleartext.len) return error.TlsRecordOverflow;
 
                         var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
                         try d.expectContentType(.handshake);
@@ -247,7 +215,7 @@ pub fn Handshake(comptime Stream: type) type {
                             const handshake_type = try d.decode(HandshakeType);
                             const length = try d.decode(u24);
 
-                            if (length > cipher.max_ciphertext_inner_record_len)
+                            if (length > cipher.max_cleartext_len)
                                 return error.TlsRecordOverflow;
                             if (length > d.rest().len)
                                 continue :outer; // fragmented handshake into multiple records
