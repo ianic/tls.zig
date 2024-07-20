@@ -108,7 +108,7 @@ pub fn Connection(comptime Stream: type) type {
                         }
                     },
                     .alert => {
-                        if (cleartext.len < 2) return error.TlsAlertUnknown;
+                        if (cleartext.len < 2) return error.TlsUnexpectedMessage;
                         const level: tls.AlertLevel = @enumFromInt(cleartext[0]);
                         const desc: tls.AlertDescription = @enumFromInt(cleartext[1]);
                         _ = level;

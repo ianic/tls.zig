@@ -192,6 +192,7 @@ pub const Decoder = struct {
     }
 
     pub fn raiseAlert(d: *Decoder) !void {
+        if (d.payload.len < 2) return error.TlsUnexpectedMessage;
         _ = try d.decode(tls.AlertLevel);
         const desc = try d.decode(tls.AlertDescription);
         try desc.toError();
