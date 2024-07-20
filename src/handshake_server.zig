@@ -384,6 +384,7 @@ pub fn Handshake(comptime Stream: type) type {
             }
             try d.skip(2); // compression methods
 
+            var key_share_received = false;
             // extensions
             const extensions_end_idx = try d.decode(u16) + d.idx;
             while (d.idx < extensions_end_idx) {
@@ -404,6 +405,7 @@ pub fn Handshake(comptime Stream: type) type {
                         if (!tls_1_3_supported) return error.TlsProtocolVersion;
                     },
                     .key_share => {
+                        key_share_received = true;
                         var selected_named_group_idx = supported_named_groups.len;
                         const end_idx = try d.decode(u16) + d.idx;
                         while (d.idx < end_idx) {
@@ -440,9 +442,8 @@ pub fn Handshake(comptime Stream: type) type {
                     },
                 }
             }
-
-            if (@intFromEnum(h.named_group) == 0)
-                return error.TlsIllegalParameter;
+            if (!key_share_received) return error.TlsMissingExtension;
+            if (@intFromEnum(h.named_group) == 0) return error.TlsIllegalParameter;
         }
     };
 }
