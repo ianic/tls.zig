@@ -24,10 +24,13 @@ pub fn main() !void {
     var server = try address.listen(.{ .reuse_address = true });
 
     while (true) {
-        //try acceptUpgrade(&server, opt);
+        // try acceptUpgrade(&server, opt);
 
         acceptUpgrade(&server, opt) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
+            if (@errorReturnTrace()) |trace| {
+                std.debug.dumpStackTrace(trace.*);
+            }
             continue;
         };
     }
@@ -38,8 +41,14 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
     defer tcp.stream.close();
 
     var conn = try tls.server(tcp.stream, opt);
-    if (try conn.next()) |buf| {
+    // if (try conn.next()) |buf| {
+    //     std.debug.print("{s}", .{buf});
+    //     //std.debug.print("received: {d}\n", .{buf.len});
+    // }
+    while (try conn.next()) |buf| {
         std.debug.print("{s}", .{buf});
+        //std.debug.print("received: {d}\n", .{buf.len});
+        if (std.ascii.endsWithIgnoreCase(buf, "\r\n\r\n")) break;
     }
     try conn.writeAll(http_ok);
     try conn.close();

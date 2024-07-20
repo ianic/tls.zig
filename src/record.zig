@@ -110,6 +110,10 @@ pub const Record = struct {
             .payload = buffer[tls.record_header_len..],
         };
     }
+
+    pub fn decoder(r: @This()) Decoder {
+        return Decoder.init(r.content_type, @constCast(r.payload));
+    }
 };
 
 pub const Decoder = struct {
@@ -182,15 +186,16 @@ pub const Decoder = struct {
         if (d.content_type == content_type) return;
 
         switch (d.content_type) {
-            .alert => {
-                const level = try d.decode(tls.AlertLevel);
-                const desc = try d.decode(tls.AlertDescription);
-                _ = level;
-                try desc.toError();
-                return error.TlsServerSideClosure;
-            },
+            .alert => try d.raiseAlert(),
             else => return error.TlsUnexpectedMessage,
         }
+    }
+
+    pub fn raiseAlert(d: *Decoder) !void {
+        _ = try d.decode(tls.AlertLevel);
+        const desc = try d.decode(tls.AlertDescription);
+        try desc.toError();
+        return error.TlsAlertCloseNotify;
     }
 };
 

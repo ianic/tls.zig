@@ -169,7 +169,10 @@ pub fn Handshake(comptime Stream: type) type {
             };
 
             h.readClientFlight2(opt) catch |err| {
-                try h.writeAlert(stream, &app_cipher, err);
+                // Alert received from client
+                if (!mem.startsWith(u8, @errorName(err), "TlsAlert")) {
+                    try h.writeAlert(stream, &app_cipher, err);
+                }
                 return err;
             };
             return app_cipher;
@@ -263,6 +266,10 @@ pub fn Handshake(comptime Stream: type) type {
                         }
                         cleartext_buf_head = 0;
                         cleartext_buf_tail = 0;
+                    },
+                    .alert => {
+                        var d = rec.decoder();
+                        return d.raiseAlert();
                     },
                     else => return error.TlsUnexpectedMessage,
                 }
@@ -382,6 +389,7 @@ pub fn Handshake(comptime Stream: type) type {
             while (d.idx < extensions_end_idx) {
                 const extension_type = try d.decode(tls.ExtensionType);
                 const extension_len = try d.decode(u16);
+                if (extension_len == 0) return error.TlsDecodeError;
                 //std.debug.print("extension: {} {}\n", .{ extension_type, extension_len });
 
                 switch (extension_type) {
@@ -417,12 +425,14 @@ pub fn Handshake(comptime Stream: type) type {
                             try d.skip(extension_len);
                         } else {
                             var found = false;
-                            const end_idx = try d.decode(u16) + d.idx;
+                            const list_len = try d.decode(u16);
+                            if (list_len == 0) return error.TlsDecodeError;
+                            const end_idx = list_len + d.idx;
                             while (d.idx < end_idx) {
                                 const signature_scheme = try d.decode(tls.SignatureScheme);
                                 if (signature_scheme == h.signature_scheme) found = true;
                             }
-                            if (!found) return error.TlsIllegalParameter;
+                            if (!found) return error.TlsHandshakeFailure;
                         }
                     },
                     else => {
