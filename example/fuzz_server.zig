@@ -35,16 +35,7 @@ pub fn main() !void {
             .private_key = key,
         },
     };
-    // const opt3: tls.ServerOptions = .{
-    //     .client_auth = .{
-    //         .auth_type = .require,
-    //         .root_ca = client_root_ca,
-    //     },
-    //     .auth = .{
-    //         .certificates = cert,
-    //         .private_key = key,
-    //     },
-    // };
+
     const opt4: tls.ServerOptions = .{
         .auth = .{
             .certificates = cert_ec,
@@ -53,13 +44,14 @@ pub fn main() !void {
     };
 
     const s1 = try std.Thread.spawn(.{}, runServer, .{ 4433, opt1 });
+    const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ 4435, opt1 });
+
     const s2 = try std.Thread.spawn(.{}, runServer, .{ 4434, opt2 });
-    //const s3 = try std.Thread.spawn(.{}, runServer, .{ 4435, opt3 });
     const s4 = try std.Thread.spawn(.{}, runServer, .{ 4436, opt4 });
 
     s1.join();
     s2.join();
-    //s3.join();
+    s3.join();
     s4.join();
 }
 
@@ -83,10 +75,6 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
     defer tcp.stream.close();
 
     var conn = try tls.server(tcp.stream, opt);
-    // if (try conn.next()) |buf| {
-    //     std.debug.print("{s}", .{buf});
-    //     //std.debug.print("received: {d}\n", .{buf.len});
-    // }
     while (try conn.next()) |buf| {
         std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
@@ -96,6 +84,30 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
         if (std.ascii.endsWithIgnoreCase(buf, "\r\n\r\n")) break;
     }
     try conn.writeAll(http_ok);
+    try conn.close();
+}
+
+fn runEchoServer(port: u16, opt: tls.ServerOptions) !void {
+    const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
+    var server = try address.listen(.{ .reuse_address = true });
+
+    while (true) {
+        acceptEcho(&server, opt) catch |err| {
+            std.debug.print("tls failed with {}\n", .{err});
+            if (@errorReturnTrace()) |trace| {
+                std.debug.dumpStackTrace(trace.*);
+            }
+            continue;
+        };
+    }
+}
+
+fn acceptEcho(server: *std.net.Server, opt: tls.ServerOptions) !void {
+    const tcp = try server.accept();
+    defer tcp.stream.close();
+
+    var conn = try tls.server(tcp.stream, opt);
+    while (try conn.next()) |buf| try conn.writeAll(buf);
     try conn.close();
 }
 

@@ -199,10 +199,13 @@ pub fn Handshake(comptime Stream: type) type {
 
             outer: while (true) {
                 const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
+
                 if (rec.protocol_version != .tls_1_2) return error.TlsProtocolVersion;
 
                 switch (rec.content_type) {
-                    .change_cipher_spec => {},
+                    .change_cipher_spec => {
+                        if (rec.payload.len != 1) return error.TlsUnexpectedMessage;
+                    },
                     .application_data => {
                         const content_type, const cleartext = try h.cipher.decrypt(
                             cleartext_buf[cleartext_buf_tail..],
@@ -403,6 +406,13 @@ pub fn Handshake(comptime Stream: type) type {
                         const end_idx = try d.decode(u16) + d.idx;
                         while (d.idx < end_idx) {
                             const named_group = try d.decode(tls.NamedGroup);
+                            switch (@intFromEnum(named_group)) {
+                                0x0001...0x0016,
+                                0x001a...0x001c,
+                                0xff01...0xff02,
+                                => return error.TlsIllegalParameter,
+                                else => {},
+                            }
                             const client_pub_key = try d.slice(try d.decode(u16));
                             for (supported_named_groups, 0..) |supported, idx| {
                                 if (named_group == supported and idx < selected_named_group_idx) {
@@ -414,6 +424,19 @@ pub fn Handshake(comptime Stream: type) type {
                         }
                         if (@intFromEnum(h.named_group) == 0)
                             return error.TlsIllegalParameter;
+                    },
+                    .supported_groups => {
+                        const end_idx = try d.decode(u16) + d.idx;
+                        while (d.idx < end_idx) {
+                            const named_group = try d.decode(tls.NamedGroup);
+                            switch (@intFromEnum(named_group)) {
+                                0x0001...0x0016,
+                                0x001a...0x001c,
+                                0xff01...0xff02,
+                                => return error.TlsIllegalParameter,
+                                else => {},
+                            }
+                        }
                     },
                     .signature_algorithms => {
                         if (@intFromEnum(h.signature_scheme) == 0) {

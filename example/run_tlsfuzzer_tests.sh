@@ -1,12 +1,5 @@
 #!/bin/bash -e
 
-
-# for filename in scripts/test-tls13-*.py; do
-#     echo $filename
-#     #PYTHONPATH=. bin/python $filename
-# done
-
-
 declare -a tests=(
 
     "test-tls13-conversation.py"
@@ -21,6 +14,7 @@ declare -a tests=(
     "test-tls13-legacy-version.py"
     "test-tls13-record-layer-limits.py -e 'too big ClientHello msg, with 16168 bytes of padding' -e 'max size of Finished msg, with 16587 bytes of record layer padding TLS_AES_128_GCM_SHA256' -e 'max size of Finished msg, with 16587 bytes of record layer padding TLS_CHACHA20_POLY1305_SHA256' -e 'too big plaintext, size: 2**14 - 8, with an additional 9 bytes of padding, cipher TLS_AES_128_GCM_SHA256' -e 'too big plaintext, size: 2**14 - 8, with an additional 9 bytes of padding, cipher TLS_CHACHA20_POLY1305_SHA256'"
     "test-tls13-record-padding.py"
+    "test-tls13-pkcs-signature.py"
     # excluding unsupported signatures
     "test-tls13-serverhello-random.py -e 'TLS 1.3 with ffdhe2048' -e 'TLS 1.3 with ffdhe3072' -e 'TLS 1.3 with secp521r1' -e 'TLS 1.3 with x448' -e  'TLS 1.3 with x448'"
 
@@ -66,6 +60,17 @@ declare -a tests=(
 
     "test-tls13-ecdsa-support.py -p 4436 'Test with ecdsa_secp384r1_sha384'"
 
+    "test-tls13-obsolete-curves.py
+        -e 'sanity - HRR support'
+        -e 'secp521r1 in supported_groups and key_share'
+        -e 'x448 in supported_groups and key_share'"
+
+    "test-tls13-dhe-shared-secret-padding.py"
+    # excluding one which expects alert unexpected message bot got decrypt error
+    "test-tls13-ccs.py -e 'CCS message after Finished message'"
+
+    "test-tls13-lengths.py -p 4435 -n 100"
+    
     # expects that server sends key update with update requested true on a http get for /keyupdate url
     # we are not sending requested key update type
     # "test-tls13-keyupdate-from-server.py"
@@ -81,6 +86,7 @@ declare -a tests=(
     # sends handshake messages larger than 16k which is not supported in our implementation
     # "test-tls13-signature-algorithms.py"
     # "test-tls13-unrecognised-groups.py"
+    # "test-tls13-large-number-of-extensions.py"
 
     # only 1.3 is supported no negotiation about that
     # "test-tls13-version-negotiation.py"
@@ -88,34 +94,28 @@ declare -a tests=(
     # requires implementation of server hello retry request
     # "test-tls13-hrr.py"
     # "test-tls13-shuffled-extentions.py"
-)
 
-declare -a other=(
-    "test-tls13-dhe-shared-secret-padding.py" # unsupported named group
-    "test-tls13-large-number-of-extensions.py"
+    # not worth implementing 
+    # "test-tls13-multiple-ccs-messages.py"
 
-    "test-tls13-lengths.py" # requires echo server
-    "test-tls13-minerva.py" # edcsa signature algorithms samo salje
-    "test-tls13-multiple-ccs-messages.py"
-
-    "test-tls13-obsolete-curves.py"
-    "test-tls13-pkcs-signature.py"
-    "test-tls13-psk_dhe_ke.py"
-    "test-tls13-psk_ke.py"
+    # requires ecdsa_secp256r1_sha256 and I have ecdsa_secp384r1_sha384 on server side
+    #"test-tls13-minerva.py"
 
     # this is not implemented
-    "test-tls13-session-resumption.py"
-    "test-tls13-ffdhe-groups.py"
-    "test-tls13-ffdhe-sanity.py"
-    "test-tls13-post-handshake-auth.py"
-    "test-tls13-0rtt-garbage.py"
-    "test-tls13-ccs.py"
+    # "test-tls13-session-resumption.py"
+    # "test-tls13-ffdhe-groups.py"
+    # "test-tls13-ffdhe-sanity.py"
+    # "test-tls13-post-handshake-auth.py"
+    # "test-tls13-0rtt-garbage.py"
+
+    # no pre shared key suppoprt
+    # "test-tls13-psk_dhe_ke.py"
+    # "test-tls13-psk_ke.py"
 
     # tests that tls 1.3 is not supported
-    "test-tls13-non-support.py"
+    # "test-tls13-non-support.py"
+
 )
-
-
 
 for name in "${tests[@]}"; do
     echo $name
