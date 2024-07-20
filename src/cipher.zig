@@ -500,7 +500,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             const auth_tag = rec.payload[ciphertext_len..][0..auth_tag_len];
 
             const iv = ivWithSeq(nonce_len, self.decrypt_iv, self.decrypt_seq);
-            AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.decrypt_key) catch return error.TlsDecryptError;
+            AeadType.decrypt(buf[0..ciphertext_len], ciphertext, auth_tag.*, rec.header, iv, self.decrypt_key) catch return error.TlsBadRecordMac;
 
             // Remove zero bytes padding
             var content_type_idx: usize = ciphertext_len - 1;

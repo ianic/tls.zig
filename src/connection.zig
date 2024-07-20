@@ -89,7 +89,7 @@ pub fn Connection(comptime Stream: type) type {
                             // skip new session ticket and read next record
                             .new_session_ticket => continue,
                             .key_update => {
-                                if (cleartext.len < 5) return error.TlsIllegalParameter;
+                                if (cleartext.len != 5) return error.TlsDecodeError;
                                 // rfc: Upon receiving a KeyUpdate, the receiver MUST
                                 // update its receiving keys.
                                 try c.cipher.keyUpdateDecrypt();
@@ -144,6 +144,7 @@ pub fn Connection(comptime Stream: type) type {
             TlsUnexpectedMessage,
             TlsRecordOverflow,
             TlsDecryptError,
+            TlsDecodeError,
             TlsBadRecordMac,
             TlsIllegalParameter,
             BufferOverflow,

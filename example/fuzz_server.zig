@@ -47,6 +47,9 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
     // }
     while (try conn.next()) |buf| {
         std.debug.print("{s}", .{buf});
+        if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
+            conn.key_update_requested = true;
+        }
         //std.debug.print("received: {d}\n", .{buf.len});
         if (std.ascii.endsWithIgnoreCase(buf, "\r\n\r\n")) break;
     }
