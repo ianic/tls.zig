@@ -295,17 +295,7 @@ pub fn Handshake(comptime Stream: type) type {
             try ext.write(&extension.ec_point_formats ++
                 extension.renegotiation_info ++
                 extension.sct);
-            try ext.writeExtension(.signature_algorithms, &[_]tls.SignatureScheme{
-                .ecdsa_secp256r1_sha256,
-                .ecdsa_secp384r1_sha384,
-                .rsa_pss_rsae_sha256,
-                .rsa_pss_rsae_sha384,
-                .rsa_pss_rsae_sha512,
-                .ed25519,
-                .rsa_pkcs1_sha1,
-                .rsa_pkcs1_sha256,
-                .rsa_pkcs1_sha384,
-            });
+            try ext.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
 
             try ext.writeExtension(.supported_groups, opt.named_groups);
             if (tls_versions != .tls_1_2) {

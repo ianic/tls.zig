@@ -247,7 +247,10 @@ pub fn Handshake(comptime Stream: type) type {
                                 },
                                 .certificate_verify => {
                                     try cert.parseCertificateVerify(&d);
-                                    try cert.verifySignature(h.transcript.clientCertificateVerify());
+                                    cert.verifySignature(h.transcript.clientCertificateVerify()) catch |err| return switch (err) {
+                                        error.TlsUnknownSignatureScheme => error.TlsIllegalParameter,
+                                        else => error.TlsDecryptError,
+                                    };
                                     handshake_state = .finished;
                                 },
                                 .finished => {
@@ -331,17 +334,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             // First write extensions, leave space for header.
             var ext = BufWriter{ .buf = buf[header_len..] };
-            try ext.writeExtension(.signature_algorithms, &[_]tls.SignatureScheme{
-                .ecdsa_secp256r1_sha256,
-                .ecdsa_secp384r1_sha384,
-                .rsa_pss_rsae_sha256,
-                .rsa_pss_rsae_sha384,
-                .rsa_pss_rsae_sha512,
-                .ed25519,
-                .rsa_pkcs1_sha1,
-                .rsa_pkcs1_sha256,
-                .rsa_pkcs1_sha384,
-            });
+            try ext.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
 
             var w = BufWriter{ .buf = buf };
             try w.writeHandshakeHeader(.certificate_request, ext.pos + 3);

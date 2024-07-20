@@ -11,21 +11,63 @@ pub fn main() !void {
     var cert, const key = try tls.loadX509KeyPair(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer cert.deinit(allocator);
 
-    const opt: tls.ServerOptions = .{
+    var cert_ec, const key_ec = try tls.loadX509KeyPair(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer cert_ec.deinit(allocator);
+
+    // ca to check client certificate
+    var client_root_ca: Certificate.Bundle = .{};
+    defer client_root_ca.deinit(allocator);
+    try client_root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
+
+    const opt1: tls.ServerOptions = .{
         .auth = .{
             .certificates = cert,
             .private_key = key,
         },
     };
+    const opt2: tls.ServerOptions = .{
+        .client_auth = .{
+            .auth_type = .request,
+            .root_ca = client_root_ca,
+        },
+        .auth = .{
+            .certificates = cert,
+            .private_key = key,
+        },
+    };
+    // const opt3: tls.ServerOptions = .{
+    //     .client_auth = .{
+    //         .auth_type = .require,
+    //         .root_ca = client_root_ca,
+    //     },
+    //     .auth = .{
+    //         .certificates = cert,
+    //         .private_key = key,
+    //     },
+    // };
+    const opt4: tls.ServerOptions = .{
+        .auth = .{
+            .certificates = cert_ec,
+            .private_key = key_ec,
+        },
+    };
 
-    // Tcp listener
-    const port = 4433;
+    const s1 = try std.Thread.spawn(.{}, runServer, .{ 4433, opt1 });
+    const s2 = try std.Thread.spawn(.{}, runServer, .{ 4434, opt2 });
+    //const s3 = try std.Thread.spawn(.{}, runServer, .{ 4435, opt3 });
+    const s4 = try std.Thread.spawn(.{}, runServer, .{ 4436, opt4 });
+
+    s1.join();
+    s2.join();
+    //s3.join();
+    s4.join();
+}
+
+fn runServer(port: u16, opt: tls.ServerOptions) !void {
     const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
     var server = try address.listen(.{ .reuse_address = true });
 
     while (true) {
-        // try acceptUpgrade(&server, opt);
-
         acceptUpgrade(&server, opt) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             if (@errorReturnTrace()) |trace| {

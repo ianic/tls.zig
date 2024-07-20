@@ -53,6 +53,18 @@ pub const Auth = struct {
     private_key: PrivateKey,
 };
 
+pub const supported_signature_algorithms = &[_]tls.SignatureScheme{
+    .ecdsa_secp256r1_sha256,
+    .ecdsa_secp384r1_sha384,
+    .rsa_pss_rsae_sha256,
+    .rsa_pss_rsae_sha384,
+    .rsa_pss_rsae_sha512,
+    .ed25519,
+    .rsa_pkcs1_sha1,
+    .rsa_pkcs1_sha256,
+    .rsa_pkcs1_sha384,
+};
+
 pub const CertificateBuilder = struct {
     certificates: Certificate.Bundle,
     private_key: PrivateKey,
