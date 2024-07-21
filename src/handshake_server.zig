@@ -200,8 +200,8 @@ pub fn Handshake(comptime Stream: type) type {
 
             outer: while (true) {
                 const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
-
-                if (rec.protocol_version != .tls_1_2) return error.TlsProtocolVersion;
+                if (rec.protocol_version != .tls_1_2 and rec.content_type != .alert)
+                    return error.TlsProtocolVersion;
 
                 switch (rec.content_type) {
                     .change_cipher_spec => {

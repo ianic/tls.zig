@@ -61,7 +61,11 @@ fn runServer(port: u16, opt: tls.ServerOptions) !void {
 
     while (true) {
         acceptUpgrade(&server, opt) catch |err| {
-            std.debug.print("e", .{});
+            if (err == error.TlsAlertCloseNotify) {
+                std.debug.print("c", .{});
+            } else {
+                std.debug.print("e", .{});
+            }
             if (@errorReturnTrace()) |trace| {
                 std.debug.print("\n{}\n", .{err});
                 std.debug.dumpStackTrace(trace.*);
@@ -78,7 +82,7 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
 
     var conn = try tls.server(tcp.stream, opt);
     while (try conn.next()) |buf| {
-        // std.debug.print("{s}", .{buf});
+        std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
             conn.key_update_requested = true;
         }
