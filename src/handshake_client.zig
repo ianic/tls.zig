@@ -253,19 +253,6 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn makeClientHello(h: *HandshakeT, opt: Options) ![]const u8 {
-            const extension = struct {
-                pub const status_request = [_]u8{ 0x00, 0x05, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00 };
-                pub const ec_point_formats = [_]u8{ 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00 };
-                pub const renegotiation_info = [_]u8{ 0xff, 0x01, 0x00, 0x01, 0x00 };
-                pub const sct = [_]u8{ 0x00, 0x12, 0x00, 0x00 };
-            };
-
-            const hello = struct {
-                pub const no_compression = [_]u8{ 0x01, 0x00 };
-                pub const no_session_id = [_]u8{0x00};
-                pub const protocol_version = tls.int2(@intFromEnum(tls.ProtocolVersion.tls_1_2));
-            };
-
             // Buffer will have this parts:
             // | header | payload | extensions |
             //
@@ -278,11 +265,11 @@ pub fn Handshake(comptime Stream: type) type {
             const tls_versions = try CipherSuite.versions(opt.cipher_suites);
             // Payload writer, preserve header_len bytes for handshake header.
             var payload = BufWriter{ .buf = buffer[header_len..] };
-            try payload.write(&hello.protocol_version ++
-                h.client_random ++
-                hello.no_session_id);
+            try payload.writeEnum(tls.ProtocolVersion.tls_1_2);
+            try payload.write(&h.client_random);
+            try payload.writeByte(0); // no session id
             try payload.writeEnumArray(CipherSuite, opt.cipher_suites);
-            try payload.write(&hello.no_compression);
+            try payload.write(&[_]u8{ 0x01, 0x00 }); // no compression
 
             // Extensions writer starts after payload and preserves 2 more
             // bytes for extension len in payload.
@@ -292,9 +279,6 @@ pub fn Handshake(comptime Stream: type) type {
                 .tls_1_3 => &[_]tls.ProtocolVersion{.tls_1_3},
                 .tls_1_2 => &[_]tls.ProtocolVersion{.tls_1_2},
             });
-            try ext.write(&extension.ec_point_formats ++
-                extension.renegotiation_info ++
-                extension.sct);
             try ext.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
 
             try ext.writeExtension(.supported_groups, opt.named_groups);
@@ -928,18 +912,15 @@ test "create client hello" {
     });
 
     const expected = testu.hexToBytes(
-        "16 03 03 00 7c " ++ // record header
-            "01 00 00 78 " ++ // handshake header
+        "16 03 03 00 6d " ++ // record header
+            "01 00 00 69 " ++ // handshake header
             "03 03 " ++ // protocol version
             "00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f " ++ // client random
             "00 " ++ // no session id
             "00 02 c0 2b " ++ // cipher suites
             "01 00 " ++ // compression methods
-            "00 4d " ++ // extensions length
+            "00 3e " ++ // extensions length
             "00 2b 00 03 02 03 03 " ++ // supported versions extension
-            "00 0b 00 02 01 00 " ++ // ec point formats extension
-            "ff 01 00 01 00 " ++ // renegotiation info extension
-            "00 12 00 00 " ++ // sct extension
             "00 0d 00 14 00 12 04 03 05 03 08 04 08 05 08 06 08 07 02 01 04 01 05 01 " ++ // signature algorithms extension
             "00 0a 00 08 00 06 00 1d 00 17 00 18 " ++ // named groups extension
             "00 00 00 0f 00 0d 00 00 0a 67 6f 6f 67 6c 65 2e 63 6f 6d ", // server name extension
