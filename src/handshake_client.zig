@@ -466,7 +466,7 @@ pub fn Handshake(comptime Stream: type) type {
                             rec,
                         );
                         cleartext_buf_tail += cleartext.len;
-                        if (cleartext_buf_tail > cleartext.len) return error.TlsRecordOverflow;
+                        if (cleartext_buf_tail > cleartext_buf.len) return error.TlsRecordOverflow;
 
                         var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
                         try d.expectContentType(.handshake);
