@@ -387,8 +387,6 @@ pub fn Handshake(comptime Stream: type) type {
             while (d.idx < extensions_end_idx) {
                 const extension_type = try d.decode(tls.ExtensionType);
                 const extension_len = try d.decode(u16);
-                if (extension_len == 0) return error.TlsDecodeError;
-                //std.debug.print("extension: {} {}\n", .{ extension_type, extension_len });
 
                 switch (extension_type) {
                     .supported_versions => {
@@ -402,6 +400,7 @@ pub fn Handshake(comptime Stream: type) type {
                         if (!tls_1_3_supported) return error.TlsProtocolVersion;
                     },
                     .key_share => {
+                        if (extension_len == 0) return error.TlsDecodeError;
                         key_share_received = true;
                         var selected_named_group_idx = supported_named_groups.len;
                         const end_idx = try d.decode(u16) + d.idx;

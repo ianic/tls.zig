@@ -346,6 +346,12 @@ pub const BufWriter = struct {
         _ = dupe(self.buf[self.pos..], data);
     }
 
+    pub fn writeByte(self: *BufWriter, b: u8) !void {
+        defer self.pos += 1;
+        if (self.pos == self.buf.len) return error.BufferOverflow;
+        self.buf[self.pos] = b;
+    }
+
     pub fn writeEnum(self: *BufWriter, value: anytype) !void {
         try self.writeInt(@intFromEnum(value));
     }
