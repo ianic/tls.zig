@@ -58,8 +58,8 @@ pub const CsvReader = struct {
 test "read file" {
     var r = CsvReader.init(@embedFile("ranked_domains.csv"));
     var i: usize = 1;
-    while (r.next()) |d| {
-        std.debug.print("'{s}' {}\n", .{ d, i });
+    while (r.next()) |_| {
+        //std.debug.print("'{s}' {}\n", .{ d, i });
         i += 1;
     }
 }
@@ -175,7 +175,17 @@ pub const Counter = struct {
             .{ self.total(), self.success, self.tls_1_2, self.tls_1_3, self.fail, self.err, self.skip },
         );
     }
+
+    pub fn failRate(self: @This()) f64 {
+        return @as(f64, @floatFromInt(self.total() - self.success)) / @as(f64, @floatFromInt(self.total()));
+    }
 };
+
+test "failRate" {
+    var c: Counter = .{ .success = 6234, .fail = 1, .err = 14 };
+    try std.testing.expect(c.failRate() < 0.005);
+    std.debug.print("rate: {}\n", .{c.failRate() * 1000});
+}
 
 pub fn get(
     allocator: std.mem.Allocator,

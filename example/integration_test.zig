@@ -23,10 +23,16 @@ fn acceptSend(server: *net.Server, opt: tls.ServerOptions, clients: usize) !void
     for (0..clients) |_| {
         const tcp = try server.accept();
         defer tcp.stream.close();
-        var conn = tls.server(tcp.stream, opt) catch |err| switch (err) {
-            error.EndOfStream => continue,
-            error.TlsCertificateRequired => continue,
-            else => unreachable,
+        var conn = tls.server(tcp.stream, opt) catch |err| {
+            switch (err) {
+                error.EndOfStream,
+                error.TlsCertificateRequired,
+                => continue,
+                else => {
+                    std.debug.print("unexpected server error: {}\n", .{err});
+                    unreachable;
+                },
+            }
         };
 
         try conn.writeAll(data);
@@ -261,13 +267,13 @@ test "server send key update" {
         },
     };
     var server = try address.listen(.{});
-    const thr = try std.Thread.spawn(.{}, acceptSend2, .{ &server, opt });
+    const thr = try std.Thread.spawn(.{}, acceptSendKeyUpdate, .{ &server, opt });
     // client will receive key multiple  times
     try connectReceive(server.listen_address, .{ .host = host, .root_ca = root_ca });
     thr.join();
 }
 
-fn acceptSend2(server: *net.Server, opt: tls.ServerOptions) !void {
+fn acceptSendKeyUpdate(server: *net.Server, opt: tls.ServerOptions) !void {
     const tcp = try server.accept();
     defer tcp.stream.close();
     var conn = try tls.server(tcp.stream, opt);

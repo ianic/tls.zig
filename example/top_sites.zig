@@ -32,6 +32,7 @@ pub fn main() !void {
     }
     pool.deinit();
     counter.show();
+    if (counter.failRate() > 0.005) std.posix.exit(1);
 }
 
 pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: Certificate.Bundle, counter: *cmn.Counter) void {
