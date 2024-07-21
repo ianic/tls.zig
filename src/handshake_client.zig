@@ -400,7 +400,7 @@ pub fn Handshake(comptime Stream: type) type {
             try h.cipher_suite.validate();
             try d.skip(1); // skip compression method
 
-            const extensions_present = length > 2 + 32 + session_id_len + 2 + 1;
+            const extensions_present = length > 2 + 32 + 1 + session_id_len + 2 + 1;
             if (extensions_present) {
                 const exs_len = try d.decode(u16);
                 var l: usize = 0;
