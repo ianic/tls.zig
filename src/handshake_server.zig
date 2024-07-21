@@ -101,7 +101,7 @@ pub fn Handshake(comptime Stream: type) type {
             crypto.random.bytes(&h.server_random);
             if (opt.auth) |a| {
                 // required signature scheme in client hello
-                h.signature_scheme = a.private_key.signature_scheme;
+                h.signature_scheme = a.key.signature_scheme;
             }
 
             h.readClientHello() catch |err| {
@@ -139,8 +139,8 @@ pub fn Handshake(comptime Stream: type) type {
                 }
                 if (opt.auth) |a| {
                     const cm = CertificateBuilder{
-                        .certificates = a.certificates,
-                        .private_key = a.private_key,
+                        .cert = a.cert,
+                        .key = a.key,
                         .transcript = &h.transcript,
                         .side = .server,
                     };

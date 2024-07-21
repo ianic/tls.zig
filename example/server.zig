@@ -11,14 +11,14 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Load server certificate
-    var certificates: Certificate.Bundle = .{};
-    defer certificates.deinit(allocator);
-    try certificates.addCertsFromFilePath(allocator, dir, "localhost_ec/cert.pem");
+    var cert: Certificate.Bundle = .{};
+    defer cert.deinit(allocator);
+    try cert.addCertsFromFilePath(allocator, dir, "localhost_ec/cert.pem");
 
     // Load server private key
-    const private_key_file = try dir.openFile("localhost_ec/key.pem", .{});
-    const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
-    private_key_file.close();
+    const key_file = try dir.openFile("localhost_ec/key.pem", .{});
+    const key = try tls.PrivateKey.fromFile(allocator, key_file);
+    key_file.close();
 
     // // Load ca to check client certificate
     // var client_root_ca: Certificate.Bundle = .{};
@@ -49,8 +49,8 @@ pub fn main() !void {
             //     .root_ca = client_root_ca,
             // },
             .auth = .{
-                .certificates = certificates,
-                .private_key = private_key,
+                .cert = cert,
+                .key = key,
             },
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});

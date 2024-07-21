@@ -47,7 +47,7 @@ pub const Options = struct {
     // List of named groups to use.
     // To use specific named group:
     //   .named_groups = &[_]tls.NamedGroup{.secp384r1},
-    named_groups: []const tls.NamedGroup = named_groups.default,
+    named_groups: []const tls.NamedGroup = named_groups.all,
 
     // Client authentication certificates and private key.
     auth: ?Auth = null,
@@ -632,8 +632,8 @@ pub fn Handshake(comptime Stream: type) type {
 
         fn certificateBuilder(h: *HandshakeT, auth: Auth) CertificateBuilder {
             return .{
-                .certificates = auth.certificates,
-                .private_key = auth.private_key,
+                .cert = auth.cert,
+                .key = auth.key,
                 .transcript = &h.transcript,
                 .tls_version = h.tls_version,
                 .side = .client,
@@ -697,7 +697,7 @@ pub fn Handshake(comptime Stream: type) type {
                 d.named_group = h.named_group orelse @as(tls.NamedGroup, @enumFromInt(0x0000));
                 d.signature_scheme = h.cert.signature_scheme;
                 if (opt.auth) |a|
-                    d.client_signature_scheme = a.private_key.signature_scheme;
+                    d.client_signature_scheme = a.key.signature_scheme;
             }
         }
     };

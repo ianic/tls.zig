@@ -21,8 +21,8 @@ pub fn main() !void {
 
     const opt1: tls.ServerOptions = .{
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
     const opt2: tls.ServerOptions = .{
@@ -31,15 +31,15 @@ pub fn main() !void {
             .root_ca = client_root_ca,
         },
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
 
     const opt4: tls.ServerOptions = .{
         .auth = .{
-            .certificates = cert_ec,
-            .private_key = key_ec,
+            .cert = cert_ec,
+            .key = key_ec,
         },
     };
 

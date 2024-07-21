@@ -51,13 +51,13 @@ pub fn main() !void {
 
             // Prepare client authentication
             const cert_dir = try dir.openDir(sub_path, .{});
-            var certificates: Certificate.Bundle = .{};
-            defer certificates.deinit(allocator);
-            try certificates.addCertsFromFilePath(allocator, cert_dir, "cert.pem");
+            var cert: Certificate.Bundle = .{};
+            defer cert.deinit(allocator);
+            try cert.addCertsFromFilePath(allocator, cert_dir, "cert.pem");
 
-            const private_key_file = try cert_dir.openFile("key.pem", .{});
-            defer private_key_file.close();
-            const private_key = try tls.PrivateKey.fromFile(allocator, private_key_file);
+            const key_file = try cert_dir.openFile("key.pem", .{});
+            defer key_file.close();
+            const key = try tls.PrivateKey.fromFile(allocator, key_file);
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.ClientOptions.Diagnostic = .{};
@@ -66,8 +66,8 @@ pub fn main() !void {
                 .root_ca = root_ca,
                 .cipher_suites = cipher_suites,
                 .auth = .{
-                    .certificates = certificates,
-                    .private_key = private_key,
+                    .cert = cert,
+                    .key = key,
                 },
                 .diagnostic = &diagnostic,
                 .key_log_callback = tls.key_log.callback,

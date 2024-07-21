@@ -47,10 +47,10 @@ pub const CurveType = enum(u8) {
 pub const Auth = struct {
     // Chain of one or more certificates, leaf first. Is is sent to the
     // server if server requests client authentication.
-    certificates: Certificate.Bundle,
+    cert: Certificate.Bundle,
     // Private key of the leaf certificate in bundle.
     // Used for creating signature in certificate signature message.
-    private_key: PrivateKey,
+    key: PrivateKey,
 };
 
 pub const supported_signature_algorithms = &[_]tls.SignatureScheme{
@@ -66,16 +66,16 @@ pub const supported_signature_algorithms = &[_]tls.SignatureScheme{
 };
 
 pub const CertificateBuilder = struct {
-    certificates: Certificate.Bundle,
-    private_key: PrivateKey,
+    cert: Certificate.Bundle,
+    key: PrivateKey,
     transcript: *Transcript,
     tls_version: tls.ProtocolVersion = .tls_1_3,
     side: Side = .client,
 
     pub fn makeCertificate(h: CertificateBuilder, buf: []u8) ![]const u8 {
         var w = BufWriter{ .buf = buf };
-        const certs = h.certificates.bytes.items;
-        const certs_count = h.certificates.map.size;
+        const certs = h.cert.bytes.items;
+        const certs_count = h.cert.map.size;
 
         // Differences between tls 1.3 and 1.2
         // TLS 1.3 has request context in header and extensions for each certificate.
@@ -118,12 +118,12 @@ pub const CertificateBuilder = struct {
     /// Creates signature for client certificate signature message.
     /// Returns signature bytes and signature scheme.
     inline fn createSignature(h: CertificateBuilder) !struct { []const u8, tls.SignatureScheme } {
-        switch (h.private_key.signature_scheme) {
+        switch (h.key.signature_scheme) {
             inline .ecdsa_secp256r1_sha256,
             .ecdsa_secp384r1_sha384,
             => |comptime_scheme| {
                 const Ecdsa = SchemeEcdsa(comptime_scheme);
-                const key = h.private_key.key.ecdsa;
+                const key = h.key.key.ecdsa;
                 const key_len = Ecdsa.SecretKey.encoded_length;
                 if (key.len < key_len) return error.InvalidEncoding;
                 const secret_key = try Ecdsa.SecretKey.fromBytes(key[0..key_len].*);
@@ -139,7 +139,7 @@ pub const CertificateBuilder = struct {
             .rsa_pss_rsae_sha512,
             => |comptime_scheme| {
                 const Hash = SchemeHash(comptime_scheme);
-                var signer = try h.private_key.key.rsa.signerOaep(Hash, null);
+                var signer = try h.key.key.rsa.signerOaep(Hash, null);
                 h.setSignatureVerifyBytes(&signer);
                 var buf: [512]u8 = undefined;
                 const signature = try signer.finalize(&buf);
