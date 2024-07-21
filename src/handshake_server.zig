@@ -98,6 +98,7 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         pub fn handshake(h: *HandshakeT, stream: Stream, opt: Options) !Cipher {
+            crypto.random.bytes(&h.server_random);
             if (opt.auth) |a| {
                 // required signature scheme in client hello
                 h.signature_scheme = a.private_key.signature_scheme;
