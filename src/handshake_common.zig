@@ -2,47 +2,18 @@ const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
 const crypto = std.crypto;
-const tls = std.crypto.tls;
 const Certificate = crypto.Certificate;
 
 const Transcript = @import("transcript.zig").Transcript;
 const PrivateKey = @import("PrivateKey.zig");
 const record = @import("record.zig");
 const rsa = @import("rsa/rsa.zig");
+const proto = @import("protocol.zig");
 
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 const Kyber768 = crypto.kem.kyber_d00.Kyber768;
-
-pub const Side = enum {
-    client,
-    server,
-};
-
-// tls.HandshakeType is missing server_key_exchange, server_hello_done
-pub const HandshakeType = enum(u8) {
-    client_hello = 1,
-    server_hello = 2,
-    new_session_ticket = 4,
-    end_of_early_data = 5,
-    encrypted_extensions = 8,
-    certificate = 11,
-    server_key_exchange = 12,
-    certificate_request = 13,
-    server_hello_done = 14,
-    certificate_verify = 15,
-    client_key_exchange = 16,
-    finished = 20,
-    key_update = 24,
-    message_hash = 254,
-    _,
-};
-
-pub const CurveType = enum(u8) {
-    named_curve = 0x03,
-    _,
-};
 
 pub const Auth = struct {
     // Chain of one or more certificates, leaf first. Is is sent to the
@@ -53,7 +24,7 @@ pub const Auth = struct {
     key: PrivateKey,
 };
 
-pub const supported_signature_algorithms = &[_]tls.SignatureScheme{
+pub const supported_signature_algorithms = &[_]proto.SignatureScheme{
     .ecdsa_secp256r1_sha256,
     .ecdsa_secp384r1_sha384,
     .rsa_pss_rsae_sha256,
@@ -69,8 +40,8 @@ pub const CertificateBuilder = struct {
     cert: Certificate.Bundle,
     key: PrivateKey,
     transcript: *Transcript,
-    tls_version: tls.ProtocolVersion = .tls_1_3,
-    side: Side = .client,
+    tls_version: proto.Version = .tls_1_3,
+    side: proto.Side = .client,
 
     pub fn makeCertificate(h: CertificateBuilder, buf: []u8) ![]const u8 {
         var w = BufWriter{ .buf = buf };
@@ -117,7 +88,7 @@ pub const CertificateBuilder = struct {
 
     /// Creates signature for client certificate signature message.
     /// Returns signature bytes and signature scheme.
-    inline fn createSignature(h: CertificateBuilder) !struct { []const u8, tls.SignatureScheme } {
+    inline fn createSignature(h: CertificateBuilder) !struct { []const u8, proto.SignatureScheme } {
         switch (h.key.signature_scheme) {
             inline .ecdsa_secp256r1_sha256,
             .ecdsa_secp384r1_sha384,
@@ -167,7 +138,7 @@ pub const CertificateBuilder = struct {
         }
     }
 
-    fn SchemeEcdsa(comptime scheme: tls.SignatureScheme) type {
+    fn SchemeEcdsa(comptime scheme: proto.SignatureScheme) type {
         return switch (scheme) {
             .ecdsa_secp256r1_sha256 => EcdsaP256Sha256,
             .ecdsa_secp384r1_sha384 => EcdsaP384Sha384,
@@ -181,7 +152,7 @@ pub const CertificateParser = struct {
     pub_key_buf: [600]u8 = undefined,
     pub_key: []const u8 = undefined,
 
-    signature_scheme: tls.SignatureScheme = @enumFromInt(0),
+    signature_scheme: proto.SignatureScheme = @enumFromInt(0),
     signature_buf: [1024]u8 = undefined,
     signature: []const u8 = undefined,
 
@@ -190,7 +161,7 @@ pub const CertificateParser = struct {
     skip_verify: bool = false,
     now_sec: i64 = 0,
 
-    pub fn parseCertificate(h: *CertificateParser, d: *record.Decoder, tls_version: tls.ProtocolVersion) !void {
+    pub fn parseCertificate(h: *CertificateParser, d: *record.Decoder, tls_version: proto.Version) !void {
         if (h.now_sec == 0) {
             h.now_sec = std.time.timestamp();
         }
@@ -248,7 +219,7 @@ pub const CertificateParser = struct {
     }
 
     pub fn parseCertificateVerify(h: *CertificateParser, d: *record.Decoder) !void {
-        h.signature_scheme = try d.decode(tls.SignatureScheme);
+        h.signature_scheme = try d.decode(proto.SignatureScheme);
         h.signature = dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
     }
 
@@ -303,7 +274,7 @@ pub const CertificateParser = struct {
         }
     }
 
-    fn SchemeEcdsaCert(comptime scheme: tls.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
+    fn SchemeEcdsaCert(comptime scheme: proto.SignatureScheme, comptime cert_named_curve: Certificate.NamedCurve) type {
         const Sha256 = crypto.hash.sha2.Sha256;
         const Sha384 = crypto.hash.sha2.Sha384;
         const Ecdsa = crypto.sign.ecdsa.Ecdsa;
@@ -316,7 +287,7 @@ pub const CertificateParser = struct {
     }
 };
 
-pub fn SchemeHash(comptime scheme: tls.SignatureScheme) type {
+pub fn SchemeHash(comptime scheme: proto.SignatureScheme) type {
     const Sha256 = crypto.hash.sha2.Sha256;
     const Sha384 = crypto.hash.sha2.Sha384;
     const Sha512 = crypto.hash.sha2.Sha512;
@@ -365,31 +336,31 @@ pub const BufWriter = struct {
         self.pos += bytes;
     }
 
-    pub fn writeHandshakeHeader(self: *BufWriter, handshake_type: HandshakeType, payload_len: usize) !void {
-        try self.write(&handshakeHeader(handshake_type, payload_len));
+    pub fn writeHandshakeHeader(self: *BufWriter, handshake_type: proto.HandshakeType, payload_len: usize) !void {
+        try self.write(&record.handshakeHeader(handshake_type, payload_len));
     }
 
     /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
-    pub fn advanceHandshake(self: *BufWriter, handshake_type: HandshakeType, payload_len: usize) !void {
-        try self.write(&handshakeHeader(handshake_type, payload_len));
+    pub fn advanceHandshake(self: *BufWriter, handshake_type: proto.HandshakeType, payload_len: usize) !void {
+        try self.write(&record.handshakeHeader(handshake_type, payload_len));
         self.pos += payload_len;
     }
 
     /// Record payload is already written by using buffer space from `getPayload`.
     /// Now when we know payload len we can write record header and advance over payload.
-    pub fn advanceRecord(self: *BufWriter, content_type: tls.ContentType, payload_len: usize) !void {
-        try self.write(&recordHeader(content_type, payload_len));
+    pub fn advanceRecord(self: *BufWriter, content_type: proto.ContentType, payload_len: usize) !void {
+        try self.write(&record.header(content_type, payload_len));
         self.pos += payload_len;
     }
 
-    pub fn writeRecord(self: *BufWriter, content_type: tls.ContentType, payload: []const u8) !void {
-        try self.write(&recordHeader(content_type, payload.len));
+    pub fn writeRecord(self: *BufWriter, content_type: proto.ContentType, payload: []const u8) !void {
+        try self.write(&record.header(content_type, payload.len));
         try self.write(payload);
     }
 
     /// Preserves space for record header and returns buffer free space.
     pub fn getPayload(self: *BufWriter) []u8 {
-        return self.buf[self.pos + tls.record_header_len ..];
+        return self.buf[self.pos + record.header_len ..];
     }
 
     /// Preserves space for handshake header and returns buffer free space.
@@ -415,7 +386,7 @@ pub const BufWriter = struct {
 
     pub fn writeExtension(
         self: *BufWriter,
-        comptime et: tls.ExtensionType,
+        comptime et: proto.ExtensionType,
         tags: anytype,
     ) !void {
         try self.writeEnum(et);
@@ -433,11 +404,11 @@ pub const BufWriter = struct {
 
     pub fn writeKeyShare(
         self: *BufWriter,
-        named_groups: []const tls.NamedGroup,
+        named_groups: []const proto.NamedGroup,
         keys: []const []const u8,
     ) !void {
         assert(named_groups.len == keys.len);
-        try self.writeEnum(tls.ExtensionType.key_share);
+        try self.writeEnum(proto.ExtensionType.key_share);
         var l: usize = 0;
         for (keys) |key| {
             l += key.len + 4;
@@ -453,30 +424,15 @@ pub const BufWriter = struct {
     }
 
     pub fn writeServerName(self: *BufWriter, host: []const u8) !void {
-        try self.write(&serverNameExtensionHeader(@intCast(host.len)));
+        const host_len: u16 = @intCast(host.len);
+        try self.writeEnum(proto.ExtensionType.server_name);
+        try self.writeInt(host_len + 5); // byte length of extension payload
+        try self.writeInt(host_len + 3); // server_name_list byte count
+        try self.writeByte(0); // name type
+        try self.writeInt(host_len);
         try self.write(host);
     }
 };
-
-fn serverNameExtensionHeader(host_len: u16) [9]u8 {
-    const int2 = tls.int2;
-
-    return int2(@intFromEnum(tls.ExtensionType.server_name)) ++
-        int2(host_len + 5) ++ // byte length of this extension payload
-        int2(host_len + 3) ++ // server_name_list byte count
-        [1]u8{0x00} ++ // name_type
-        int2(host_len);
-}
-
-pub fn handshakeHeader(handshake_type: HandshakeType, payload_len: usize) [4]u8 {
-    return [1]u8{@intFromEnum(handshake_type)} ++ tls.int3(@intCast(payload_len));
-}
-
-pub fn recordHeader(content_type: tls.ContentType, payload_len: usize) [5]u8 {
-    return [1]u8{@intFromEnum(content_type)} ++
-        tls.int2(@intFromEnum(tls.ProtocolVersion.tls_1_2)) ++
-        tls.int2(@intCast(payload_len));
-}
 
 const testing = std.testing;
 const testu = @import("testu.zig");
@@ -486,8 +442,8 @@ test "BufWriter" {
     var w = BufWriter{ .buf = &buf };
 
     try w.write("ab");
-    try w.writeEnum(CurveType.named_curve);
-    try w.writeEnum(tls.NamedGroup.x25519);
+    try w.writeEnum(proto.CurveType.named_curve);
+    try w.writeEnum(proto.NamedGroup.x25519);
     try w.writeInt(@as(u16, 0x1234));
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
 }
@@ -500,7 +456,7 @@ pub const DhKeyPair = struct {
 
     pub const seed_len = 32 + 32 + 48 + 64;
 
-    pub fn init(seed: [seed_len]u8, named_groups: []const tls.NamedGroup) !DhKeyPair {
+    pub fn init(seed: [seed_len]u8, named_groups: []const proto.NamedGroup) !DhKeyPair {
         var kp: DhKeyPair = .{};
         for (named_groups) |ng|
             switch (ng) {
@@ -513,7 +469,7 @@ pub const DhKeyPair = struct {
         return kp;
     }
 
-    pub inline fn sharedKey(self: DhKeyPair, named_group: tls.NamedGroup, server_pub_key: []const u8) ![]const u8 {
+    pub inline fn sharedKey(self: DhKeyPair, named_group: proto.NamedGroup, server_pub_key: []const u8) ![]const u8 {
         return switch (named_group) {
             .x25519 => brk: {
                 if (server_pub_key.len != X25519.public_length)
@@ -551,7 +507,7 @@ pub const DhKeyPair = struct {
     }
 
     // Returns 32, 65, 97 or 1216 bytes
-    pub inline fn publicKey(self: DhKeyPair, named_group: tls.NamedGroup) ![]const u8 {
+    pub inline fn publicKey(self: DhKeyPair, named_group: proto.NamedGroup) ![]const u8 {
         return switch (named_group) {
             .x25519 => &self.x25519_kp.public_key,
             .secp256r1 => &self.secp256r1_kp.public_key.toUncompressedSec1(),
@@ -572,38 +528,4 @@ test "DhKeyPair.x25519" {
     );
     const kp = try DhKeyPair.init(seed, &.{.x25519});
     try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
-}
-
-pub fn errorToAlert(err: anyerror) tls.AlertDescription {
-    return switch (err) {
-        error.TlsUnexpectedMessage => .unexpected_message,
-        error.TlsBadRecordMac => .bad_record_mac,
-        error.TlsRecordOverflow => .record_overflow,
-        error.TlsHandshakeFailure => .handshake_failure,
-        error.TlsBadCertificate => .bad_certificate,
-        error.TlsUnsupportedCertificate => .unsupported_certificate,
-        error.TlsCertificateRevoked => .certificate_revoked,
-        error.TlsCertificateExpired => .certificate_expired,
-        error.TlsCertificateUnknown => .certificate_unknown,
-        error.TlsIllegalParameter,
-        error.IdentityElement,
-        error.InvalidEncoding,
-        => .illegal_parameter,
-        error.TlsUnknownCa => .unknown_ca,
-        error.TlsAccessDenied => .access_denied,
-        error.TlsDecodeError => .decode_error,
-        error.TlsDecryptError => .decrypt_error,
-        error.TlsProtocolVersion => .protocol_version,
-        error.TlsInsufficientSecurity => .insufficient_security,
-        error.TlsInternalError => .internal_error,
-        error.TlsInappropriateFallback => .inappropriate_fallback,
-        error.TlsMissingExtension => .missing_extension,
-        error.TlsUnsupportedExtension => .unsupported_extension,
-        error.TlsUnrecognizedName => .unrecognized_name,
-        error.TlsBadCertificateStatusResponse => .bad_certificate_status_response,
-        error.TlsUnknownPskIdentity => .unknown_psk_identity,
-        error.TlsCertificateRequired => .certificate_required,
-        error.TlsNoApplicationProtocol => .no_application_protocol,
-        else => .internal_error,
-    };
 }

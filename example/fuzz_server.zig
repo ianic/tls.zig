@@ -82,7 +82,7 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
 
     var conn = try tls.server(tcp.stream, opt);
     while (try conn.next()) |buf| {
-        std.debug.print("{s}", .{buf});
+        //std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
             conn.key_update_requested = true;
         }

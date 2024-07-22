@@ -1,13 +1,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const tls = std.crypto.tls;
 
+const proto = @import("protocol.zig");
 const record = @import("record.zig");
 const cipher = @import("cipher.zig");
 const Cipher = cipher.Cipher;
-const HandshakeType = @import("handshake_common.zig").HandshakeType;
-const handshakeHeader = @import("handshake_common.zig").handshakeHeader;
-const errorToAlert = @import("handshake_common.zig").errorToAlert;
 
 pub fn connection(stream: anytype) Connection(@TypeOf(stream)) {
     return .{
@@ -31,7 +28,7 @@ pub fn Connection(comptime Stream: type) type {
         const Self = @This();
 
         /// Encrypts and writes single tls record to the stream.
-        fn writeRecord(c: *Self, content_type: tls.ContentType, bytes: []const u8) !void {
+        fn writeRecord(c: *Self, content_type: proto.ContentType, bytes: []const u8) !void {
             assert(bytes.len <= cipher.max_cleartext_len);
             var write_buf: [cipher.max_ciphertext_record_len]u8 = undefined;
             // If key update is requested send key update message and update
@@ -48,7 +45,7 @@ pub fn Connection(comptime Stream: type) type {
                 // while it is silent to respond with a single update.
                 //
                 // rfc: https://datatracker.ietf.org/doc/html/rfc8446#autoid-57
-                const key_update = &handshakeHeader(.key_update, 1) ++ [_]u8{0};
+                const key_update = &record.handshakeHeader(.key_update, 1) ++ [_]u8{0};
                 const rec = try c.cipher.encrypt(&write_buf, .handshake, key_update);
                 try c.stream.writeAll(rec);
                 try c.cipher.keyUpdateEncrypt();
@@ -58,7 +55,7 @@ pub fn Connection(comptime Stream: type) type {
         }
 
         fn writeAlert(c: *Self, err: anyerror) !void {
-            const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+            const cleartext = proto.alertFromError(err);
             var buf: [128]u8 = undefined;
             const ciphertext = try c.cipher.encrypt(&buf, .alert, &cleartext);
             c.stream.writeAll(ciphertext) catch {};
@@ -76,7 +73,7 @@ pub fn Connection(comptime Stream: type) type {
             return data;
         }
 
-        fn nextRecord(c: *Self) ReadError!?struct { tls.ContentType, []const u8 } {
+        fn nextRecord(c: *Self) ReadError!?struct { proto.ContentType, []const u8 } {
             if (c.eof()) return null;
             while (true) {
                 const content_type, const cleartext = try c.rec_rdr.nextDecrypt(&c.cipher) orelse return null;
@@ -84,7 +81,7 @@ pub fn Connection(comptime Stream: type) type {
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
-                        const handshake_type: HandshakeType = @enumFromInt(cleartext[0]);
+                        const handshake_type: proto.HandshakeType = @enumFromInt(cleartext[0]);
                         switch (handshake_type) {
                             // skip new session ticket and read next record
                             .new_session_ticket => continue,
@@ -93,7 +90,7 @@ pub fn Connection(comptime Stream: type) type {
                                 // rfc: Upon receiving a KeyUpdate, the receiver MUST
                                 // update its receiving keys.
                                 try c.cipher.keyUpdateDecrypt();
-                                const key: tls.KeyUpdateRequest = @enumFromInt(cleartext[4]);
+                                const key: proto.KeyUpdateRequest = @enumFromInt(cleartext[4]);
                                 switch (key) {
                                     .update_requested => {
                                         @atomicStore(bool, &c.key_update_requested, true, .monotonic);
@@ -109,8 +106,8 @@ pub fn Connection(comptime Stream: type) type {
                     },
                     .alert => {
                         if (cleartext.len < 2) return error.TlsUnexpectedMessage;
-                        const level: tls.AlertLevel = @enumFromInt(cleartext[0]);
-                        const desc: tls.AlertDescription = @enumFromInt(cleartext[1]);
+                        const level: proto.AlertLevel = @enumFromInt(cleartext[0]);
+                        const desc: proto.AlertDescription = @enumFromInt(cleartext[1]);
                         _ = level;
                         try desc.toError();
                         // server side clean shutdown
@@ -130,15 +127,15 @@ pub fn Connection(comptime Stream: type) type {
         pub fn close(c: *Self) !void {
             if (c.received_close_notify) return;
             const close_notify_alert = [2]u8{
-                @intFromEnum(tls.AlertLevel.warning),
-                @intFromEnum(tls.AlertDescription.close_notify),
+                @intFromEnum(proto.AlertLevel.warning),
+                @intFromEnum(proto.AlertDescription.close_notify),
             };
             try c.writeRecord(.alert, &close_notify_alert);
         }
 
         // read, write interface
 
-        pub const ReadError = Stream.ReadError || tls.AlertDescription.Error ||
+        pub const ReadError = Stream.ReadError || proto.AlertDescription.Error ||
             error{
             TlsBadVersion,
             TlsUnexpectedMessage,

@@ -153,7 +153,7 @@ pub const Counter = struct {
         }
     }
 
-    pub fn addSuccess(self: *@This(), version: std.crypto.tls.ProtocolVersion) void {
+    pub fn addSuccess(self: *@This(), version: tls.Version) void {
         self.mu.lock();
         defer self.mu.unlock();
 

@@ -2,7 +2,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const crypto = std.crypto;
 const mem = std.mem;
-const tls = crypto.tls;
 const Certificate = crypto.Certificate;
 
 const cipher = @import("cipher.zig");
@@ -12,18 +11,15 @@ const cipher_suites = @import("cipher.zig").cipher_suites;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 const PrivateKey = @import("PrivateKey.zig");
+const proto = @import("protocol.zig");
 
 const common = @import("handshake_common.zig");
-const HandshakeType = common.HandshakeType;
 const BufWriter = common.BufWriter;
 const dupe = common.dupe;
-const recordHeader = common.recordHeader;
-const handshakeHeader = common.handshakeHeader;
 const CertificateBuilder = common.CertificateBuilder;
 const Auth = common.Auth;
 const DhKeyPair = common.DhKeyPair;
 const CertificateParser = common.CertificateParser;
-const errorToAlert = common.errorToAlert;
 
 pub const Options = struct {
     // Server authentication. If null server will not send certificate and
@@ -57,15 +53,15 @@ pub fn Handshake(comptime Stream: type) type {
     return struct {
         // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97
         const max_pub_key_len = 98;
-        const supported_named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
+        const supported_named_groups = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
 
         server_random: [32]u8 = undefined,
         client_random: [32]u8 = undefined,
         legacy_session_id_buf: [32]u8 = undefined,
         legacy_session_id: []u8 = "",
         cipher_suite: CipherSuite = @enumFromInt(0),
-        signature_scheme: tls.SignatureScheme = @enumFromInt(0),
-        named_group: tls.NamedGroup = @enumFromInt(0),
+        signature_scheme: proto.SignatureScheme = @enumFromInt(0),
+        named_group: proto.NamedGroup = @enumFromInt(0),
         client_pub_key_buf: [max_pub_key_len]u8 = undefined,
         client_pub_key: []u8 = "",
         server_pub_key_buf: [max_pub_key_len]u8 = undefined,
@@ -87,12 +83,11 @@ pub fn Handshake(comptime Stream: type) type {
 
         fn writeAlert(h: *HandshakeT, stream: Stream, cph: ?*Cipher, err: anyerror) !void {
             if (cph) |c| {
-                const cleartext = [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+                const cleartext = proto.alertFromError(err);
                 const ciphertext = try c.encrypt(h.buffer, .alert, &cleartext);
                 stream.writeAll(ciphertext) catch {};
             } else {
-                const alert = recordHeader(.alert, 2) ++
-                    [_]u8{ @intFromEnum(tls.AlertLevel.fatal), @intFromEnum(errorToAlert(err)) };
+                const alert = record.header(.alert, 2) ++ proto.alertFromError(err);
                 stream.writeAll(&alert) catch {};
             }
         }
@@ -119,7 +114,7 @@ pub fn Handshake(comptime Stream: type) type {
                 };
                 {
                     const hello = try h.makeServerHello(w.getFree());
-                    h.transcript.update(hello[tls.record_header_len..]);
+                    h.transcript.update(hello[record.header_len..]);
                     w.pos += hello.len;
                 }
                 {
@@ -128,7 +123,7 @@ pub fn Handshake(comptime Stream: type) type {
                 }
                 try w.writeRecord(.change_cipher_spec, &[_]u8{1});
                 {
-                    const encrypted_extensions = &handshakeHeader(.encrypted_extensions, 2) ++ [_]u8{ 0, 0 };
+                    const encrypted_extensions = &record.handshakeHeader(.encrypted_extensions, 2) ++ [_]u8{ 0, 0 };
                     h.transcript.update(encrypted_extensions);
                     try h.writeEncrypted(&w, encrypted_extensions);
                 }
@@ -191,7 +186,7 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
-            var handshake_state: HandshakeType = .finished;
+            var handshake_state: proto.HandshakeType = .finished;
             var cert: CertificateParser = undefined;
             if (opt.client_auth) |client_auth| {
                 cert = .{ .root_ca = client_auth.root_ca, .host = "" };
@@ -219,7 +214,7 @@ pub fn Handshake(comptime Stream: type) type {
                         try d.expectContentType(.handshake);
                         while (!d.eof()) {
                             const start_idx = d.idx;
-                            const handshake_type = try d.decode(HandshakeType);
+                            const handshake_type = try d.decode(proto.HandshakeType);
                             const length = try d.decode(u24);
 
                             if (length > cipher.max_cleartext_len)
@@ -300,7 +295,7 @@ pub fn Handshake(comptime Stream: type) type {
             const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
             var w = BufWriter{ .buf = buf[header_len..] };
 
-            try w.writeEnum(tls.ProtocolVersion.tls_1_2);
+            try w.writeEnum(proto.Version.tls_1_2);
             try w.write(&h.server_random);
             {
                 try w.writeInt(@as(u8, @intCast(h.legacy_session_id.len)));
@@ -311,13 +306,13 @@ pub fn Handshake(comptime Stream: type) type {
 
             var e = BufWriter{ .buf = buf[header_len + w.pos + 2 ..] };
             { // supported versions extension
-                try e.writeEnum(tls.ExtensionType.supported_versions);
+                try e.writeEnum(proto.ExtensionType.supported_versions);
                 try e.writeInt(@as(u16, 2));
-                try e.writeEnum(tls.ProtocolVersion.tls_1_3);
+                try e.writeEnum(proto.Version.tls_1_3);
             }
             { // key share extension
                 const key_len: u16 = @intCast(h.server_pub_key.len);
-                try e.writeEnum(tls.ExtensionType.key_share);
+                try e.writeEnum(proto.ExtensionType.key_share);
                 try e.writeInt(key_len + 4);
                 try e.writeEnum(h.named_group);
                 try e.writeInt(key_len);
@@ -326,8 +321,8 @@ pub fn Handshake(comptime Stream: type) type {
             try w.writeInt(@as(u16, @intCast(e.pos))); // extensions length
 
             const payload_len = w.pos + e.pos;
-            buf[0..header_len].* = recordHeader(.handshake, 4 + payload_len) ++
-                handshakeHeader(.server_hello, payload_len);
+            buf[0..header_len].* = record.header(.handshake, 4 + payload_len) ++
+                record.handshakeHeader(.server_hello, payload_len);
 
             return buf[0 .. header_len + payload_len];
         }
@@ -355,10 +350,10 @@ pub fn Handshake(comptime Stream: type) type {
             try d.expectContentType(.handshake);
             h.transcript.update(d.payload);
 
-            const handshake_type = try d.decode(HandshakeType);
+            const handshake_type = try d.decode(proto.HandshakeType);
             if (handshake_type != .client_hello) return error.TlsUnexpectedMessage;
             _ = try d.decode(u24); // handshake length
-            if (try d.decode(tls.ProtocolVersion) != .tls_1_2) return error.TlsProtocolVersion;
+            if (try d.decode(proto.Version) != .tls_1_2) return error.TlsProtocolVersion;
 
             h.client_random = (try d.array(32)).*;
             { // legacy session id
@@ -385,7 +380,7 @@ pub fn Handshake(comptime Stream: type) type {
             // extensions
             const extensions_end_idx = try d.decode(u16) + d.idx;
             while (d.idx < extensions_end_idx) {
-                const extension_type = try d.decode(tls.ExtensionType);
+                const extension_type = try d.decode(proto.ExtensionType);
                 const extension_len = try d.decode(u16);
 
                 switch (extension_type) {
@@ -393,7 +388,7 @@ pub fn Handshake(comptime Stream: type) type {
                         var tls_1_3_supported = false;
                         const end_idx = try d.decode(u8) + d.idx;
                         while (d.idx < end_idx) {
-                            if (try d.decode(tls.ProtocolVersion) == tls.ProtocolVersion.tls_1_3) {
+                            if (try d.decode(proto.Version) == proto.Version.tls_1_3) {
                                 tls_1_3_supported = true;
                             }
                         }
@@ -405,7 +400,7 @@ pub fn Handshake(comptime Stream: type) type {
                         var selected_named_group_idx = supported_named_groups.len;
                         const end_idx = try d.decode(u16) + d.idx;
                         while (d.idx < end_idx) {
-                            const named_group = try d.decode(tls.NamedGroup);
+                            const named_group = try d.decode(proto.NamedGroup);
                             switch (@intFromEnum(named_group)) {
                                 0x0001...0x0016,
                                 0x001a...0x001c,
@@ -428,7 +423,7 @@ pub fn Handshake(comptime Stream: type) type {
                     .supported_groups => {
                         const end_idx = try d.decode(u16) + d.idx;
                         while (d.idx < end_idx) {
-                            const named_group = try d.decode(tls.NamedGroup);
+                            const named_group = try d.decode(proto.NamedGroup);
                             switch (@intFromEnum(named_group)) {
                                 0x0001...0x0016,
                                 0x001a...0x001c,
@@ -447,7 +442,7 @@ pub fn Handshake(comptime Stream: type) type {
                             if (list_len == 0) return error.TlsDecodeError;
                             const end_idx = list_len + d.idx;
                             while (d.idx < end_idx) {
-                                const signature_scheme = try d.decode(tls.SignatureScheme);
+                                const signature_scheme = try d.decode(proto.SignatureScheme);
                                 if (signature_scheme == h.signature_scheme) found = true;
                             }
                             if (!found) return error.TlsHandshakeFailure;

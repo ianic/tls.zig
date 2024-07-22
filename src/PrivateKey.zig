@@ -2,13 +2,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Certificate = std.crypto.Certificate;
 const der = Certificate.der;
-const tls = std.crypto.tls;
 const rsa = @import("rsa/rsa.zig");
 const base64 = std.base64.standard.decoderWithIgnore(" \t\r\n");
+const proto = @import("protocol.zig");
 
 const max_ecdsa_key_len = 66;
 
-signature_scheme: tls.SignatureScheme,
+signature_scheme: proto.SignatureScheme,
 
 key: union {
     rsa: rsa.KeyPair,
@@ -118,7 +118,7 @@ pub fn parseEcDer(bytes: []const u8) !PrivateKey {
     };
 }
 
-fn signatureScheme(named_curve: Certificate.NamedCurve) tls.SignatureScheme {
+fn signatureScheme(named_curve: Certificate.NamedCurve) proto.SignatureScheme {
     return switch (named_curve) {
         .X9_62_prime256v1 => .ecdsa_secp256r1_sha256,
         .secp384r1 => .ecdsa_secp384r1_sha384,

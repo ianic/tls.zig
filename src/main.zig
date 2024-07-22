@@ -7,8 +7,10 @@ pub const Connection = @import("connection.zig").Connection;
 pub const ClientOptions = @import("handshake_client.zig").Options;
 pub const ServerOptions = @import("handshake_server.zig").Options;
 pub const key_log = @import("key_log.zig");
-pub const NamedGroup = std.crypto.tls.NamedGroup;
+const proto = @import("protocol.zig");
+pub const NamedGroup = proto.NamedGroup;
 pub const named_groups = ClientOptions.named_groups;
+pub const Version = proto.Version;
 
 const record = @import("record.zig");
 const connection = @import("connection.zig").connection;

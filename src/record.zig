@@ -1,8 +1,24 @@
 const std = @import("std");
-const tls = std.crypto.tls;
 const mem = std.mem;
+
+const proto = @import("protocol.zig");
 const cipher = @import("cipher.zig");
 const Cipher = cipher.Cipher;
+const record = @import("record.zig");
+
+pub const header_len = 5;
+
+pub fn header(content_type: proto.ContentType, payload_len: usize) [header_len]u8 {
+    const int2 = std.crypto.tls.int2;
+    return [1]u8{@intFromEnum(content_type)} ++
+        int2(@intFromEnum(proto.Version.tls_1_2)) ++
+        int2(@intCast(payload_len));
+}
+
+pub fn handshakeHeader(handshake_type: proto.HandshakeType, payload_len: usize) [4]u8 {
+    const int3 = std.crypto.tls.int3;
+    return [1]u8{@intFromEnum(handshake_type)} ++ int3(@intCast(payload_len));
+}
 
 pub fn reader(inner_reader: anytype) Reader(@TypeOf(inner_reader)) {
     return .{ .inner_reader = inner_reader };
@@ -30,11 +46,11 @@ pub fn Reader(comptime InnerReader: type) type {
             };
         }
 
-        pub fn contentType(buf: []const u8) tls.ContentType {
+        pub fn contentType(buf: []const u8) proto.ContentType {
             return @enumFromInt(buf[0]);
         }
 
-        pub fn protocolVersion(buf: []const u8) tls.ProtocolVersion {
+        pub fn protocolVersion(buf: []const u8) proto.Version {
             return @enumFromInt(mem.readInt(u16, buf[1..3], .big));
         }
 
@@ -42,12 +58,12 @@ pub fn Reader(comptime InnerReader: type) type {
             while (true) {
                 const buffer = r.buffer[r.start..r.end];
                 // If we have 5 bytes header.
-                if (buffer.len >= tls.record_header_len) {
-                    const record_header = buffer[0..tls.record_header_len];
+                if (buffer.len >= record.header_len) {
+                    const record_header = buffer[0..record.header_len];
                     const payload_len = mem.readInt(u16, record_header[3..5], .big);
                     if (payload_len > cipher.max_ciphertext_len)
                         return error.TlsRecordOverflow;
-                    const record_len = tls.record_header_len + payload_len;
+                    const record_len = record.header_len + payload_len;
                     // If we have whole record
                     if (buffer.len >= record_len) {
                         r.start += record_len;
@@ -74,7 +90,7 @@ pub fn Reader(comptime InnerReader: type) type {
             }
         }
 
-        pub fn nextDecrypt(r: *ReaderT, cph: *Cipher) !?struct { tls.ContentType, []const u8 } {
+        pub fn nextDecrypt(r: *ReaderT, cph: *Cipher) !?struct { proto.ContentType, []const u8 } {
             const rec = (try r.next()) orelse return null;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
@@ -97,8 +113,8 @@ pub fn Reader(comptime InnerReader: type) type {
 }
 
 pub const Record = struct {
-    content_type: tls.ContentType,
-    protocol_version: tls.ProtocolVersion = .tls_1_2,
+    content_type: proto.ContentType,
+    protocol_version: proto.Version = .tls_1_2,
     header: []const u8,
     payload: []const u8,
 
@@ -106,8 +122,8 @@ pub const Record = struct {
         return .{
             .content_type = @enumFromInt(buffer[0]),
             .protocol_version = @enumFromInt(mem.readInt(u16, buffer[1..3], .big)),
-            .header = buffer[0..tls.record_header_len],
-            .payload = buffer[tls.record_header_len..],
+            .header = buffer[0..record.header_len],
+            .payload = buffer[record.header_len..],
         };
     }
 
@@ -117,11 +133,11 @@ pub const Record = struct {
 };
 
 pub const Decoder = struct {
-    content_type: tls.ContentType,
+    content_type: proto.ContentType,
     payload: []const u8,
     idx: usize = 0,
 
-    pub fn init(content_type: tls.ContentType, payload: []u8) Decoder {
+    pub fn init(content_type: proto.ContentType, payload: []u8) Decoder {
         return .{
             .content_type = content_type,
             .payload = payload,
@@ -182,7 +198,7 @@ pub const Decoder = struct {
         return d.idx == d.payload.len;
     }
 
-    pub fn expectContentType(d: *Decoder, content_type: tls.ContentType) !void {
+    pub fn expectContentType(d: *Decoder, content_type: proto.ContentType) !void {
         if (d.content_type == content_type) return;
 
         switch (d.content_type) {
@@ -193,8 +209,8 @@ pub const Decoder = struct {
 
     pub fn raiseAlert(d: *Decoder) !void {
         if (d.payload.len < 2) return error.TlsUnexpectedMessage;
-        _ = try d.decode(tls.AlertLevel);
-        const desc = try d.decode(tls.AlertDescription);
+        _ = try d.decode(proto.AlertLevel);
+        const desc = try d.decode(proto.AlertDescription);
         try desc.toError();
         return error.TlsAlertCloseNotify;
     }
@@ -204,14 +220,13 @@ const testing = std.testing;
 const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
 const CipherSuite = @import("cipher.zig").CipherSuite;
-const HandshakeType = @import("handshake_common.zig").HandshakeType;
 
 test Reader {
     var fbs = std.io.fixedBufferStream(&data12.server_responses);
     var rdr = reader(fbs.reader());
 
     const expected = [_]struct {
-        content_type: tls.ContentType,
+        content_type: proto.ContentType,
         payload_len: usize,
     }{
         .{ .content_type = .handshake, .payload_len = 49 },
@@ -236,9 +251,9 @@ test Decoder {
     var d = (try rdr.nextDecoder());
     try testing.expectEqual(.handshake, d.content_type);
 
-    try testing.expectEqual(.server_hello, try d.decode(HandshakeType));
+    try testing.expectEqual(.server_hello, try d.decode(proto.HandshakeType));
     try testing.expectEqual(45, try d.decode(u24)); // length
-    try testing.expectEqual(.tls_1_2, try d.decode(tls.ProtocolVersion));
+    try testing.expectEqual(.tls_1_2, try d.decode(proto.Version));
     try testing.expectEqualStrings(
         &testu.hexToBytes("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
         try d.array(32),
