@@ -44,7 +44,7 @@ pub const CertificateBuilder = struct {
     side: proto.Side = .client,
 
     pub fn makeCertificate(h: CertificateBuilder, buf: []u8) ![]const u8 {
-        var w = BufWriter{ .buf = buf };
+        var w = record.Writer{ .buf = buf };
         const certs = h.cert.bytes.items;
         const certs_count = h.cert.map.size;
 
@@ -77,7 +77,7 @@ pub const CertificateBuilder = struct {
     }
 
     pub fn makeCertificateVerify(h: CertificateBuilder, buf: []u8) ![]const u8 {
-        var w = BufWriter{ .buf = buf };
+        var w = record.Writer{ .buf = buf };
         const signature, const signature_scheme = try h.createSignature();
         try w.writeHandshakeHeader(.certificate_verify, signature.len + 4);
         try w.writeEnum(signature_scheme);
@@ -307,147 +307,6 @@ pub fn dupe(buf: []u8, data: []const u8) []u8 {
     return buf[0..n];
 }
 
-pub const BufWriter = struct {
-    buf: []u8,
-    pos: usize = 0,
-
-    pub fn write(self: *BufWriter, data: []const u8) !void {
-        defer self.pos += data.len;
-        if (self.pos + data.len > self.buf.len) return error.BufferOverflow;
-        _ = dupe(self.buf[self.pos..], data);
-    }
-
-    pub fn writeByte(self: *BufWriter, b: u8) !void {
-        defer self.pos += 1;
-        if (self.pos == self.buf.len) return error.BufferOverflow;
-        self.buf[self.pos] = b;
-    }
-
-    pub fn writeEnum(self: *BufWriter, value: anytype) !void {
-        try self.writeInt(@intFromEnum(value));
-    }
-
-    pub fn writeInt(self: *BufWriter, value: anytype) !void {
-        const IntT = @TypeOf(value);
-        const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
-        const free = self.buf[self.pos..];
-        if (free.len < bytes) return error.BufferOverflow;
-        mem.writeInt(IntT, free[0..bytes], value, .big);
-        self.pos += bytes;
-    }
-
-    pub fn writeHandshakeHeader(self: *BufWriter, handshake_type: proto.HandshakeType, payload_len: usize) !void {
-        try self.write(&record.handshakeHeader(handshake_type, payload_len));
-    }
-
-    /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
-    pub fn advanceHandshake(self: *BufWriter, handshake_type: proto.HandshakeType, payload_len: usize) !void {
-        try self.write(&record.handshakeHeader(handshake_type, payload_len));
-        self.pos += payload_len;
-    }
-
-    /// Record payload is already written by using buffer space from `getPayload`.
-    /// Now when we know payload len we can write record header and advance over payload.
-    pub fn advanceRecord(self: *BufWriter, content_type: proto.ContentType, payload_len: usize) !void {
-        try self.write(&record.header(content_type, payload_len));
-        self.pos += payload_len;
-    }
-
-    pub fn writeRecord(self: *BufWriter, content_type: proto.ContentType, payload: []const u8) !void {
-        try self.write(&record.header(content_type, payload.len));
-        try self.write(payload);
-    }
-
-    /// Preserves space for record header and returns buffer free space.
-    pub fn getPayload(self: *BufWriter) []u8 {
-        return self.buf[self.pos + record.header_len ..];
-    }
-
-    /// Preserves space for handshake header and returns buffer free space.
-    pub fn getHandshakePayload(self: *BufWriter) []u8 {
-        return self.buf[self.pos + 4 ..];
-    }
-
-    pub fn getWritten(self: *BufWriter) []const u8 {
-        return self.buf[0..self.pos];
-    }
-
-    pub fn getFree(self: *BufWriter) []u8 {
-        return self.buf[self.pos..];
-    }
-
-    pub fn writeEnumArray(self: *BufWriter, comptime E: type, tags: []const E) !void {
-        assert(@sizeOf(E) == 2);
-        try self.writeInt(@as(u16, @intCast(tags.len * 2)));
-        for (tags) |t| {
-            try self.writeEnum(t);
-        }
-    }
-
-    pub fn writeExtension(
-        self: *BufWriter,
-        comptime et: proto.ExtensionType,
-        tags: anytype,
-    ) !void {
-        try self.writeEnum(et);
-        if (et == .supported_versions) {
-            try self.writeInt(@as(u16, @intCast(tags.len * 2 + 1)));
-            try self.writeInt(@as(u8, @intCast(tags.len * 2)));
-        } else {
-            try self.writeInt(@as(u16, @intCast(tags.len * 2 + 2)));
-            try self.writeInt(@as(u16, @intCast(tags.len * 2)));
-        }
-        for (tags) |t| {
-            try self.writeEnum(t);
-        }
-    }
-
-    pub fn writeKeyShare(
-        self: *BufWriter,
-        named_groups: []const proto.NamedGroup,
-        keys: []const []const u8,
-    ) !void {
-        assert(named_groups.len == keys.len);
-        try self.writeEnum(proto.ExtensionType.key_share);
-        var l: usize = 0;
-        for (keys) |key| {
-            l += key.len + 4;
-        }
-        try self.writeInt(@as(u16, @intCast(l + 2)));
-        try self.writeInt(@as(u16, @intCast(l)));
-        for (named_groups, 0..) |ng, i| {
-            const key = keys[i];
-            try self.writeEnum(ng);
-            try self.writeInt(@as(u16, @intCast(key.len)));
-            try self.write(key);
-        }
-    }
-
-    pub fn writeServerName(self: *BufWriter, host: []const u8) !void {
-        const host_len: u16 = @intCast(host.len);
-        try self.writeEnum(proto.ExtensionType.server_name);
-        try self.writeInt(host_len + 5); // byte length of extension payload
-        try self.writeInt(host_len + 3); // server_name_list byte count
-        try self.writeByte(0); // name type
-        try self.writeInt(host_len);
-        try self.write(host);
-    }
-};
-
-const testing = std.testing;
-const testu = @import("testu.zig");
-
-test "BufWriter" {
-    var buf: [16]u8 = undefined;
-    var w = BufWriter{ .buf = &buf };
-
-    try w.write("ab");
-    try w.writeEnum(proto.CurveType.named_curve);
-    try w.writeEnum(proto.NamedGroup.x25519);
-    try w.writeInt(@as(u16, 0x1234));
-    try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
-}
-
 pub const DhKeyPair = struct {
     x25519_kp: X25519.KeyPair = undefined,
     secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
@@ -517,6 +376,9 @@ pub const DhKeyPair = struct {
         };
     }
 };
+
+const testing = std.testing;
+const testu = @import("testu.zig");
 
 test "DhKeyPair.x25519" {
     var seed: [DhKeyPair.seed_len]u8 = undefined;

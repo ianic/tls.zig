@@ -106,10 +106,7 @@ pub fn Connection(comptime Stream: type) type {
                     },
                     .alert => {
                         if (cleartext.len < 2) return error.TlsUnexpectedMessage;
-                        const level: proto.AlertLevel = @enumFromInt(cleartext[0]);
-                        const desc: proto.AlertDescription = @enumFromInt(cleartext[1]);
-                        _ = level;
-                        try desc.toError();
+                        try proto.Alert.parse(cleartext[0..2].*).toError();
                         // server side clean shutdown
                         c.received_close_notify = true;
                         return null;
@@ -126,16 +123,12 @@ pub fn Connection(comptime Stream: type) type {
 
         pub fn close(c: *Self) !void {
             if (c.received_close_notify) return;
-            const close_notify_alert = [2]u8{
-                @intFromEnum(proto.AlertLevel.warning),
-                @intFromEnum(proto.AlertDescription.close_notify),
-            };
-            try c.writeRecord(.alert, &close_notify_alert);
+            try c.writeRecord(.alert, &proto.Alert.closeNotify());
         }
 
         // read, write interface
 
-        pub const ReadError = Stream.ReadError || proto.AlertDescription.Error ||
+        pub const ReadError = Stream.ReadError || proto.Alert.Error ||
             error{
             TlsBadVersion,
             TlsUnexpectedMessage,

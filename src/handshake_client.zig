@@ -15,7 +15,6 @@ const key_log = @import("key_log.zig");
 const proto = @import("protocol.zig");
 
 const common = @import("handshake_common.zig");
-const BufWriter = common.BufWriter;
 const dupe = common.dupe;
 const SchemeHash = common.SchemeHash;
 const CertificateBuilder = common.CertificateBuilder;
@@ -260,7 +259,7 @@ pub fn Handshake(comptime Stream: type) type {
             const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
             const tls_versions = try CipherSuite.versions(opt.cipher_suites);
             // Payload writer, preserve header_len bytes for handshake header.
-            var payload = BufWriter{ .buf = buffer[header_len..] };
+            var payload = record.Writer{ .buf = buffer[header_len..] };
             try payload.writeEnum(proto.Version.tls_1_2);
             try payload.write(&h.client_random);
             try payload.writeByte(0); // no session id
@@ -269,7 +268,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             // Extensions writer starts after payload and preserves 2 more
             // bytes for extension len in payload.
-            var ext = BufWriter{ .buf = buffer[header_len + payload.pos + 2 ..] };
+            var ext = record.Writer{ .buf = buffer[header_len + payload.pos + 2 ..] };
             try ext.writeExtension(.supported_versions, switch (tls_versions) {
                 .both => &[_]proto.Version{ .tls_1_3, .tls_1_2 },
                 .tls_1_3 => &[_]proto.Version{.tls_1_3},
@@ -368,7 +367,7 @@ pub fn Handshake(comptime Stream: type) type {
         fn parseServerHello(h: *HandshakeT, d: *record.Decoder, length: u24) !void {
             if (try d.decode(proto.Version) != proto.Version.tls_1_2)
                 return error.TlsBadVersion;
-            h.server_random = (try d.array(32)).*;
+            h.server_random = try d.array(32);
             if (isServerHelloRetryRequest(&h.server_random))
                 return error.TlsServerHelloRetryRequest;
 
@@ -523,7 +522,7 @@ pub fn Handshake(comptime Stream: type) type {
         fn verifyCertificateSignatureTLS12(h: *HandshakeT) !void {
             if (h.cipher_suite.keyExchange() != .ecdhe) return;
             const verify_bytes = brk: {
-                var w = BufWriter{ .buf = h.buffer };
+                var w = record.Writer{ .buf = h.buffer };
                 try w.write(&h.client_random);
                 try w.write(&h.server_random);
                 try w.writeEnum(proto.CurveType.named_curve);
@@ -540,7 +539,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// If client certificate is requested also adds client certificate and
         /// certificate verify messages.
         fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Auth) ![]const u8 {
-            var w = BufWriter{ .buf = h.buffer };
+            var w = record.Writer{ .buf = h.buffer };
             var cert_builder: ?CertificateBuilder = null;
 
             // Client certificate message
@@ -594,7 +593,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// server has requested certificate but the client is not configured
         /// empty certificate message is sent, as is required by rfc.
         fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?Auth) ![]const u8 {
-            var w = BufWriter{ .buf = h.buffer };
+            var w = record.Writer{ .buf = h.buffer };
 
             // Client change cipher spec message
             try w.writeRecord(.change_cipher_spec, &[_]u8{1});
@@ -641,14 +640,14 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn makeClientFinishedTLS13(h: *HandshakeT, buf: []u8) ![]const u8 {
-            var w = BufWriter{ .buf = buf };
+            var w = record.Writer{ .buf = buf };
             const verify_data = h.transcript.clientFinishedTLS13(w.getHandshakePayload());
             try w.advanceHandshake(.finished, verify_data.len);
             return w.getWritten();
         }
 
         fn makeClientKeyExchange(h: *HandshakeT, buf: []u8) ![]const u8 {
-            var w = BufWriter{ .buf = buf };
+            var w = record.Writer{ .buf = buf };
             if (h.named_group) |named_group| {
                 const key = try h.dh_kp.publicKey(named_group);
                 try w.writeHandshakeHeader(.client_key_exchange, 1 + key.len);
@@ -684,7 +683,7 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         /// Write encrypted handshake message into `w`
-        fn writeEncrypted(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
+        fn writeEncrypted(h: *HandshakeT, w: *record.Writer, cleartext: []const u8) !void {
             const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
             w.pos += ciphertext.len;
         }

@@ -14,7 +14,6 @@ const PrivateKey = @import("PrivateKey.zig");
 const proto = @import("protocol.zig");
 
 const common = @import("handshake_common.zig");
-const BufWriter = common.BufWriter;
 const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
 const Auth = common.Auth;
@@ -106,7 +105,7 @@ pub fn Handshake(comptime Stream: type) type {
             h.transcript.use(h.cipher_suite.hash());
 
             const server_flight = brk: {
-                var w = BufWriter{ .buf = h.buffer };
+                var w = record.Writer{ .buf = h.buffer };
 
                 const shared_key = h.sharedKey() catch |err| {
                     try h.writeAlert(stream, null, err);
@@ -279,21 +278,21 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn makeFinished(h: *HandshakeT, buf: []u8) ![]const u8 {
-            var w = BufWriter{ .buf = buf };
+            var w = record.Writer{ .buf = buf };
             const verify_data = h.transcript.serverFinishedTLS13(w.getHandshakePayload());
             try w.advanceHandshake(.finished, verify_data.len);
             return w.getWritten();
         }
 
         /// Write encrypted handshake message into `w`
-        fn writeEncrypted(h: *HandshakeT, w: *BufWriter, cleartext: []const u8) !void {
+        fn writeEncrypted(h: *HandshakeT, w: *record.Writer, cleartext: []const u8) !void {
             const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
             w.pos += ciphertext.len;
         }
 
         fn makeServerHello(h: *HandshakeT, buf: []u8) ![]const u8 {
             const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
-            var w = BufWriter{ .buf = buf[header_len..] };
+            var w = record.Writer{ .buf = buf[header_len..] };
 
             try w.writeEnum(proto.Version.tls_1_2);
             try w.write(&h.server_random);
@@ -304,7 +303,7 @@ pub fn Handshake(comptime Stream: type) type {
             try w.writeEnum(h.cipher_suite);
             try w.write(&[_]u8{0}); // compression method
 
-            var e = BufWriter{ .buf = buf[header_len + w.pos + 2 ..] };
+            var e = record.Writer{ .buf = buf[header_len + w.pos + 2 ..] };
             { // supported versions extension
                 try e.writeEnum(proto.ExtensionType.supported_versions);
                 try e.writeInt(@as(u16, 2));
@@ -332,10 +331,10 @@ pub fn Handshake(comptime Stream: type) type {
             const header_len = 4 + 1 + 2;
 
             // First write extensions, leave space for header.
-            var ext = BufWriter{ .buf = buf[header_len..] };
+            var ext = record.Writer{ .buf = buf[header_len..] };
             try ext.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
 
-            var w = BufWriter{ .buf = buf };
+            var w = record.Writer{ .buf = buf };
             try w.writeHandshakeHeader(.certificate_request, ext.pos + 3);
             try w.writeInt(@as(u8, 0)); // certificate request context length = 0
             try w.writeInt(@as(u16, @intCast(ext.pos))); // extensions length
@@ -355,7 +354,7 @@ pub fn Handshake(comptime Stream: type) type {
             _ = try d.decode(u24); // handshake length
             if (try d.decode(proto.Version) != .tls_1_2) return error.TlsProtocolVersion;
 
-            h.client_random = (try d.array(32)).*;
+            h.client_random = try d.array(32);
             { // legacy session id
                 const len = try d.decode(u8);
                 h.legacy_session_id = dupe(&h.legacy_session_id_buf, try d.slice(len));

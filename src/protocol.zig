@@ -86,16 +86,16 @@ pub const ExtensionType = enum(u16) {
 };
 
 pub fn alertFromError(err: anyerror) [2]u8 {
-    return [2]u8{ @intFromEnum(AlertLevel.fatal), @intFromEnum(AlertDescription.fromError(err)) };
+    return [2]u8{ @intFromEnum(Alert.Level.fatal), @intFromEnum(Alert.fromError(err)) };
 }
 
-pub const AlertLevel = enum(u8) {
-    warning = 1,
-    fatal = 2,
-    _,
-};
+pub const Alert = enum(u8) {
+    pub const Level = enum(u8) {
+        warning = 1,
+        fatal = 2,
+        _,
+    };
 
-pub const AlertDescription = enum(u8) {
     pub const Error = error{
         TlsAlertUnexpectedMessage,
         TlsAlertBadRecordMac,
@@ -154,7 +154,7 @@ pub const AlertDescription = enum(u8) {
     no_application_protocol = 120,
     _,
 
-    pub fn toError(alert: AlertDescription) Error!void {
+    pub fn toError(alert: Alert) Error!void {
         return switch (alert) {
             .close_notify => {}, // not an error
             .unexpected_message => error.TlsAlertUnexpectedMessage,
@@ -187,7 +187,7 @@ pub const AlertDescription = enum(u8) {
         };
     }
 
-    pub fn fromError(err: anyerror) AlertDescription {
+    pub fn fromError(err: anyerror) Alert {
         return switch (err) {
             error.TlsUnexpectedMessage => .unexpected_message,
             error.TlsBadRecordMac => .bad_record_mac,
@@ -218,6 +218,20 @@ pub const AlertDescription = enum(u8) {
             error.TlsCertificateRequired => .certificate_required,
             error.TlsNoApplicationProtocol => .no_application_protocol,
             else => .internal_error,
+        };
+    }
+
+    pub fn parse(buf: [2]u8) Alert {
+        const level: Alert.Level = @enumFromInt(buf[0]);
+        const alert: Alert = @enumFromInt(buf[1]);
+        _ = level;
+        return alert;
+    }
+
+    pub fn closeNotify() [2]u8 {
+        return [2]u8{
+            @intFromEnum(Alert.Level.warning),
+            @intFromEnum(Alert.close_notify),
         };
     }
 };

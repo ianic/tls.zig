@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const mem = std.mem;
 
 const proto = @import("protocol.zig");
@@ -175,9 +176,9 @@ pub const Decoder = struct {
         }
     }
 
-    pub fn array(d: *Decoder, comptime len: usize) !*const [len]u8 {
+    pub fn array(d: *Decoder, comptime len: usize) ![len]u8 {
         try d.skip(len);
-        return d.payload[d.idx - len ..][0..len];
+        return d.payload[d.idx - len ..][0..len].*;
     }
 
     pub fn slice(d: *Decoder, len: usize) ![]const u8 {
@@ -209,9 +210,7 @@ pub const Decoder = struct {
 
     pub fn raiseAlert(d: *Decoder) !void {
         if (d.payload.len < 2) return error.TlsUnexpectedMessage;
-        _ = try d.decode(proto.AlertLevel);
-        const desc = try d.decode(proto.AlertDescription);
-        try desc.toError();
+        try proto.Alert.parse(try d.array(2)).toError();
         return error.TlsAlertCloseNotify;
     }
 };
@@ -256,7 +255,7 @@ test Decoder {
     try testing.expectEqual(.tls_1_2, try d.decode(proto.Version));
     try testing.expectEqualStrings(
         &testu.hexToBytes("707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"),
-        try d.array(32),
+        try d.slice(32),
     ); // server random
     try testing.expectEqual(0, try d.decode(u8)); // session id len
     try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, try d.decode(CipherSuite));
@@ -265,4 +264,142 @@ test Decoder {
     try testing.expectEqual(5, d.rest().len);
     try d.skip(5);
     try testing.expect(d.eof());
+}
+
+pub const Writer = struct {
+    buf: []u8,
+    pos: usize = 0,
+
+    pub fn write(self: *Writer, data: []const u8) !void {
+        defer self.pos += data.len;
+        if (self.pos + data.len > self.buf.len) return error.BufferOverflow;
+        @memcpy(self.buf[self.pos..][0..data.len], data);
+    }
+
+    pub fn writeByte(self: *Writer, b: u8) !void {
+        defer self.pos += 1;
+        if (self.pos == self.buf.len) return error.BufferOverflow;
+        self.buf[self.pos] = b;
+    }
+
+    pub fn writeEnum(self: *Writer, value: anytype) !void {
+        try self.writeInt(@intFromEnum(value));
+    }
+
+    pub fn writeInt(self: *Writer, value: anytype) !void {
+        const IntT = @TypeOf(value);
+        const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
+        const free = self.buf[self.pos..];
+        if (free.len < bytes) return error.BufferOverflow;
+        mem.writeInt(IntT, free[0..bytes], value, .big);
+        self.pos += bytes;
+    }
+
+    pub fn writeHandshakeHeader(self: *Writer, handshake_type: proto.HandshakeType, payload_len: usize) !void {
+        try self.write(&record.handshakeHeader(handshake_type, payload_len));
+    }
+
+    /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
+    pub fn advanceHandshake(self: *Writer, handshake_type: proto.HandshakeType, payload_len: usize) !void {
+        try self.write(&record.handshakeHeader(handshake_type, payload_len));
+        self.pos += payload_len;
+    }
+
+    /// Record payload is already written by using buffer space from `getPayload`.
+    /// Now when we know payload len we can write record header and advance over payload.
+    pub fn advanceRecord(self: *Writer, content_type: proto.ContentType, payload_len: usize) !void {
+        try self.write(&record.header(content_type, payload_len));
+        self.pos += payload_len;
+    }
+
+    pub fn writeRecord(self: *Writer, content_type: proto.ContentType, payload: []const u8) !void {
+        try self.write(&record.header(content_type, payload.len));
+        try self.write(payload);
+    }
+
+    /// Preserves space for record header and returns buffer free space.
+    pub fn getPayload(self: *Writer) []u8 {
+        return self.buf[self.pos + record.header_len ..];
+    }
+
+    /// Preserves space for handshake header and returns buffer free space.
+    pub fn getHandshakePayload(self: *Writer) []u8 {
+        return self.buf[self.pos + 4 ..];
+    }
+
+    pub fn getWritten(self: *Writer) []const u8 {
+        return self.buf[0..self.pos];
+    }
+
+    pub fn getFree(self: *Writer) []u8 {
+        return self.buf[self.pos..];
+    }
+
+    pub fn writeEnumArray(self: *Writer, comptime E: type, tags: []const E) !void {
+        assert(@sizeOf(E) == 2);
+        try self.writeInt(@as(u16, @intCast(tags.len * 2)));
+        for (tags) |t| {
+            try self.writeEnum(t);
+        }
+    }
+
+    pub fn writeExtension(
+        self: *Writer,
+        comptime et: proto.ExtensionType,
+        tags: anytype,
+    ) !void {
+        try self.writeEnum(et);
+        if (et == .supported_versions) {
+            try self.writeInt(@as(u16, @intCast(tags.len * 2 + 1)));
+            try self.writeInt(@as(u8, @intCast(tags.len * 2)));
+        } else {
+            try self.writeInt(@as(u16, @intCast(tags.len * 2 + 2)));
+            try self.writeInt(@as(u16, @intCast(tags.len * 2)));
+        }
+        for (tags) |t| {
+            try self.writeEnum(t);
+        }
+    }
+
+    pub fn writeKeyShare(
+        self: *Writer,
+        named_groups: []const proto.NamedGroup,
+        keys: []const []const u8,
+    ) !void {
+        assert(named_groups.len == keys.len);
+        try self.writeEnum(proto.ExtensionType.key_share);
+        var l: usize = 0;
+        for (keys) |key| {
+            l += key.len + 4;
+        }
+        try self.writeInt(@as(u16, @intCast(l + 2)));
+        try self.writeInt(@as(u16, @intCast(l)));
+        for (named_groups, 0..) |ng, i| {
+            const key = keys[i];
+            try self.writeEnum(ng);
+            try self.writeInt(@as(u16, @intCast(key.len)));
+            try self.write(key);
+        }
+    }
+
+    pub fn writeServerName(self: *Writer, host: []const u8) !void {
+        const host_len: u16 = @intCast(host.len);
+        try self.writeEnum(proto.ExtensionType.server_name);
+        try self.writeInt(host_len + 5); // byte length of extension payload
+        try self.writeInt(host_len + 3); // server_name_list byte count
+        try self.writeByte(0); // name type
+        try self.writeInt(host_len);
+        try self.write(host);
+    }
+};
+
+test "Writer" {
+    var buf: [16]u8 = undefined;
+    var w = Writer{ .buf = &buf };
+
+    try w.write("ab");
+    try w.writeEnum(proto.CurveType.named_curve);
+    try w.writeEnum(proto.NamedGroup.x25519);
+    try w.writeInt(@as(u16, 0x1234));
+    try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
 }
