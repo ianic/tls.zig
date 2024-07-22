@@ -86,6 +86,9 @@ pub const domainsToSkip = [_][]const u8{
     "jalan.net", //            error error.ConnectionTimedOut curl error: error.OperationTimeout
     "kroger.com",
     "signalfx.com", // has expired 1.2 certificate, sometime sends 1.3 sometime 1.2, strange
+    // should disable keyber
+    "godaddy.com",
+    "secureserver.net",
 };
 
 pub const domainsWithErrors = [_][]const u8{
@@ -214,7 +217,11 @@ pub fn get(
     }
     defer tcp.close();
     // Set socket timeout
-    const read_timeout: std.posix.timeval = .{ .tv_sec = 10, .tv_usec = 0 };
+    // (make it buildable with master and previous version)
+    const read_timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
+        .{ .tv_sec = 10, .tv_usec = 0 }
+    else
+        .{ .sec = 10, .usec = 0 };
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
 

@@ -15,6 +15,7 @@ pub fn main() !void {
 
     var counter: cmn.Counter = .{};
 
+    // Some other sources of domains list:
     // source: https://moz.com/top500
     // var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     // source: https://dataforseo.com/free-seo-stats/top-1000-websites

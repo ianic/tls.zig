@@ -11,8 +11,10 @@ pub fn main() !void {
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = allocator, .n_jobs = 32 });
 
+    try get(allocator, "google.com");
+
     var counter: cmn.Counter = .{};
-    var rdr = cmn.CsvReader.init(@embedFile("domains_tls_1_3"));
+    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {
             counter.add(.skip);
@@ -51,14 +53,33 @@ pub fn get(allocator: std.mem.Allocator, domain: []const u8) !void {
     var url_buffer: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buffer, "https://{s}", .{domain});
     const uri = try std.Uri.parse(url);
+    const conn = try connWithTimeout(allocator, &client, uri);
 
     var server_header_buffer: [header_buffer_size]u8 = undefined;
     var req = try client.open(.GET, uri, .{
         .server_header_buffer = &server_header_buffer,
         .keep_alive = false,
         .redirect_behavior = .unhandled,
+        .connection = conn,
     });
     defer req.deinit();
     try req.send();
     try req.wait();
+}
+
+fn connWithTimeout(allocator: std.mem.Allocator, client: *http.Client, uri: std.Uri) !*http.Client.Connection {
+    const root_ca = try tls.CertBundle.fromSystem(allocator);
+    client.ca_bundle = root_ca.bundle;
+
+    const conn = try client.connectTcp(uri.host.?.percent_encoded, 443, .tls);
+
+    const fd = conn.stream.handle;
+    const read_timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
+        .{ .tv_sec = 5, .tv_usec = 0 }
+    else
+        .{ .sec = 5, .usec = 0 };
+    try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
+    try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
+
+    return conn;
 }
