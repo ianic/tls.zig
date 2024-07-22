@@ -27,8 +27,72 @@ pub const supported_signature_algorithms = &[_]proto.SignatureScheme{
     .rsa_pkcs1_sha384,
 };
 
+pub const CertKeyPair = struct {
+    // A chain of one or more certificates, leaf first.
+    //
+    // Each X.509 certificate contains the public key of a key pair, extra
+    // information (the name of the holder, the name of an issuer of the
+    // certificate, validity time spans) and a signature generated using the
+    // private key of the issuer of the certificate.
+    //
+    // All certificates from the bundle are sent to the other side when creating
+    // Certificate tls message.
+    //
+    // Leaf certificate and private key are used to create signature for
+    // CertifyVerify tls message.
+    bundle: Certificate.Bundle,
+
+    // Private key corresponding to the public key in leaf certificate from the
+    // bundle.
+    key: PrivateKey,
+
+    pub fn load(
+        allocator: std.mem.Allocator,
+        dir: std.fs.Dir,
+        cert_path: []const u8,
+        key_path: []const u8,
+    ) !CertKeyPair {
+        var bundle: Certificate.Bundle = .{};
+        try bundle.addCertsFromFilePath(allocator, dir, cert_path);
+
+        const key_file = try dir.openFile(key_path, .{});
+        defer key_file.close();
+        const key = try PrivateKey.fromFile(allocator, key_file);
+
+        return .{ .bundle = bundle, .key = key };
+    }
+
+    pub fn deinit(c: *CertKeyPair, allocator: std.mem.Allocator) void {
+        c.bundle.deinit(allocator);
+    }
+};
+
+pub const CertBundle = struct {
+    // A chain of one or more certificates.
+    //
+    // They are used to verify that certificate chain sent by the other side
+    // forms valid trust chain.
+    bundle: Certificate.Bundle = .{},
+
+    pub fn fromFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !CertBundle {
+        var bundle: Certificate.Bundle = .{};
+        try bundle.addCertsFromFilePath(allocator, dir, path);
+        return .{ .bundle = bundle };
+    }
+
+    pub fn fromSystem(allocator: std.mem.Allocator) !CertBundle {
+        var bundle: Certificate.Bundle = .{};
+        try bundle.rescan(allocator);
+        return .{ .bundle = bundle };
+    }
+
+    pub fn deinit(cb: *CertBundle, allocator: std.mem.Allocator) void {
+        cb.bundle.deinit(allocator);
+    }
+};
+
 pub const CertificateBuilder = struct {
-    cert: Certificate.Bundle,
+    bundle: Certificate.Bundle,
     key: PrivateKey,
     transcript: *Transcript,
     tls_version: proto.Version = .tls_1_3,
@@ -36,8 +100,8 @@ pub const CertificateBuilder = struct {
 
     pub fn makeCertificate(h: CertificateBuilder, buf: []u8) ![]const u8 {
         var w = record.Writer{ .buf = buf };
-        const certs = h.cert.bytes.items;
-        const certs_count = h.cert.map.size;
+        const certs = h.bundle.bytes.items;
+        const certs_count = h.bundle.map.size;
 
         // Differences between tls 1.3 and 1.2
         // TLS 1.3 has request context in header and extensions for each certificate.

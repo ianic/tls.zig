@@ -10,15 +10,9 @@ pub fn main() !void {
     const file_name = if (args.len > 1) args[1] else "example/cert/pg2600.txt";
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    // Load server certificate
-    var cert: Certificate.Bundle = .{};
-    defer cert.deinit(allocator);
-    try cert.addCertsFromFilePath(allocator, dir, "localhost_ec/cert.pem");
-
-    // Load server private key
-    const key_file = try dir.openFile("localhost_ec/key.pem", .{});
-    const key = try tls.PrivateKey.fromFile(allocator, key_file);
-    key_file.close();
+    // Load server certificate key pair
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer auth.deinit(allocator);
 
     // // Load ca to check client certificate
     // var client_root_ca: Certificate.Bundle = .{};
@@ -48,10 +42,7 @@ pub fn main() !void {
             //     .auth_type = .request,
             //     .root_ca = client_root_ca,
             // },
-            .auth = .{
-                .cert = cert,
-                .key = key,
-            },
+            .auth = auth,
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             continue;

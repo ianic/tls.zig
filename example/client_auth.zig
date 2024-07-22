@@ -22,9 +22,8 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
-    var root_ca: Certificate.Bundle = .{};
+    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
-    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     const host = "localhost";
     const port = 8443;
@@ -49,15 +48,10 @@ pub fn main() !void {
             var tcp = try std.net.tcpConnectToHost(allocator, host, port);
             defer tcp.close();
 
-            // Prepare client authentication
+            // Prepare client authentication key pair
             const cert_dir = try dir.openDir(sub_path, .{});
-            var cert: Certificate.Bundle = .{};
-            defer cert.deinit(allocator);
-            try cert.addCertsFromFilePath(allocator, cert_dir, "cert.pem");
-
-            const key_file = try cert_dir.openFile("key.pem", .{});
-            defer key_file.close();
-            const key = try tls.PrivateKey.fromFile(allocator, key_file);
+            var auth = try tls.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+            defer auth.deinit(allocator);
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.ClientOptions.Diagnostic = .{};
@@ -65,10 +59,7 @@ pub fn main() !void {
                 .host = host,
                 .root_ca = root_ca,
                 .cipher_suites = cipher_suites,
-                .auth = .{
-                    .cert = cert,
-                    .key = key,
-                },
+                .auth = auth,
                 .diagnostic = &diagnostic,
                 .key_log_callback = tls.key_log.callback,
             });

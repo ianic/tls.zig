@@ -18,22 +18,24 @@ const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
 const DhKeyPair = common.DhKeyPair;
-const Auth = @import("handshake_client.zig").Auth;
+const CertBundle = common.CertBundle;
+const CertKeyPair = common.CertKeyPair;
 
 pub const Options = struct {
-    // Server authentication. If null server will not send certificate and
-    // certificate verify message.
-    auth: ?Auth,
+    // Server authentication. If null server will not send Certificate and
+    // CertificateVerify message.
+    auth: ?CertKeyPair,
 
     // If not null server will request client certificate. If auth_type is
     // .request empty client certificate message will be accepted.
+    // Client certificate will be verified with root_ca certificates.
     client_auth: ?ClientAuth = null,
 };
 
-const ClientAuth = struct {
+pub const ClientAuth = struct {
     // Set of root certificate authorities that server use when verifying
     // client certificates.
-    root_ca: Certificate.Bundle,
+    root_ca: CertBundle,
 
     auth_type: Type = .require,
 
@@ -133,7 +135,7 @@ pub fn Handshake(comptime Stream: type) type {
                 }
                 if (opt.auth) |a| {
                     const cm = CertificateBuilder{
-                        .cert = a.cert,
+                        .bundle = a.bundle,
                         .key = a.key,
                         .transcript = &h.transcript,
                         .side = .server,
@@ -188,7 +190,7 @@ pub fn Handshake(comptime Stream: type) type {
             var handshake_state: proto.Handshake = .finished;
             var cert: CertificateParser = undefined;
             if (opt.client_auth) |client_auth| {
-                cert = .{ .root_ca = client_auth.root_ca, .host = "" };
+                cert = .{ .root_ca = client_auth.root_ca.bundle, .host = "" };
                 handshake_state = .certificate;
             }
 

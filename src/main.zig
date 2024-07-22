@@ -10,14 +10,15 @@ pub const key_log = @import("key_log.zig");
 const proto = @import("protocol.zig");
 pub const NamedGroup = proto.NamedGroup;
 pub const Version = proto.Version;
+const common = @import("handshake_common.zig");
+pub const CertBundle = common.CertBundle;
+pub const CertKeyPair = common.CertKeyPair;
 
 const record = @import("record.zig");
 const connection = @import("connection.zig").connection;
-
 const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
 const HandshakeServer = @import("handshake_server.zig").Handshake;
 const HandshakeClient = @import("handshake_client.zig").Handshake;
-const Certificate = std.crypto.Certificate;
 
 pub fn client(stream: anytype, opt: ClientOptions) !Connection(@TypeOf(stream)) {
     const Stream = @TypeOf(stream);
@@ -37,22 +38,12 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
     return conn;
 }
 
-pub fn loadX509KeyPair(
-    allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
-    cert_path: []const u8,
-    key_path: []const u8,
-) !struct { Certificate.Bundle, PrivateKey } {
-    var cert: Certificate.Bundle = .{};
-
-    try cert.addCertsFromFilePath(allocator, dir, cert_path);
-
-    const key_file = try dir.openFile(key_path, .{});
-    const key = try PrivateKey.fromFile(allocator, key_file);
-    key_file.close();
-
-    return .{ cert, key };
-}
+// A X.509 certificate is a structure that bundles the public key of a key pair
+//  with extra information like the name of the holder of the key pair, the name
+//  of an issuer of the certificate, validity time spans, and much more. This
+//  structure furthermore contains a signature of all those other data in the
+//  structure. This signature is generated using the private key of the issuer
+//  of the certificate.
 
 test {
     _ = @import("handshake_common.zig");

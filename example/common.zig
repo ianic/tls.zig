@@ -18,12 +18,6 @@ pub fn showDiagnostic(stats: *tls.ClientOptions.Diagnostic, domain: []const u8) 
     }
 }
 
-pub fn initCaBundle(allocator: std.mem.Allocator) !Certificate.Bundle {
-    var ca_bundle: Certificate.Bundle = .{};
-    try ca_bundle.rescan(allocator);
-    return ca_bundle;
-}
-
 pub const CsvReader = struct {
     data: []const u8,
     pos: usize = 0,

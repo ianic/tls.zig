@@ -8,40 +8,25 @@ pub fn main() !void {
 
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var cert, const key = try tls.loadX509KeyPair(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
-    defer cert.deinit(allocator);
+    var rsa_auth = try tls.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    defer rsa_auth.deinit(allocator);
 
-    var cert_ec, const key_ec = try tls.loadX509KeyPair(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
-    defer cert_ec.deinit(allocator);
+    var ec_auth = try tls.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer ec_auth.deinit(allocator);
 
     // ca to check client certificate
-    var client_root_ca: Certificate.Bundle = .{};
+    var client_root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer client_root_ca.deinit(allocator);
-    try client_root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
-    const opt1: tls.ServerOptions = .{
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
-    };
+    const opt1: tls.ServerOptions = .{ .auth = rsa_auth };
     const opt2: tls.ServerOptions = .{
         .client_auth = .{
             .auth_type = .request,
             .root_ca = client_root_ca,
         },
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
+        .auth = rsa_auth,
     };
-
-    const opt4: tls.ServerOptions = .{
-        .auth = .{
-            .cert = cert_ec,
-            .key = key_ec,
-        },
-    };
+    const opt4: tls.ServerOptions = .{ .auth = ec_auth };
 
     const s1 = try std.Thread.spawn(.{}, runServer, .{ 4433, opt1 });
     const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ 4435, opt1 });

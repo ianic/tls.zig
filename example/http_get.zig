@@ -12,7 +12,7 @@ pub fn main() !void {
     if (args.len > 1) {
         const domain = args[1];
 
-        var ca_bundle = try cmn.initCaBundle(allocator);
+        var ca_bundle = try tls.CertBundle.fromSystem(allocator);
         defer ca_bundle.deinit(allocator);
 
         try cmn.get(allocator, domain, null, true, true, .{

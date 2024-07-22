@@ -20,12 +20,14 @@ const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
 const DhKeyPair = common.DhKeyPair;
+const CertBundle = common.CertBundle;
+const CertKeyPair = common.CertKeyPair;
 
 pub const Options = struct {
     host: []const u8,
     // Set of root certificate authorities that clients use when verifying
     // server certificates.
-    root_ca: Certificate.Bundle,
+    root_ca: CertBundle,
 
     // Controls whether a client verifies the server's certificate chain and
     // host name.
@@ -44,7 +46,7 @@ pub const Options = struct {
     named_groups: []const proto.NamedGroup = supported_named_groups,
 
     // Client authentication certificates and private key.
-    auth: ?Auth = null,
+    auth: ?CertKeyPair = null,
 
     // If this structure is provided it will be filled with handshake attributes
     // at the end of the handshake process.
@@ -61,15 +63,6 @@ pub const Options = struct {
         signature_scheme: proto.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: proto.SignatureScheme = @enumFromInt(0),
     };
-};
-
-pub const Auth = struct {
-    // Chain of one or more certificates, leaf first. Is is sent to the
-    // server if server requests client authentication.
-    cert: Certificate.Bundle,
-    // Private key of the leaf certificate in bundle.
-    // Used for creating signature in certificate signature message.
-    key: PrivateKey,
 };
 
 const supported_named_groups = &[_]proto.NamedGroup{
@@ -185,7 +178,7 @@ pub fn Handshake(comptime Stream: type) type {
             try h.initKeys(opt.named_groups);
             h.cert = .{
                 .host = opt.host,
-                .root_ca = opt.root_ca,
+                .root_ca = opt.root_ca.bundle,
                 .skip_verify = opt.insecure_skip_verify,
             };
 
@@ -548,7 +541,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// finished messages for tls 1.2.
         /// If client certificate is requested also adds client certificate and
         /// certificate verify messages.
-        fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?Auth) ![]const u8 {
+        fn makeClientFlight2TLS12(h: *HandshakeT, auth: ?CertKeyPair) ![]const u8 {
             var w = record.Writer{ .buf = h.buffer };
             var cert_builder: ?CertificateBuilder = null;
 
@@ -602,7 +595,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// and client certificate verify messages are also created. If the
         /// server has requested certificate but the client is not configured
         /// empty certificate message is sent, as is required by rfc.
-        fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?Auth) ![]const u8 {
+        fn makeClientFlight2TLS13(h: *HandshakeT, auth: ?CertKeyPair) ![]const u8 {
             var w = record.Writer{ .buf = h.buffer };
 
             // Client change cipher spec message
@@ -639,9 +632,9 @@ pub fn Handshake(comptime Stream: type) type {
             return w.getWritten();
         }
 
-        fn certificateBuilder(h: *HandshakeT, auth: Auth) CertificateBuilder {
+        fn certificateBuilder(h: *HandshakeT, auth: CertKeyPair) CertificateBuilder {
             return .{
-                .cert = auth.cert,
+                .bundle = auth.bundle,
                 .key = auth.key,
                 .transcript = &h.transcript,
                 .tls_version = h.tls_version,

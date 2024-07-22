@@ -59,23 +59,6 @@ fn connectReceive(addr: net.Address, opt_: tls.ClientOptions) !void {
     try testing.expect(conn.eof());
 }
 
-fn loadX509KeyPair(
-    allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
-    cert_path: []const u8,
-    key_path: []const u8,
-) !struct { Certificate.Bundle, tls.PrivateKey } {
-    var cert: Certificate.Bundle = .{};
-
-    try cert.addCertsFromFilePath(allocator, dir, cert_path);
-
-    const key_file = try dir.openFile(key_path, .{});
-    const key = try tls.PrivateKey.fromFile(allocator, key_file);
-    key_file.close();
-
-    return .{ cert, key };
-}
-
 test "server without certificate" {
     const opt: tls.ServerOptions = .{ .auth = null };
 
@@ -95,19 +78,13 @@ test "server with ec key key pair" {
     const allocator = testing.allocator;
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var cert, const key = try loadX509KeyPair(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
-    defer cert.deinit(allocator);
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer auth.deinit(allocator);
 
-    var root_ca: Certificate.Bundle = .{};
+    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
-    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
-    const opt: tls.ServerOptions = .{
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
-    };
+    const opt: tls.ServerOptions = .{ .auth = auth };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
@@ -126,19 +103,13 @@ test "server with rsa key key pair" {
     const allocator = testing.allocator;
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var cert, const key = try loadX509KeyPair(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
-    defer cert.deinit(allocator);
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    defer auth.deinit(allocator);
 
-    var root_ca: Certificate.Bundle = .{};
+    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
-    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
-    const opt: tls.ServerOptions = .{
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
-    };
+    const opt: tls.ServerOptions = .{ .auth = auth };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
@@ -157,21 +128,18 @@ test "server request client authentication" {
     const allocator = testing.allocator;
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var root_ca: Certificate.Bundle = .{};
-    defer root_ca.deinit(allocator);
-    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    defer auth.deinit(allocator);
 
-    var cert, const key = try loadX509KeyPair(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
-    defer cert.deinit(allocator);
+    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
+    defer root_ca.deinit(allocator);
+
     const opt: tls.ServerOptions = .{
         .client_auth = .{
             .auth_type = .request,
             .root_ca = root_ca,
         },
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
+        .auth = auth,
     };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 2 + client_keys.len });
@@ -185,15 +153,14 @@ test "server request client authentication" {
     // client with client certificate
     for (client_keys) |sub_path| {
         const cert_dir = try dir.openDir(sub_path, .{});
-        var client_cert, const client_key = try loadX509KeyPair(allocator, cert_dir, "cert.pem", "key.pem");
-        defer client_cert.deinit(allocator);
+
+        var client_auth = try tls.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+        defer client_auth.deinit(allocator);
+
         const client_opt: tls.ClientOptions = .{
             .host = host,
             .root_ca = root_ca,
-            .auth = .{
-                .cert = client_cert,
-                .key = client_key,
-            },
+            .auth = client_auth,
         };
         try connectReceive(server.listen_address, client_opt);
     }
@@ -205,21 +172,18 @@ test "server require client authentication" {
     const allocator = testing.allocator;
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var root_ca: Certificate.Bundle = .{};
-    defer root_ca.deinit(allocator);
-    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    defer auth.deinit(allocator);
 
-    var cert, const key = try loadX509KeyPair(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
-    defer cert.deinit(allocator);
+    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
+    defer root_ca.deinit(allocator);
+
     const opt: tls.ServerOptions = .{
         .client_auth = .{
             .auth_type = .require,
             .root_ca = root_ca,
         },
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
+        .auth = auth,
     };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 1 + client_keys.len });
@@ -233,15 +197,12 @@ test "server require client authentication" {
     // load client certificate and connect
     for (client_keys) |sub_path| {
         const cert_dir = try dir.openDir(sub_path, .{});
-        var client_cert, const client_key = try loadX509KeyPair(allocator, cert_dir, "cert.pem", "key.pem");
-        defer client_cert.deinit(allocator);
+        var client_auth = try tls.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+        defer client_auth.deinit(allocator);
         const client_opt: tls.ClientOptions = .{
             .host = host,
             .root_ca = root_ca,
-            .auth = .{
-                .cert = client_cert,
-                .key = client_key,
-            },
+            .auth = client_auth,
         };
         try connectReceive(server.listen_address, client_opt);
     }
@@ -253,19 +214,13 @@ test "server send key update" {
     const allocator = testing.allocator;
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var cert, const key = try loadX509KeyPair(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
-    defer cert.deinit(allocator);
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    defer auth.deinit(allocator);
 
-    var root_ca: Certificate.Bundle = .{};
+    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
-    try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
-    const opt: tls.ServerOptions = .{
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
-    };
+    const opt: tls.ServerOptions = .{ .auth = auth };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSendKeyUpdate, .{ &server, opt });
     // client will receive key multiple  times
