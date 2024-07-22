@@ -104,8 +104,8 @@ test "server with ec key key pair" {
 
     const opt: tls.ServerOptions = .{
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
     var server = try address.listen(.{});
@@ -135,8 +135,8 @@ test "server with rsa key key pair" {
 
     const opt: tls.ServerOptions = .{
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
     var server = try address.listen(.{});
@@ -169,8 +169,8 @@ test "server request client authentication" {
             .root_ca = root_ca,
         },
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
     var server = try address.listen(.{});
@@ -191,8 +191,8 @@ test "server request client authentication" {
             .host = host,
             .root_ca = root_ca,
             .auth = .{
-                .certificates = client_cert,
-                .private_key = client_key,
+                .cert = client_cert,
+                .key = client_key,
             },
         };
         try connectReceive(server.listen_address, client_opt);
@@ -217,8 +217,8 @@ test "server require client authentication" {
             .root_ca = root_ca,
         },
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
     var server = try address.listen(.{});
@@ -239,8 +239,8 @@ test "server require client authentication" {
             .host = host,
             .root_ca = root_ca,
             .auth = .{
-                .certificates = client_cert,
-                .private_key = client_key,
+                .cert = client_cert,
+                .key = client_key,
             },
         };
         try connectReceive(server.listen_address, client_opt);
@@ -262,8 +262,8 @@ test "server send key update" {
 
     const opt: tls.ServerOptions = .{
         .auth = .{
-            .certificates = cert,
-            .private_key = key,
+            .cert = cert,
+            .key = key,
         },
     };
     var server = try address.listen(.{});
