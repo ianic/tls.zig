@@ -24,8 +24,7 @@ To upgrade existing tcp connection to the tls connection call `tls.client`:
     defer tcp.close();
 
     // Load system root certificates
-    var root_ca: std.crypto.Certificate.Bundle = .{};
-    try root_ca.rescan(allocator);
+    var root_ca = try tls.CertBundle.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
@@ -55,25 +54,17 @@ To use just ciphers which are graded secure or recommended on  https://ciphersui
 
 ### Client authentication
 
-If server requires client authentication set `auth` attribute in options. You need to prepare certificate bundle with client certificates and client private key.
+If server requires client authentication set `auth` attribute in options. You need to prepare certificate key pair with client certificate(s) and client private key.
 
 ```zig
-    // Load client certificate
-    var cert: Certificate.Bundle = .{};
-    defer cert.deinit(allocator);
-    try cert.addCertsFromFilePath(allocator, cert_dir, "cert.pem");
-    // Load client private key
-    const key_file = try cert_dir.openFile("key.pem", .{});
-    defer key_file.close();
-    const key = try tls.PrivateKey.fromFile(allocator, private_key_file);
+    // Prepare client authentication key pair
+    var auth = try tls.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+    defer auth.deinit(allocator);
 
     var conn = try tls.client(tcp, .{
         .host = host,
         .root_ca = root_ca,
-        .auth = .{
-            .cert = cert,
-            .key = key,
-        },
+        .auth = auth,
     });
 ```
 
@@ -100,15 +91,9 @@ Key logging is enabled by setting the environment variable SSLKEYLOGFILE to poin
 Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to tls connection:
 
 ```zig
-    // Load server certificate
-    var cert: Certificate.Bundle = .{};
-    defer cert.deinit(allocator);
-    try cert.addCertsFromFilePath(allocator, dir, "localhost_ec/cert.pem");
-
-    // Load server private key
-    const key_file = try dir.openFile("localhost_ec/key.pem", .{});
-    const key = try tls.PrivateKey.fromFile(allocator, private_key_file);
-    key_file.close();
+    // Load server certificate key pair
+    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer auth.deinit(allocator);
     
     // Tcp listener
     const port = 9443;
@@ -122,12 +107,7 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
      defer tcp.stream.close();
 
      // Upgrade tcp to tls
-     var conn = try tls.server(tcp.stream, .{
-         .auth = .{
-             .cert = cert,
-             .key = key,
-         },
-     });
+     var conn = try tls.server(tcp.stream, .{ .auth = auth });
      
      // use conn
 ```
