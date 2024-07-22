@@ -19,3 +19,4 @@ zig-out/
 tmp/
 .zig-cache/
 /example/cert/
+/example/tlsfuzzer/
