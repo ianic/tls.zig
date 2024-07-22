@@ -12,14 +12,13 @@ const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
 const rsa = @import("rsa/rsa.zig");
 const key_log = @import("key_log.zig");
+const PrivateKey = @import("PrivateKey.zig");
 const proto = @import("protocol.zig");
 
 const common = @import("handshake_common.zig");
 const dupe = common.dupe;
-const SchemeHash = common.SchemeHash;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
-const Auth = common.Auth;
 const DhKeyPair = common.DhKeyPair;
 
 pub const Options = struct {
@@ -42,7 +41,7 @@ pub const Options = struct {
     // List of named groups to use.
     // To use specific named group:
     //   .named_groups = &[_]tls.NamedGroup{.secp384r1},
-    named_groups: []const proto.NamedGroup = named_groups.all,
+    named_groups: []const proto.NamedGroup = supported_named_groups,
 
     // Client authentication certificates and private key.
     auth: ?Auth = null,
@@ -62,11 +61,22 @@ pub const Options = struct {
         signature_scheme: proto.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: proto.SignatureScheme = @enumFromInt(0),
     };
+};
 
-    pub const named_groups = struct {
-        pub const all = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1, .x25519_kyber768d00 };
-        pub const default = &[_]proto.NamedGroup{ .x25519, .secp256r1 };
-    };
+pub const Auth = struct {
+    // Chain of one or more certificates, leaf first. Is is sent to the
+    // server if server requests client authentication.
+    cert: Certificate.Bundle,
+    // Private key of the leaf certificate in bundle.
+    // Used for creating signature in certificate signature message.
+    key: PrivateKey,
+};
+
+const supported_named_groups = &[_]proto.NamedGroup{
+    .x25519,
+    .secp256r1,
+    .secp384r1,
+    .x25519_kyber768d00,
 };
 
 /// Handshake parses tls server message and creates client messages. Collects
@@ -278,7 +288,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             try ext.writeExtension(.supported_groups, opt.named_groups);
             if (tls_versions != .tls_1_2) {
-                var keys: [Options.named_groups.all.len][]const u8 = undefined;
+                var keys: [supported_named_groups.len][]const u8 = undefined;
                 for (opt.named_groups, 0..) |ng, i| {
                     keys[i] = try h.dh_kp.publicKey(ng);
                 }
@@ -304,7 +314,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// return. For TLS 1.2 continue and read certificate, key_exchange
         /// eventual certificate request and hello done messages.
         fn readServerFlight1(h: *HandshakeT) !void {
-            var handshake_states: []const proto.HandshakeType = &.{.server_hello};
+            var handshake_states: []const proto.Handshake = &.{.server_hello};
 
             while (true) {
                 var d = try h.rec_rdr.nextDecoder();
@@ -314,7 +324,7 @@ pub fn Handshake(comptime Stream: type) type {
 
                 // Multiple handshake messages can be packed in single tls record.
                 while (!d.eof()) {
-                    const handshake_type = try d.decode(proto.HandshakeType);
+                    const handshake_type = try d.decode(proto.Handshake);
 
                     const length = try d.decode(u24);
                     if (length > cipher.max_cleartext_len)
@@ -384,7 +394,7 @@ pub fn Handshake(comptime Stream: type) type {
                 const exs_len = try d.decode(u16);
                 var l: usize = 0;
                 while (l < exs_len) {
-                    const typ = try d.decode(proto.ExtensionType);
+                    const typ = try d.decode(proto.Extension);
                     const len = try d.decode(u16);
                     defer l += len + 4;
 
@@ -419,7 +429,7 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn parseServerKeyExchange(h: *HandshakeT, d: *record.Decoder) !void {
-            const curve_type = try d.decode(proto.CurveType);
+            const curve_type = try d.decode(proto.Curve);
             h.named_group = try d.decode(proto.NamedGroup);
             h.server_pub_key = dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
             h.cert.signature_scheme = try d.decode(proto.SignatureScheme);
@@ -434,7 +444,7 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
-            var handshake_states: []const proto.HandshakeType = &.{.encrypted_extensions};
+            var handshake_states: []const proto.Handshake = &.{.encrypted_extensions};
 
             outer: while (true) {
                 // wrapped record decoder
@@ -455,7 +465,7 @@ pub fn Handshake(comptime Stream: type) type {
                         try d.expectContentType(.handshake);
                         while (!d.eof()) {
                             const start_idx = d.idx;
-                            const handshake_type = try d.decode(proto.HandshakeType);
+                            const handshake_type = try d.decode(proto.Handshake);
                             const length = try d.decode(u24);
 
                             // std.debug.print("handshake loop: {} {} {} {}\n", .{ handshake_type, length, d.payload.len, d.idx });
@@ -525,7 +535,7 @@ pub fn Handshake(comptime Stream: type) type {
                 var w = record.Writer{ .buf = h.buffer };
                 try w.write(&h.client_random);
                 try w.write(&h.server_random);
-                try w.writeEnum(proto.CurveType.named_curve);
+                try w.writeEnum(proto.Curve.named_curve);
                 try w.writeEnum(h.named_group.?);
                 try w.writeInt(@as(u8, @intCast(h.server_pub_key.len)));
                 try w.write(h.server_pub_key);
@@ -784,7 +794,7 @@ test "parse tls 1.3 server hello" {
     var rec_rdr = testReader(&data13.server_hello);
     var d = (try rec_rdr.nextDecoder());
 
-    const handshake_type = try d.decode(proto.HandshakeType);
+    const handshake_type = try d.decode(proto.Handshake);
     const length = try d.decode(u24);
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);

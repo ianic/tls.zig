@@ -13,13 +13,13 @@ pub fn main() !void {
     var root_ca = try cmn.initCaBundle(allocator);
     defer root_ca.deinit(allocator);
 
-    if (args.len > 1) {
-        return try run(allocator, root_ca, args[1]);
-    }
-    try run(allocator, root_ca, "cloudflare.com");
+    const domain = if (args.len > 1) args[1] else "cloudflare.com";
+    const fail_count = run(allocator, root_ca, domain);
+    if (fail_count > 0) std.posix.exit(1);
 }
 
-fn run(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []const u8) !void {
+fn run(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []const u8) usize {
+    var fail_count: usize = 0;
     for (tls.cipher_suites.all) |cs| {
         cmn.get(allocator, domain, null, false, false, .{
             .root_ca = root_ca,
@@ -27,8 +27,10 @@ fn run(allocator: std.mem.Allocator, root_ca: Certificate.Bundle, domain: []cons
             .cipher_suites = &[_]tls.CipherSuite{cs},
         }) catch |err| {
             std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
+            fail_count += 1;
             continue;
         };
         std.debug.print("✔️ {s} {s}\n", .{ @tagName(cs), domain });
     }
+    return fail_count;
 }

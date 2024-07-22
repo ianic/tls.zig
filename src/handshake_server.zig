@@ -16,9 +16,9 @@ const proto = @import("protocol.zig");
 const common = @import("handshake_common.zig");
 const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
-const Auth = common.Auth;
-const DhKeyPair = common.DhKeyPair;
 const CertificateParser = common.CertificateParser;
+const DhKeyPair = common.DhKeyPair;
+const Auth = @import("handshake_client.zig").Auth;
 
 pub const Options = struct {
     // Server authentication. If null server will not send certificate and
@@ -185,7 +185,7 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
-            var handshake_state: proto.HandshakeType = .finished;
+            var handshake_state: proto.Handshake = .finished;
             var cert: CertificateParser = undefined;
             if (opt.client_auth) |client_auth| {
                 cert = .{ .root_ca = client_auth.root_ca, .host = "" };
@@ -213,7 +213,7 @@ pub fn Handshake(comptime Stream: type) type {
                         try d.expectContentType(.handshake);
                         while (!d.eof()) {
                             const start_idx = d.idx;
-                            const handshake_type = try d.decode(proto.HandshakeType);
+                            const handshake_type = try d.decode(proto.Handshake);
                             const length = try d.decode(u24);
 
                             if (length > cipher.max_cleartext_len)
@@ -305,13 +305,13 @@ pub fn Handshake(comptime Stream: type) type {
 
             var e = record.Writer{ .buf = buf[header_len + w.pos + 2 ..] };
             { // supported versions extension
-                try e.writeEnum(proto.ExtensionType.supported_versions);
+                try e.writeEnum(proto.Extension.supported_versions);
                 try e.writeInt(@as(u16, 2));
                 try e.writeEnum(proto.Version.tls_1_3);
             }
             { // key share extension
                 const key_len: u16 = @intCast(h.server_pub_key.len);
-                try e.writeEnum(proto.ExtensionType.key_share);
+                try e.writeEnum(proto.Extension.key_share);
                 try e.writeInt(key_len + 4);
                 try e.writeEnum(h.named_group);
                 try e.writeInt(key_len);
@@ -349,7 +349,7 @@ pub fn Handshake(comptime Stream: type) type {
             try d.expectContentType(.handshake);
             h.transcript.update(d.payload);
 
-            const handshake_type = try d.decode(proto.HandshakeType);
+            const handshake_type = try d.decode(proto.Handshake);
             if (handshake_type != .client_hello) return error.TlsUnexpectedMessage;
             _ = try d.decode(u24); // handshake length
             if (try d.decode(proto.Version) != .tls_1_2) return error.TlsProtocolVersion;
@@ -379,7 +379,7 @@ pub fn Handshake(comptime Stream: type) type {
             // extensions
             const extensions_end_idx = try d.decode(u16) + d.idx;
             while (d.idx < extensions_end_idx) {
-                const extension_type = try d.decode(proto.ExtensionType);
+                const extension_type = try d.decode(proto.Extension);
                 const extension_len = try d.decode(u16);
 
                 switch (extension_type) {

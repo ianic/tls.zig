@@ -81,7 +81,7 @@ pub fn Connection(comptime Stream: type) type {
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
-                        const handshake_type: proto.HandshakeType = @enumFromInt(cleartext[0]);
+                        const handshake_type: proto.Handshake = @enumFromInt(cleartext[0]);
                         switch (handshake_type) {
                             // skip new session ticket and read next record
                             .new_session_ticket => continue,

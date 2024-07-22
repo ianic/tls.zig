@@ -13,7 +13,7 @@ pub const ContentType = enum(u8) {
     _,
 };
 
-pub const HandshakeType = enum(u8) {
+pub const Handshake = enum(u8) {
     client_hello = 1,
     server_hello = 2,
     new_session_ticket = 4,
@@ -31,12 +31,12 @@ pub const HandshakeType = enum(u8) {
     _,
 };
 
-pub const CurveType = enum(u8) {
+pub const Curve = enum(u8) {
     named_curve = 0x03,
     _,
 };
 
-pub const ExtensionType = enum(u16) {
+pub const Extension = enum(u16) {
     /// RFC 6066
     server_name = 0,
     /// RFC 6066

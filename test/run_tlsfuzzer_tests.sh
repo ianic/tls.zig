@@ -67,8 +67,8 @@ declare -a tests=(
     # xor at 0 succeeds on our server !
     "test-tls13-certificate-verify.py -p 4434
         -s 'ecdsa_secp256r1_sha256 ecdsa_secp384r1_sha384 rsa_pss_rsae_sha256 rsa_pss_rsae_sha384 rsa_pss_rsae_sha512 ed25519 rsa_pkcs1_sha1 rsa_pkcs1_sha256 rsa_pkcs1_sha384'
-        -c ../tls.zig/example/cert/client_rsa/cert.pem
-        -k ../tls.zig/example/cert/client_rsa/key.pem
+        -c ../../example/cert/client_rsa/cert.pem
+        -k ../../example/cert/client_rsa/key.pem
         -e 'check rsa_pkcs1_sha1 signature is refused'
         -e 'check rsa_pkcs1_sha256 signature is refused'
         -e 'check rsa_pkcs1_sha384 signature is refused'
@@ -86,8 +86,8 @@ declare -a tests=(
 
     "test-tls13-ecdsa-in-certificate-verify.py -p 4434
         -s 'ecdsa_secp256r1_sha256 ecdsa_secp384r1_sha384 rsa_pss_rsae_sha256 rsa_pss_rsae_sha384 rsa_pss_rsae_sha512 ed25519 rsa_pkcs1_sha1 rsa_pkcs1_sha256 rsa_pkcs1_sha384'
-        -k ../tls.zig/example/cert/client_ec/key.pem
-        -c ../tls.zig/example/cert/client_ec/cert.pem
+        -k ../../example/cert/client_ec/key.pem
+        -c ../../example/cert/client_ec/cert.pem
         -e 'check ecdsa_secp256r1_sha256 signature is refused'
         "
 

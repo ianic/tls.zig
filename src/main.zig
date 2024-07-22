@@ -9,7 +9,6 @@ pub const ServerOptions = @import("handshake_server.zig").Options;
 pub const key_log = @import("key_log.zig");
 const proto = @import("protocol.zig");
 pub const NamedGroup = proto.NamedGroup;
-pub const named_groups = ClientOptions.named_groups;
 pub const Version = proto.Version;
 
 const record = @import("record.zig");

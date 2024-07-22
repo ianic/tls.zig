@@ -16,7 +16,7 @@ pub fn header(content_type: proto.ContentType, payload_len: usize) [header_len]u
         int2(@intCast(payload_len));
 }
 
-pub fn handshakeHeader(handshake_type: proto.HandshakeType, payload_len: usize) [4]u8 {
+pub fn handshakeHeader(handshake_type: proto.Handshake, payload_len: usize) [4]u8 {
     const int3 = std.crypto.tls.int3;
     return [1]u8{@intFromEnum(handshake_type)} ++ int3(@intCast(payload_len));
 }
@@ -250,7 +250,7 @@ test Decoder {
     var d = (try rdr.nextDecoder());
     try testing.expectEqual(.handshake, d.content_type);
 
-    try testing.expectEqual(.server_hello, try d.decode(proto.HandshakeType));
+    try testing.expectEqual(.server_hello, try d.decode(proto.Handshake));
     try testing.expectEqual(45, try d.decode(u24)); // length
     try testing.expectEqual(.tls_1_2, try d.decode(proto.Version));
     try testing.expectEqualStrings(
@@ -295,12 +295,12 @@ pub const Writer = struct {
         self.pos += bytes;
     }
 
-    pub fn writeHandshakeHeader(self: *Writer, handshake_type: proto.HandshakeType, payload_len: usize) !void {
+    pub fn writeHandshakeHeader(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
         try self.write(&record.handshakeHeader(handshake_type, payload_len));
     }
 
     /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
-    pub fn advanceHandshake(self: *Writer, handshake_type: proto.HandshakeType, payload_len: usize) !void {
+    pub fn advanceHandshake(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
         try self.write(&record.handshakeHeader(handshake_type, payload_len));
         self.pos += payload_len;
     }
@@ -345,7 +345,7 @@ pub const Writer = struct {
 
     pub fn writeExtension(
         self: *Writer,
-        comptime et: proto.ExtensionType,
+        comptime et: proto.Extension,
         tags: anytype,
     ) !void {
         try self.writeEnum(et);
@@ -367,7 +367,7 @@ pub const Writer = struct {
         keys: []const []const u8,
     ) !void {
         assert(named_groups.len == keys.len);
-        try self.writeEnum(proto.ExtensionType.key_share);
+        try self.writeEnum(proto.Extension.key_share);
         var l: usize = 0;
         for (keys) |key| {
             l += key.len + 4;
@@ -384,7 +384,7 @@ pub const Writer = struct {
 
     pub fn writeServerName(self: *Writer, host: []const u8) !void {
         const host_len: u16 = @intCast(host.len);
-        try self.writeEnum(proto.ExtensionType.server_name);
+        try self.writeEnum(proto.Extension.server_name);
         try self.writeInt(host_len + 5); // byte length of extension payload
         try self.writeInt(host_len + 3); // server_name_list byte count
         try self.writeByte(0); // name type
@@ -398,7 +398,7 @@ test "Writer" {
     var w = Writer{ .buf = &buf };
 
     try w.write("ab");
-    try w.writeEnum(proto.CurveType.named_curve);
+    try w.writeEnum(proto.Curve.named_curve);
     try w.writeEnum(proto.NamedGroup.x25519);
     try w.writeInt(@as(u16, 0x1234));
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());

@@ -37,15 +37,15 @@ pub fn main() !void {
 
 pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: Certificate.Bundle, counter: *cmn.Counter) void {
     var diagnostic: tls.ClientOptions.Diagnostic = .{};
-    const opt: tls.ClientOptions = .{
+    var opt: tls.ClientOptions = .{
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
-        .named_groups = if (cmn.inList(domain, &cmn.no_keyber))
-            tls.named_groups.default
-        else
-            tls.named_groups.all,
     };
+    if (cmn.inList(domain, &cmn.no_keyber)) {
+        opt.named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1 };
+    }
+
     cmn.get(allocator, domain, null, false, false, opt) catch |err| {
         switch (err) {
             error.UnknownHostName, error.ConnectionTimedOut, error.ConnectionRefused, error.NetworkUnreachable => {

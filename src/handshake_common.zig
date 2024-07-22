@@ -15,15 +15,6 @@ const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
 const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 
-pub const Auth = struct {
-    // Chain of one or more certificates, leaf first. Is is sent to the
-    // server if server requests client authentication.
-    cert: Certificate.Bundle,
-    // Private key of the leaf certificate in bundle.
-    // Used for creating signature in certificate signature message.
-    key: PrivateKey,
-};
-
 pub const supported_signature_algorithms = &[_]proto.SignatureScheme{
     .ecdsa_secp256r1_sha256,
     .ecdsa_secp384r1_sha384,
@@ -287,7 +278,7 @@ pub const CertificateParser = struct {
     }
 };
 
-pub fn SchemeHash(comptime scheme: proto.SignatureScheme) type {
+fn SchemeHash(comptime scheme: proto.SignatureScheme) type {
     const Sha256 = crypto.hash.sha2.Sha256;
     const Sha384 = crypto.hash.sha2.Sha384;
     const Sha512 = crypto.hash.sha2.Sha512;
