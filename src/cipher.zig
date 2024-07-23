@@ -120,7 +120,7 @@ pub const Cipher = union(CipherSuite) {
     AEGIS_128L_SHA256: CipherType(.AEGIS_128L_SHA256),
 
     // tls 1.2 application cipher
-    pub fn initTLS12(tag: CipherSuite, key_material: []const u8, side: proto.Side) !Cipher {
+    pub fn initTls12(tag: CipherSuite, key_material: []const u8, side: proto.Side) !Cipher {
         switch (tag) {
             inline .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
             .ECDHE_RSA_WITH_AES_128_CBC_SHA,
@@ -144,7 +144,7 @@ pub const Cipher = union(CipherSuite) {
     }
 
     // tls 1.3 handshake or application cipher
-    pub fn initTLS13(tag: CipherSuite, secret: Transcript.Secret, side: proto.Side) !Cipher {
+    pub fn initTls13(tag: CipherSuite, secret: Transcript.Secret, side: proto.Side) !Cipher {
         return switch (tag) {
             inline .AES_128_GCM_SHA256,
             .AES_256_GCM_SHA384,
@@ -933,8 +933,8 @@ test "client/server encryption tls 1.3" {
             .client = buf[0..128],
             .server = buf[128..],
         };
-        var client_cipher = try Cipher.initTLS13(cs, secret, .client);
-        var server_cipher = try Cipher.initTLS13(cs, secret, .server);
+        var client_cipher = try Cipher.initTls13(cs, secret, .client);
+        var server_cipher = try Cipher.initTls13(cs, secret, .server);
         try encryptDecrypt(&client_cipher, &server_cipher);
 
         try client_cipher.keyUpdateEncrypt();
@@ -951,8 +951,8 @@ test "client/server encryption tls 1.2" {
     inline for (cipher_suites.tls12) |cs| {
         var key_material: [256]u8 = undefined;
         testu.fill(&key_material);
-        var client_cipher = try Cipher.initTLS12(cs, &key_material, .client);
-        var server_cipher = try Cipher.initTLS12(cs, &key_material, .server);
+        var client_cipher = try Cipher.initTls12(cs, &key_material, .client);
+        var server_cipher = try Cipher.initTls12(cs, &key_material, .server);
         try encryptDecrypt(&client_cipher, &server_cipher);
     }
 }

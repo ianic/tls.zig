@@ -82,15 +82,15 @@ pub const Transcript = struct {
         };
     }
 
-    pub fn clientFinishedTLS12(t: *Transcript, master_secret: []const u8) [12]u8 {
+    pub fn clientFinishedTls12(t: *Transcript, master_secret: []const u8) [12]u8 {
         return switch (t.tag) {
-            inline else => |h| @field(t, @tagName(h)).clientFinishedTLS12(master_secret),
+            inline else => |h| @field(t, @tagName(h)).clientFinishedTls12(master_secret),
         };
     }
 
-    pub fn serverFinishedTLS12(t: *Transcript, master_secret: []const u8) [12]u8 {
+    pub fn serverFinishedTls12(t: *Transcript, master_secret: []const u8) [12]u8 {
         return switch (t.tag) {
-            inline else => |h| @field(t, @tagName(h)).serverFinishedTLS12(master_secret),
+            inline else => |h| @field(t, @tagName(h)).serverFinishedTls12(master_secret),
         };
     }
 
@@ -108,15 +108,15 @@ pub const Transcript = struct {
         };
     }
 
-    pub fn serverFinishedTLS13(t: *Transcript, buf: []u8) []const u8 {
+    pub fn serverFinishedTls13(t: *Transcript, buf: []u8) []const u8 {
         return switch (t.tag) {
-            inline else => |h| @field(t, @tagName(h)).serverFinishedTLS13(buf),
+            inline else => |h| @field(t, @tagName(h)).serverFinishedTls13(buf),
         };
     }
 
-    pub fn clientFinishedTLS13(t: *Transcript, buf: []u8) []const u8 {
+    pub fn clientFinishedTls13(t: *Transcript, buf: []u8) []const u8 {
         return switch (t.tag) {
-            inline else => |h| @field(t, @tagName(h)).clientFinishedTLS13(buf),
+            inline else => |h| @field(t, @tagName(h)).clientFinishedTls13(buf),
         };
     }
 
@@ -231,7 +231,7 @@ fn TranscriptT(comptime Hash: type) type {
             return key_material;
         }
 
-        fn clientFinishedTLS12(self: *Self, master_secret: []const u8) [12]u8 {
+        fn clientFinishedTls12(self: *Self, master_secret: []const u8) [12]u8 {
             const seed = "client finished" ++ self.hash.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
@@ -240,7 +240,7 @@ fn TranscriptT(comptime Hash: type) type {
             return p1[0..12].*;
         }
 
-        fn serverFinishedTLS12(self: *Self, master_secret: []const u8) [12]u8 {
+        fn serverFinishedTls12(self: *Self, master_secret: []const u8) [12]u8 {
             const seed = "server finished" ++ self.hash.peek();
             var a1: [mac_length]u8 = undefined;
             var p1: [mac_length]u8 = undefined;
@@ -283,13 +283,13 @@ fn TranscriptT(comptime Hash: type) type {
             return .{ .client = &client_secret, .server = &server_secret };
         }
 
-        fn serverFinishedTLS13(self: *Self, buf: []u8) []const u8 {
+        fn serverFinishedTls13(self: *Self, buf: []u8) []const u8 {
             Hmac.create(buf[0..mac_length], &self.hash.peek(), &self.server_finished_key);
             return buf[0..mac_length];
         }
 
         // client finished message with header
-        fn clientFinishedTLS13(self: *Self, buf: []u8) []const u8 {
+        fn clientFinishedTls13(self: *Self, buf: []u8) []const u8 {
             Hmac.create(buf[0..mac_length], &self.hash.peek(), &self.client_finished_key);
             return buf[0..mac_length];
         }

@@ -28,22 +28,22 @@ pub const supported_signature_algorithms = &[_]proto.SignatureScheme{
 };
 
 pub const CertKeyPair = struct {
-    // A chain of one or more certificates, leaf first.
-    //
-    // Each X.509 certificate contains the public key of a key pair, extra
-    // information (the name of the holder, the name of an issuer of the
-    // certificate, validity time spans) and a signature generated using the
-    // private key of the issuer of the certificate.
-    //
-    // All certificates from the bundle are sent to the other side when creating
-    // Certificate tls message.
-    //
-    // Leaf certificate and private key are used to create signature for
-    // CertifyVerify tls message.
+    /// A chain of one or more certificates, leaf first.
+    ///
+    /// Each X.509 certificate contains the public key of a key pair, extra
+    /// information (the name of the holder, the name of an issuer of the
+    /// certificate, validity time spans) and a signature generated using the
+    /// private key of the issuer of the certificate.
+    ///
+    /// All certificates from the bundle are sent to the other side when creating
+    /// Certificate tls message.
+    ///
+    /// Leaf certificate and private key are used to create signature for
+    /// CertifyVerify tls message.
     bundle: Certificate.Bundle,
 
-    // Private key corresponding to the public key in leaf certificate from the
-    // bundle.
+    /// Private key corresponding to the public key in leaf certificate from the
+    /// bundle.
     key: PrivateKey,
 
     pub fn load(

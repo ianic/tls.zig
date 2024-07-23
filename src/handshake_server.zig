@@ -22,29 +22,29 @@ const CertBundle = common.CertBundle;
 const CertKeyPair = common.CertKeyPair;
 
 pub const Options = struct {
-    // Server authentication. If null server will not send Certificate and
-    // CertificateVerify message.
+    /// Server authentication. If null server will not send Certificate and
+    /// CertificateVerify message.
     auth: ?CertKeyPair,
 
-    // If not null server will request client certificate. If auth_type is
-    // .request empty client certificate message will be accepted.
-    // Client certificate will be verified with root_ca certificates.
+    /// If not null server will request client certificate. If auth_type is
+    /// .request empty client certificate message will be accepted.
+    /// Client certificate will be verified with root_ca certificates.
     client_auth: ?ClientAuth = null,
 };
 
 pub const ClientAuth = struct {
-    // Set of root certificate authorities that server use when verifying
-    // client certificates.
+    /// Set of root certificate authorities that server use when verifying
+    /// client certificates.
     root_ca: CertBundle,
 
     auth_type: Type = .require,
 
     pub const Type = enum {
-        // Client certificate will be requested during the handshake, but does
-        // not require that the client send any certificates.
+        /// Client certificate will be requested during the handshake, but does
+        /// not require that the client send any certificates.
         request,
-        // Client certificate will be requested during the handshake, and client
-        // has to send valid certificate.
+        /// Client certificate will be requested during the handshake, and client
+        /// has to send valid certificate.
         require,
     };
 };
@@ -120,7 +120,7 @@ pub fn Handshake(comptime Stream: type) type {
                 }
                 {
                     const handshake_secret = h.transcript.handshakeSecret(shared_key);
-                    h.cipher = try Cipher.initTLS13(h.cipher_suite, handshake_secret, .server);
+                    h.cipher = try Cipher.initTls13(h.cipher_suite, handshake_secret, .server);
                 }
                 try w.writeRecord(.change_cipher_spec, &[_]u8{1});
                 {
@@ -162,7 +162,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             var app_cipher = brk: {
                 const application_secret = h.transcript.applicationSecret();
-                break :brk try Cipher.initTLS13(h.cipher_suite, application_secret, .server);
+                break :brk try Cipher.initTls13(h.cipher_suite, application_secret, .server);
             };
 
             h.readClientFlight2(opt) catch |err| {
@@ -256,7 +256,7 @@ pub fn Handshake(comptime Stream: type) type {
                                 .finished => {
                                     const actual = try d.slice(length);
                                     var buf: [Transcript.max_mac_length]u8 = undefined;
-                                    const expected = h.transcript.clientFinishedTLS13(&buf);
+                                    const expected = h.transcript.clientFinishedTls13(&buf);
                                     if (!mem.eql(u8, expected, actual))
                                         return if (expected.len == actual.len)
                                             error.TlsDecryptError
@@ -281,7 +281,7 @@ pub fn Handshake(comptime Stream: type) type {
 
         fn makeFinished(h: *HandshakeT, buf: []u8) ![]const u8 {
             var w = record.Writer{ .buf = buf };
-            const verify_data = h.transcript.serverFinishedTLS13(w.getHandshakePayload());
+            const verify_data = h.transcript.serverFinishedTls13(w.getHandshakePayload());
             try w.advanceHandshake(.finished, verify_data.len);
             return w.getWritten();
         }
