@@ -38,13 +38,6 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
     return conn;
 }
 
-// A X.509 certificate is a structure that bundles the public key of a key pair
-//  with extra information like the name of the holder of the key pair, the name
-//  of an issuer of the certificate, validity time spans, and much more. This
-//  structure furthermore contains a signature of all those other data in the
-//  structure. This signature is generated using the private key of the issuer
-//  of the certificate.
-
 test {
     _ = @import("handshake_common.zig");
     _ = @import("handshake_server.zig");
