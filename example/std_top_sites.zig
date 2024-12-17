@@ -14,8 +14,10 @@ pub fn main() !void {
     try get(allocator, "google.com");
 
     var counter: cmn.Counter = .{};
-    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    //var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    var rdr = cmn.CsvReader.init(@embedFile("domains"));
     while (rdr.next()) |domain| {
+        if (domain.len == 0) continue;
         if (cmn.skipDomain(domain)) {
             counter.add(.skip);
             continue;
@@ -36,7 +38,7 @@ fn run(allocator: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) 
                 counter.add(.fail);
             },
             else => {
-                std.debug.print("➖ {s} error {}\n", .{ domain, err });
+                std.debug.print("➖ {s} {}\n", .{ domain, err });
                 counter.add(.err);
             },
         }

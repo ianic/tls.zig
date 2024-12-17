@@ -21,7 +21,7 @@ pub fn main() !void {
     // source: https://dataforseo.com/free-seo-stats/top-1000-websites
     // var rdr = cmn.CsvReader.init(@embedFile("ranked_domains.csv"));
     // source: https://radar.cloudflare.com/domains
-    // var rdr = cmn.CsvReader.init(@embedFile("cloudflare-radar-domains-top-10000-20240701-20240708.csv"));
+    // var rdr = cmn.CsvReader.init(@embedFile("cloudflare-radar_top-10000-domains_20241209-20241216.csv"));
     var rdr = cmn.CsvReader.init(@embedFile("domains"));
     while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {

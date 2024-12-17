@@ -4,11 +4,11 @@ Zig TLS library, characteristics:
 * TLS 1.2 and TLS 1.3 client
 * TLS 1.3 server
 * handles client authentication
-* tested with many domains, handles [badssl](https://badssl.com/dashboard/) urls 
+* tested with many domains, handles [badssl](https://badssl.com/dashboard/) URL's 
 * options to select client cipher sites to use, named groups, ...
 * can configure Wireshark to show decrypted traffic
 * same performance as standard library implementation
-* can be used with standard library http client (with modified std lib copy)
+* can be used with standard library HTTP client (with modified std lib copy)
 <!--
 * solved many [issues](https://github.com/ziglang/zig/issues/14172#issuecomment-2181202318) which I found in std 
 https://github.com/ziglang/zig/issues/15226#issuecomment-2218809140
@@ -117,7 +117,7 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
 
 ## Top sites
 
-Starting from cloudflare [list](https://radar.cloudflare.com/domains) of 10000 top domains, filtering those which can't be resolved got list of ~6k domains which are used to test establishing tls connection. If the connection fails test runs curl on the same domain, if curl can't connect it is count as error, if curl connect counts as fail.
+Starting from Cloudflare [list](https://radar.cloudflare.com/domains) of 10000 top domains, filtering those which can't be resolved got list of ~6k domains which are used to test establishing tls connection. If the connection fails test runs curl on the same domain, if curl can't connect it is count as error, if curl connect counts as fail.
 For each domain test reports tls handshake parameters (tls version, cipher suite used, named group and signature scheme).
 
 ```
@@ -130,14 +130,23 @@ $ zig-out/bin/top_sites
 ...
 
 stats:
-         total: 6250
-         success: 6247
-                 tls 1.2: 1530
-                 tls 1.3: 4717
-         fail: 1
-         error: 2
-         skip: 0
+         total: 6280
+         success: 6270
+                 tls 1.2: 1426
+                 tls 1.3: 4844
+         fail: 4
+         error: 6
 ```
+
+Zig's std library tls implementation on the same domains list:
+```
+stats:
+         total: 6280
+         success: 5637
+         fail: 581
+         error: 62
+```
+
 
 When I found domain which fails I use http_get example to test whether it is transient error or point to something interesting. Now only transient errors are left in that domains group. 
 

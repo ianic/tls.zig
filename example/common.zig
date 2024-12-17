@@ -89,6 +89,14 @@ pub const domainsToSkip = [_][]const u8{
     // should disable keyber
     "godaddy.com",
     "secureserver.net",
+    "addthis.com", //               error.ConnectionTimedOut
+    "misaq.me", //                  error.ConnectionTimedOut
+    "myoppo.com", //                error.ConnectionTimedOut
+    "partners-show.com", //         error.ConnectionTimedOut
+    "pod.ir", //                    error.ConnectionTimedOut
+    "revopush.com", //              error.ConnectionTimedOut
+    "tagcommander.com", //          error.ConnectionTimedOut
+    "lastline.come", //
 };
 
 pub const domainsWithErrors = [_][]const u8{
@@ -208,9 +216,14 @@ pub fn get(
 
     // Establish tcp connection
     var tcp: std.net.Stream = undefined;
+    var tnsf: usize = 4;
     while (true) {
         tcp = std.net.tcpConnectToHost(allocator, host, if (port) |p| p else 443) catch |err| switch (err) {
-            error.TemporaryNameServerFailure => continue,
+            error.TemporaryNameServerFailure => {
+                tnsf -= 1;
+                if (tnsf == 0) return err;
+                continue;
+            },
             else => return err,
         };
         break;
