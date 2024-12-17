@@ -116,10 +116,10 @@ pub const Parser = struct {
         const bytes = self.view(ele);
 
         const info = @typeInfo(T);
-        if (info != .Int) @compileError(@typeName(T) ++ " is not an int type");
+        if (info != .int) @compileError(@typeName(T) ++ " is not an int type");
         const Shift = std.math.Log2Int(u8);
 
-        var result: std.meta.Int(.unsigned, info.Int.bits) = 0;
+        var result: std.meta.Int(.unsigned, info.int.bits) = 0;
         for (bytes, 0..) |b, index| {
             const shifted = @shlWithOverflow(b, @as(Shift, @intCast(index * 8)));
             if (shifted[1] == 1) return error.Overflow;

@@ -58,7 +58,7 @@ fn stdLib(allocator: std.mem.Allocator, root_ca: tls.CertBundle, verbose: bool) 
     var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
 
-    var cli = try std.crypto.tls.Client.init(tcp, root_ca.bundle, host);
+    var cli = try std.crypto.tls.Client.init(tcp, .{ .ca = .{ .bundle = root_ca.bundle }, .host = .{ .explicit = host } });
 
     var buf: [16 * 1024]u8 = undefined;
     while (true) {

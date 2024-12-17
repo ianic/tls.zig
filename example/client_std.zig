@@ -17,7 +17,7 @@ pub fn main() !void {
     var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
 
-    var cli = try std.crypto.tls.Client.init(tcp, root_ca, host);
+    var cli = try std.crypto.tls.Client.init(tcp, .{ .ca = .{ .bundle = root_ca }, .host = .{ .explicit = host } });
 
     var buf: [4 * 1024]u8 = undefined;
     while (true) {

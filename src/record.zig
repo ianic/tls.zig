@@ -9,15 +9,25 @@ const record = @import("record.zig");
 
 pub const header_len = 5;
 
+pub inline fn int2(int: u16) [2]u8 {
+    var arr: [2]u8 = undefined;
+    std.mem.writeInt(u16, &arr, int, .big);
+    return arr;
+}
+
+pub inline fn int3(int: u24) [3]u8 {
+    var arr: [3]u8 = undefined;
+    std.mem.writeInt(u24, &arr, int, .big);
+    return arr;
+}
+
 pub fn header(content_type: proto.ContentType, payload_len: usize) [header_len]u8 {
-    const int2 = std.crypto.tls.int2;
     return [1]u8{@intFromEnum(content_type)} ++
         int2(@intFromEnum(proto.Version.tls_1_2)) ++
         int2(@intCast(payload_len));
 }
 
 pub fn handshakeHeader(handshake_type: proto.Handshake, payload_len: usize) [4]u8 {
-    const int3 = std.crypto.tls.int3;
     return [1]u8{@intFromEnum(handshake_type)} ++ int3(@intCast(payload_len));
 }
 
@@ -147,7 +157,7 @@ pub const Decoder = struct {
 
     pub fn decode(d: *Decoder, comptime T: type) !T {
         switch (@typeInfo(T)) {
-            .Int => |info| switch (info.bits) {
+            .int => |info| switch (info.bits) {
                 8 => {
                     try skip(d, 1);
                     return d.payload[d.idx - 1];
@@ -167,7 +177,7 @@ pub const Decoder = struct {
                 },
                 else => @compileError("unsupported int type: " ++ @typeName(T)),
             },
-            .Enum => |info| {
+            .@"enum" => |info| {
                 const int = try d.decode(info.tag_type);
                 if (info.is_exhaustive) @compileError("exhaustive enum cannot be used");
                 return @as(T, @enumFromInt(int));
@@ -288,7 +298,7 @@ pub const Writer = struct {
 
     pub fn writeInt(self: *Writer, value: anytype) !void {
         const IntT = @TypeOf(value);
-        const bytes = @divExact(@typeInfo(IntT).Int.bits, 8);
+        const bytes = @divExact(@typeInfo(IntT).int.bits, 8);
         const free = self.buf[self.pos..];
         if (free.len < bytes) return error.BufferOverflow;
         mem.writeInt(IntT, free[0..bytes], value, .big);
