@@ -139,7 +139,7 @@ stats:
          skip: 0
 ```
 
-When I found domain which fails I use http_get example to test wether it is transient error or point to something interesting. Now only transient errors are left in that domains group. 
+When I found domain which fails I use http_get example to test whether it is transient error or point to something interesting. Now only transient errors are left in that domains group. 
 
 ## http get
 
@@ -314,25 +314,24 @@ Running 50 client request to that server by using this library and then by using
 
 ```sh
 $ zig build -Doptimize=ReleaseFast && sudo ~/.local/bin/poop './zig-out/bin/client --cycles 50' 'zig-out/bin/client --cycles 50 --std'
-Benchmark 1 (19 runs): ./zig-out/bin/client --cycles 50
+Benchmark 1 (27 runs): ./zig-out/bin/client --cycles 50
   measurement          mean ± σ            min … max           outliers         delta
-  wall_time           265ms ± 12.7ms     251ms …  294ms          0 ( 0%)        0%
-  peak_rss            828KB ±  131KB     524KB … 1.05MB          0 ( 0%)        0%
-  cpu_cycles          415M  ± 10.2M      376M  …  426M           1 ( 5%)        0%
-  instructions       1.62G  ± 38.3M     1.48G  … 1.64G           1 ( 5%)        0%
-  cache_references    375K  ±  183K     65.9K  …  563K           0 ( 0%)        0%
-  cache_misses       9.55K  ± 2.21K     5.20K  … 14.1K           0 ( 0%)        0%
-  branch_misses       187K  ± 38.3K      124K  …  228K           0 ( 0%)        0%
-Benchmark 2 (19 runs): zig-out/bin/client --cycles 50 --std
+  wall_time           191ms ± 3.65ms     184ms …  199ms          0 ( 0%)        0%
+  peak_rss            803KB ±    0       803KB …  803KB          0 ( 0%)        0%
+  cpu_cycles          422M  ± 11.7M      401M  …  447M           0 ( 0%)        0%
+  instructions       1.62G  ± 29.4M     1.56G  … 1.65G           0 ( 0%)        0%
+  cache_references    478K  ± 83.2K      194K  …  540K           3 (11%)        0%
+  cache_misses       12.0K  ± 2.34K     8.67K  … 19.2K           0 ( 0%)        0%
+  branch_misses       255K  ± 21.0K      190K  …  277K           2 ( 7%)        0%
+Benchmark 2 (23 runs): zig-out/bin/client --cycles 50 --std
   measurement          mean ± σ            min … max           outliers         delta
-  wall_time           265ms ± 14.3ms     247ms …  296ms          0 ( 0%)          +  0.2% ±  3.4%
-  peak_rss            786KB ±    0       786KB …  786KB          0 ( 0%)          -  5.0% ±  7.4%
-  cpu_cycles          410M  ± 11.7M      364M  …  417M           1 ( 5%)          -  1.1% ±  1.8%
-  instructions       1.61G  ± 51.8M     1.40G  … 1.64G           1 ( 5%)          -  1.0% ±  1.9%
-  cache_references    340K  ±  150K     49.9K  …  487K           0 ( 0%)          -  9.4% ± 29.5%
-  cache_misses       8.77K  ± 1.97K     5.42K  … 12.4K           0 ( 0%)          -  8.2% ± 14.5%
-  branch_misses       189K  ± 38.2K      113K  …  232K           0 ( 0%)          +  1.4% ± 13.6%
-
+  wall_time           220ms ± 3.86ms     216ms …  234ms          1 ( 4%)        💩+ 15.5% ±  1.1%
+  peak_rss            850KB ±  101KB     803KB … 1.06MB          4 (17%)        💩+  5.9% ±  4.9%
+  cpu_cycles          564M  ± 14.7M      509M  …  592M           3 (13%)        💩+ 33.5% ±  1.8%
+  instructions       2.21G  ± 54.2M     2.00G  … 2.25G           2 ( 9%)        💩+ 36.3% ±  1.5%
+  cache_references    531K  ± 31.8K      424K  …  556K           2 ( 9%)        💩+ 11.1% ±  7.8%
+  cache_misses       13.3K  ± 1.99K     9.21K  … 18.6K           1 ( 4%)          + 10.9% ± 10.4%
+  branch_misses       250K  ± 9.70K      224K  …  264K           2 ( 9%)          -  2.0% ±  3.8%
 ```
 
 # Tests
