@@ -347,12 +347,10 @@ Benchmark 2 (23 runs): zig-out/bin/client --cycles 50 --std
   branch_misses       250K  ± 9.70K      224K  …  264K           2 ( 9%)          -  2.0% ±  3.8%
 ```
 
-# Tests
-
-Tests are created using examples from [The Illustrated TLS 1.2 Connection](https://tls12.xargs.org/) and [The Illustrated TLS 1.3 Connection](https://tls13.xargs.org/). Those are really useful in understanding what each byte means. 
-
+ 
 # Credits
-
+ 
+ * [Michael Driscoll](https://github.com/syncsynchalt) for creating [The Illustrated TLS 1.2 Connection](https://tls12.xargs.org/) and [The Illustrated TLS 1.3 Connection](https://tls13.xargs.org/). Those are really useful for understanding what each byte means.
  * @jedisct1 for [zig-cbc](https://github.com/jedisct1/zig-cbc) library. Copied to [src/cbc](/src/cbc) with padding changed from pkcs to tls.
  * @clickingbuttons for rsa package. Copied to [src/rsa](/src/rsa) from [branch](
 https://github.com/clickingbuttons/zig/blob/f1cea91624fd2deae28bfb2414a4fd9c7e246883/lib/std/crypto/rsa.zig) of this [PR](
