@@ -20,9 +20,11 @@ pub fn build(b: *std.Build) void {
         "client_auth",
         "client_std",
         "fuzz_server",
+        "async/main",
     };
-    inline for (examples) |name| {
-        const source_file = "example/" ++ name ++ ".zig";
+    inline for (examples) |path| {
+        const source_file = "example/" ++ path ++ ".zig";
+        const name = comptime if (std.mem.indexOfScalar(u8, path, '/')) |pos| path[0..pos] else path;
         const exe = b.addExecutable(.{
             .name = name,
             .root_source_file = b.path(source_file),

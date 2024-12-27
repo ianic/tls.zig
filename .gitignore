@@ -20,3 +20,4 @@ tmp/
 .zig-cache/
 /example/cert/
 /example/tlsfuzzer/
+/example/async/io/
