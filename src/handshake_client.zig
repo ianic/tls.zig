@@ -107,7 +107,6 @@ pub fn Handshake(comptime Stream: type) type {
                 .client_random = undefined,
                 .dh_kp = undefined,
                 .rsa_secret = undefined,
-                //.now_sec = std.time.timestamp(),
                 .buffer = buf,
                 .rec_rdr = rec_rdr,
             };
