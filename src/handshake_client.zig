@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const crypto = std.crypto;
 const mem = std.mem;
+const io = std.io;
 const Certificate = crypto.Certificate;
 
 const cipher = @import("cipher.zig");
@@ -114,7 +115,7 @@ pub fn Handshake(comptime Stream: type) type {
 
         fn initKeys(
             h: *HandshakeT,
-            named_groups: []const proto.NamedGroup,
+            opt: Options,
         ) !void {
             const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
             var buf: [init_keys_buf_len]u8 = undefined;
@@ -122,7 +123,13 @@ pub fn Handshake(comptime Stream: type) type {
 
             h.client_random = buf[0..32].*;
             h.rsa_secret = RsaSecret.init(buf[32..][0..46].*);
-            h.dh_kp = try DhKeyPair.init(buf[32 + 46 ..][0..DhKeyPair.seed_len].*, named_groups);
+            h.dh_kp = try DhKeyPair.init(buf[32 + 46 ..][0..DhKeyPair.seed_len].*, opt.named_groups);
+
+            h.cert = .{
+                .host = opt.host,
+                .root_ca = opt.root_ca.bundle,
+                .skip_verify = opt.insecure_skip_verify,
+            };
         }
 
         /// Handshake exchanges messages with server to get agreement about
@@ -174,12 +181,7 @@ pub fn Handshake(comptime Stream: type) type {
         ///
         pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !Cipher {
             defer h.updateDiagnostic(opt);
-            try h.initKeys(opt.named_groups);
-            h.cert = .{
-                .host = opt.host,
-                .root_ca = opt.root_ca.bundle,
-                .skip_verify = opt.insecure_skip_verify,
-            };
+            try h.initKeys(opt);
 
             try w.writeAll(try h.makeClientHello(opt)); // client flight 1
             try h.readServerFlight1(); // server flight 1
@@ -199,6 +201,39 @@ pub fn Handshake(comptime Stream: type) type {
             try w.writeAll(try h.makeClientFlight2Tls12(opt.auth)); // client flight 2
             try h.readServerFlight2(); // server flight 2
             return h.cipher;
+        }
+
+        fn clientFlight1(h: *HandshakeT, opt: Options) ![]const u8 {
+            return try h.makeClientHello(opt);
+        }
+
+        fn serverFlight1(h: *HandshakeT, opt: Options) !void {
+            try h.readServerFlight1(); // server flight 1
+            h.transcript.use(h.cipher_suite.hash());
+
+            // tls 1.3 specific handshake part
+            if (h.tls_version == .tls_1_3) {
+                try h.generateHandshakeCipher(opt.key_log_callback);
+                try h.readEncryptedServerFlight1(); // server flight 1
+                return;
+            }
+        }
+
+        fn clientFlight2(h: *HandshakeT, opt: Options) ![]const u8 {
+            if (h.tls_version == .tls_1_3) {
+                const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
+                const buf = try h.makeClientFlight2Tls13(opt.auth);
+                h.cipher = app_cipher;
+                return buf;
+            }
+            // tls 1.2 specific handshake part
+            try h.generateCipher(opt.key_log_callback);
+            return try h.makeClientFlight2Tls12(opt.auth);
+        }
+
+        fn serverFlight2(h: *HandshakeT, _: Options) !void {
+            if (h.tls_version == .tls_1_3) return;
+            try h.readServerFlight2();
         }
 
         /// Prepare key material and generate cipher for TLS 1.2
@@ -417,7 +452,7 @@ pub fn Handshake(comptime Stream: type) type {
                 0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
                 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
             };
-            return std.mem.eql(u8, server_random, &hello_retry_request_magic);
+            return mem.eql(u8, server_random, &hello_retry_request_magic);
         }
 
         fn parseServerKeyExchange(h: *HandshakeT, d: *record.Decoder) !void {
@@ -728,10 +763,10 @@ const data12 = @import("testdata/tls12.zig");
 const data13 = @import("testdata/tls13.zig");
 const testu = @import("testu.zig");
 
-fn testReader(data: []const u8) record.Reader(std.io.FixedBufferStream([]const u8)) {
-    return record.reader(std.io.fixedBufferStream(data));
+fn testReader(data: []const u8) record.Reader(io.FixedBufferStream([]const u8)) {
+    return record.reader(io.fixedBufferStream(data));
 }
-const TestHandshake = Handshake(std.io.FixedBufferStream([]const u8));
+const TestHandshake = Handshake(io.FixedBufferStream([]const u8));
 
 test "parse tls 1.2 server hello" {
     var h = brk: {
@@ -951,4 +986,150 @@ test "handshake verify server finished message" {
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&data12.client_finished);
     try h.readServerFlight2();
+}
+
+const AsyncHandshake = struct {
+    const Self = @This();
+
+    h: Handshake(*Self) = undefined,
+    opt: Options = undefined,
+    write_buf: [cipher.max_ciphertext_record_len]u8 = undefined,
+
+    read_buf: []const u8 = &.{},
+    read_buf_pos: usize = 0,
+
+    rec_reader: record.Reader(*Self) = undefined,
+
+    state: State = .none,
+
+    const State = enum {
+        none,
+        init,
+        client_flight_1,
+        server_flight_1,
+        client_flight_2,
+        server_flight_2,
+    };
+
+    fn init(self: *Self, opt: Options) !void {
+        self.* = .{
+            .rec_reader = record.reader(self),
+            .h = Handshake(*Self).init(&self.write_buf, &self.rec_reader),
+            .opt = opt,
+        };
+        try self.h.initKeys(opt);
+        self.state = .init;
+    }
+
+    pub fn read(self: *Self, dest: []u8) !usize {
+        //std.debug.print("read {} {}\n", .{ self.read_buf.len, self.read_buf_pos });
+        const size = @min(dest.len, self.read_buf.len - self.read_buf_pos);
+        const end = self.read_buf_pos + size;
+        @memcpy(dest[0..size], self.read_buf[self.read_buf_pos..end]);
+        self.read_buf_pos = end;
+        return size;
+    }
+
+    fn send(self: *Self) !?[]const u8 {
+        switch (self.state) {
+            .init => {
+                const buf = try self.h.clientFlight1(self.opt);
+                self.state = .client_flight_1;
+                return buf;
+            },
+            .server_flight_1 => {
+                const buf = try self.h.clientFlight2(self.opt);
+                self.state = .client_flight_2;
+                return buf;
+            },
+            else => return null,
+        }
+    }
+
+    fn recv(self: *Self, buf: []const u8) !void {
+        switch (self.state) {
+            .client_flight_1 => {
+                self.read_buf = buf;
+                self.read_buf_pos = 0;
+
+                try self.h.serverFlight1(self.opt);
+                self.state = .server_flight_1;
+            },
+            .client_flight_2 => {
+                self.read_buf = buf;
+                self.read_buf_pos = 0;
+
+                try self.h.serverFlight2(self.opt);
+                self.state = .server_flight_2;
+            },
+            else => return error.TlsUnexpectedMessage,
+        }
+    }
+
+    fn done(self: *Self) bool {
+        return (self.h.tls_version == .tls_1_2 and self.state == .server_flight_2) or
+            (self.h.tls_version == .tls_1_3 and self.state == .client_flight_2);
+    }
+
+    fn appCipher(self: *Self) ?Cipher {
+        if (!self.done()) return null;
+        return self.h.cipher;
+    }
+};
+
+test "async handshake" {
+    var ah: AsyncHandshake = .{};
+    try ah.init(.{
+        .host = "example.ulfheim.net",
+        .insecure_skip_verify = true,
+        .root_ca = .{},
+        .cipher_suites = &[_]CipherSuite{CipherSuite.AES_256_GCM_SHA384},
+        .named_groups = &[_]proto.NamedGroup{.x25519},
+    });
+    var h = &ah.h;
+    { // update secrets to well known from example
+        h.client_random = data13.client_random;
+        h.dh_kp.x25519_kp = .{
+            .public_key = data13.client_public_key,
+            .secret_key = data13.client_private_key,
+        };
+    }
+
+    const expected_client_flight_1 = testu.hexToBytes(
+        \\ 16 03 03 00 9c
+        \\ 01 00 00 98
+        \\ 03 03
+        \\ 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+        \\ 00
+        \\ 00 02 13 02
+        \\ 01 00
+        \\ 00 6d
+        \\ 00 2b 00 03 02 03 04
+        \\ 00 0d 00 14 00 12 04 03 05 03 08 04 08 05 08 06 08 07 02 01 04 01 05 01
+        \\ 00 0a 00 04 00 02 00 1d 00 33 00 26 00 24 00 1d 00 20
+        \\ 35 80 72 d6 36 58 80 d1 ae ea 32 9a df 91 21 38 38 51 ed 21 a2 8e 3b 75 e9 65 d0 d2 cd 16 62 54
+        \\ 00 00 00 18 00 16 00 00 13 65 78 61 6d 70 6c 65 2e 75 6c 66 68 65 69 6d 2e 6e 65 74
+    );
+    const client_flight_1 = try ah.send();
+    try testing.expectEqualSlices(u8, &expected_client_flight_1, client_flight_1.?);
+
+    { // update transcript to well known from example
+        h.transcript = .{};
+        h.transcript.update(data13.client_hello[record.header_len..]);
+    }
+
+    try ah.recv(&(data13.server_hello ++ data13.server_flight));
+    { // inspect
+        try testing.expectEqual(.tls_1_3, h.tls_version);
+        try testing.expectEqual(.x25519, h.named_group);
+        try testing.expectEqualSlices(u8, &data13.server_random, &h.server_random);
+        try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite);
+        try testing.expectEqualSlices(u8, &data13.server_pub_key, h.server_pub_key);
+        try testing.expect(!ah.done());
+    }
+
+    const client_flight_2 = try ah.send();
+    try testing.expectEqualSlices(u8, &data13.client_flight2, client_flight_2.?);
+
+    try testing.expect(ah.done());
 }
