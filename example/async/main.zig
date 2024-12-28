@@ -11,7 +11,7 @@ const log = std.log.scoped(.main);
 pub fn main() !void {
     //const host = "www.cloudflare.com";
     const host = "www.google.com";
-    const port = 80;
+    const port = 443;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -30,8 +30,19 @@ pub fn main() !void {
     try ev.init(allocator, .{});
     defer ev.deinit();
 
-    var http: Http = undefined;
-    try http.init(allocator, &ev, host, addr);
+    // var http: Http = undefined;
+    // try http.init(allocator, &ev, host, addr);
+
+    var ca_bundle = try tls.CertBundle.fromSystem(allocator);
+    defer ca_bundle.deinit(allocator);
+    const opt: tls.ClientOptions = .{
+        .host = host,
+        .root_ca = ca_bundle,
+        .cipher_suites = tls.cipher_suites.tls13,
+        .key_log_callback = tls.key_log.callback,
+    };
+    var https: Https = undefined;
+    try https.init(allocator, &ev, host, addr, opt);
 
     catchSignals();
     var prev: u64 = 0;
@@ -106,6 +117,51 @@ const Http = struct {
             .conn = Tcp(*Http).init(ev, self),
         };
         try self.conn.connect(address);
+    }
+
+    pub fn onConnect(self: *Self) !void {
+        self.request = try std.fmt.allocPrint(self.allocator, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{self.host});
+        try self.conn.send(self.request);
+    }
+
+    pub fn onRecv(self: *Self, bytes: []const u8) !void {
+        log.debug("recv {} bytes: {s}", .{ bytes.len, bytes[0..@min(64, bytes.len)] });
+        _ = self;
+    }
+
+    pub fn onSend(self: *Self, _: ?anyerror) void {
+        self.allocator.free(self.request);
+    }
+
+    pub fn onClose(self: *Self) void {
+        _ = self;
+    }
+};
+
+const Tls = @import("tls.zig").Tls;
+
+const Https = struct {
+    const Self = @This();
+    allocator: mem.Allocator,
+    host: []const u8,
+    conn: Tls(*Https),
+    request: []const u8 = &.{},
+
+    fn init(
+        self: *Self,
+        allocator: mem.Allocator,
+        ev: *io.Ev,
+        host: []const u8,
+        address: std.net.Address,
+        opt: tls.ClientOptions,
+    ) !void {
+        self.* = .{
+            .allocator = allocator,
+            .host = host,
+            .conn = undefined,
+        };
+        self.conn.init(allocator, ev, self);
+        try self.conn.connect(address, opt);
     }
 
     pub fn onConnect(self: *Self) !void {

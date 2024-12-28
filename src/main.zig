@@ -38,6 +38,8 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
     return conn;
 }
 
+pub const AsyncHandshakeClient = @import("handshake_client.zig").AsyncHandshake;
+
 test {
     _ = @import("handshake_common.zig");
     _ = @import("handshake_server.zig");

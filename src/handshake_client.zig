@@ -985,7 +985,7 @@ test "handshake verify server finished message" {
     try h.readServerFlight2();
 }
 
-const AsyncHandshake = struct {
+pub const AsyncHandshake = struct {
     const Self = @This();
     const InnerReader = io.FixedBufferStream([]const u8);
 
@@ -1007,7 +1007,7 @@ const AsyncHandshake = struct {
         }
     };
 
-    fn init(self: *Self, opt: Options) !void {
+    pub fn init(self: *Self, opt: Options) !void {
         self.* = .{
             .h = Handshake(InnerReader).init(&self.write_buf, undefined),
             .opt = opt,
@@ -1017,7 +1017,7 @@ const AsyncHandshake = struct {
     }
 
     // Returns null if there is nothing to send at this state
-    fn send(self: *Self) !?[]const u8 {
+    pub fn send(self: *Self) !?[]const u8 {
         switch (self.state) {
             .init => {
                 const buf = try self.h.clientFlight1(self.opt);
@@ -1034,7 +1034,7 @@ const AsyncHandshake = struct {
     }
 
     // Returns number of bytes consumed from buf
-    fn recv(self: *Self, buf: []const u8) !usize {
+    pub fn recv(self: *Self, buf: []const u8) !usize {
         const prev: Transcript = self.h.transcript;
         errdefer self.h.transcript = prev;
 
@@ -1058,12 +1058,12 @@ const AsyncHandshake = struct {
         return buf.len - unread;
     }
 
-    fn done(self: *Self) bool {
+    pub fn done(self: *Self) bool {
         return self.state == .server_flight_2 or
             (self.h.tls_version == .tls_1_3 and self.state == .client_flight_2);
     }
 
-    fn appCipher(self: *Self) ?Cipher {
+    pub fn appCipher(self: *Self) ?Cipher {
         if (!self.done()) return null;
         return self.h.cipher;
     }

@@ -55,12 +55,16 @@ pub fn Tcp(comptime AppType: type) type {
         }
 
         fn onConnect(self: *Self, socket: posix.socket_t) io.Error!void {
+            log.debug("{} connected", .{self.address});
+
             self.socket = socket;
             self.state = .connected;
             self.recv_op = io.Op.recv(self.socket, self, onRecv, onRecvFail);
             self.ev.submit(&self.recv_op);
-            self.app.onConnect() catch return error.OutOfMemory; // TODO
-            log.debug("{} connected", .{self.address});
+            self.app.onConnect() catch |err| {
+                log.err("onConnect {}", .{err});
+                return error.OutOfMemory; // TODO
+            };
         }
 
         fn onConnectFail(self: *Self, err: ?anyerror) void {
@@ -78,12 +82,18 @@ pub fn Tcp(comptime AppType: type) type {
         }
 
         fn onSend(self: *Self) io.Error!void {
-            self.app.onSend(null);
+            self.app.onSend(null) catch |err| {
+                log.err("onSend {}", .{err});
+                return error.OutOfMemory; // TODO
+            };
             log.debug("{} send", .{self.address});
         }
 
         fn onSendFail(self: *Self, err: anyerror) io.Error!void {
-            self.app.onSend(err);
+            self.app.onSend(err) catch |e| {
+                log.err("onSendFail {}", .{e});
+                return error.OutOfMemory; // TODO
+            };
             switch (err) {
                 error.BrokenPipe, error.ConnectionResetByPeer => {},
                 else => log.err("{} send failed {}", .{ self.address, err }),
@@ -92,7 +102,10 @@ pub fn Tcp(comptime AppType: type) type {
         }
 
         fn onRecv(self: *Self, bytes: []const u8) io.Error!void {
-            try self.app.onRecv(bytes);
+            self.app.onRecv(bytes) catch |err| {
+                log.err("onRecv {}", .{err});
+                return error.OutOfMemory; // TODO
+            };
             if (!self.recv_op.hasMore() and self.state == .connected)
                 self.ev.submit(&self.recv_op);
         }
