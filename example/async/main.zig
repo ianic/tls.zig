@@ -11,7 +11,7 @@ const log = std.log.scoped(.main);
 pub fn main() !void {
     //const host = "www.cloudflare.com";
     const host = "www.google.com";
-    const port = 80;
+    const port = 443;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -24,14 +24,14 @@ pub fn main() !void {
     if (list.addrs.len == 0) return error.UnknownHostName;
     if (list.addrs.len > 0)
         std.debug.print("list.addrs: {any}\n", .{list.addrs});
+    const addr = list.addrs[0];
 
     var ev: io.Ev = undefined;
     try ev.init(allocator, .{});
     defer ev.deinit();
 
-    var conn: Conn = undefined;
-    try conn.init(allocator, &ev, list.addrs[0]);
-    try conn.get(host);
+    var http: Http = undefined;
+    try http.init(allocator, &ev, host, addr);
 
     catchSignals();
     var prev: u64 = 0;
@@ -83,6 +83,49 @@ fn catchSignals() void {
     posix.sigaction(posix.SIG.USR2, &act, null);
     posix.sigaction(posix.SIG.PIPE, &act, null);
 }
+
+const Tcp = @import("tcp.zig").Tcp;
+
+const Http = struct {
+    const Self = @This();
+    allocator: mem.Allocator,
+    host: []const u8,
+    conn: Tcp(*Http),
+    request: []const u8 = &.{},
+
+    fn init(
+        self: *Self,
+        allocator: mem.Allocator,
+        ev: *io.Ev,
+        host: []const u8,
+        address: std.net.Address,
+    ) !void {
+        self.* = .{
+            .allocator = allocator,
+            .host = host,
+            .conn = Tcp(*Http).init(ev, self),
+        };
+        try self.conn.connect(address);
+    }
+
+    pub fn onConnect(self: *Self) !void {
+        self.request = try std.fmt.allocPrint(self.allocator, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{self.host});
+        try self.conn.send(self.request);
+    }
+
+    pub fn onRecv(self: *Self, bytes: []const u8) !void {
+        log.debug("recv {} bytes: {s}", .{ bytes.len, bytes[0..@min(64, bytes.len)] });
+        _ = self;
+    }
+
+    pub fn onSend(self: *Self, _: ?anyerror) void {
+        self.allocator.free(self.request);
+    }
+
+    pub fn onClose(self: *Self) void {
+        _ = self;
+    }
+};
 
 const Conn = struct {
     ev: *io.Ev,
