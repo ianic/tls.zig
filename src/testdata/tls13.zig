@@ -63,5 +63,7 @@ pub const server_flight =
     server_certificate_verify_wrapped ++
     server_finished_wrapped;
 
-pub const client_flight2 =
-    hexToBytes("140303000101") ++ client_finished_wrapped; // ++ client_ping_wrapped;
+pub const server_flight_1 = server_hello ++ server_flight;
+
+pub const client_flight_2 =
+    hexToBytes("140303000101") ++ client_finished_wrapped;

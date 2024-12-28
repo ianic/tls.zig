@@ -208,14 +208,11 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn serverFlight1(h: *HandshakeT, opt: Options) !void {
-            try h.readServerFlight1(); // server flight 1
+            try h.readServerFlight1();
             h.transcript.use(h.cipher_suite.hash());
-
-            // tls 1.3 specific handshake part
             if (h.tls_version == .tls_1_3) {
                 try h.generateHandshakeCipher(opt.key_log_callback);
-                try h.readEncryptedServerFlight1(); // server flight 1
-                return;
+                try h.readEncryptedServerFlight1();
             }
         }
 
@@ -990,16 +987,11 @@ test "handshake verify server finished message" {
 
 const AsyncHandshake = struct {
     const Self = @This();
+    const InnerReader = io.FixedBufferStream([]const u8);
 
-    h: Handshake(*Self) = undefined,
+    h: Handshake(InnerReader) = undefined,
     opt: Options = undefined,
     write_buf: [cipher.max_ciphertext_record_len]u8 = undefined,
-
-    read_buf: []const u8 = &.{},
-    read_buf_pos: usize = 0,
-
-    rec_reader: record.Reader(*Self) = undefined,
-
     state: State = .none,
 
     const State = enum {
@@ -1009,65 +1001,65 @@ const AsyncHandshake = struct {
         server_flight_1,
         client_flight_2,
         server_flight_2,
+
+        fn next(self: *State) void {
+            self.* = @enumFromInt(@intFromEnum(self.*) + 1);
+        }
     };
 
     fn init(self: *Self, opt: Options) !void {
         self.* = .{
-            .rec_reader = record.reader(self),
-            .h = Handshake(*Self).init(&self.write_buf, &self.rec_reader),
+            .h = Handshake(InnerReader).init(&self.write_buf, undefined),
             .opt = opt,
         };
         try self.h.initKeys(opt);
         self.state = .init;
     }
 
-    pub fn read(self: *Self, dest: []u8) !usize {
-        //std.debug.print("read {} {}\n", .{ self.read_buf.len, self.read_buf_pos });
-        const size = @min(dest.len, self.read_buf.len - self.read_buf_pos);
-        const end = self.read_buf_pos + size;
-        @memcpy(dest[0..size], self.read_buf[self.read_buf_pos..end]);
-        self.read_buf_pos = end;
-        return size;
-    }
-
+    // Returns null if there is nothing to send at this state
     fn send(self: *Self) !?[]const u8 {
         switch (self.state) {
             .init => {
                 const buf = try self.h.clientFlight1(self.opt);
-                self.state = .client_flight_1;
+                self.state.next();
                 return buf;
             },
             .server_flight_1 => {
                 const buf = try self.h.clientFlight2(self.opt);
-                self.state = .client_flight_2;
+                self.state.next();
                 return buf;
             },
             else => return null,
         }
     }
 
-    fn recv(self: *Self, buf: []const u8) !void {
+    // Returns number of bytes consumed from buf
+    fn recv(self: *Self, buf: []const u8) !usize {
+        const prev: Transcript = self.h.transcript;
+        errdefer self.h.transcript = prev;
+
+        var rr = record.reader(InnerReader{ .buffer = buf, .pos = 0 });
+        self.h.rec_rdr = &rr;
+
         switch (self.state) {
             .client_flight_1 => {
-                self.read_buf = buf;
-                self.read_buf_pos = 0;
-
                 try self.h.serverFlight1(self.opt);
-                self.state = .server_flight_1;
+                self.state.next();
             },
             .client_flight_2 => {
-                self.read_buf = buf;
-                self.read_buf_pos = 0;
-
                 try self.h.serverFlight2(self.opt);
-                self.state = .server_flight_2;
+                self.state.next();
             },
             else => return error.TlsUnexpectedMessage,
         }
+
+        const ir = &rr.inner_reader;
+        const unread = (ir.buffer.len - ir.pos) + (rr.end - rr.start);
+        return buf.len - unread;
     }
 
     fn done(self: *Self) bool {
-        return (self.h.tls_version == .tls_1_2 and self.state == .server_flight_2) or
+        return self.state == .server_flight_2 or
             (self.h.tls_version == .tls_1_3 and self.state == .client_flight_2);
     }
 
@@ -1118,8 +1110,15 @@ test "async handshake" {
         h.transcript.update(data13.client_hello[record.header_len..]);
     }
 
-    try ah.recv(&(data13.server_hello ++ data13.server_flight));
+    // parsing partial server flight message returns error.EndOfStream
+    for (1..data13.server_flight_1.len - 1) |i| {
+        const buf = data13.server_flight_1[0..i];
+        try testing.expectError(error.EndOfStream, ah.recv(buf));
+    }
+
+    const n = try ah.recv(&(data13.server_flight_1 ++ "dummy footer".*));
     { // inspect
+        try testing.expectEqual(data13.server_flight_1.len, n); // footer is not touched
         try testing.expectEqual(.tls_1_3, h.tls_version);
         try testing.expectEqual(.x25519, h.named_group);
         try testing.expectEqualSlices(u8, &data13.server_random, &h.server_random);
@@ -1129,7 +1128,32 @@ test "async handshake" {
     }
 
     const client_flight_2 = try ah.send();
-    try testing.expectEqualSlices(u8, &data13.client_flight2, client_flight_2.?);
-
+    try testing.expectEqualSlices(u8, &data13.client_flight_2, client_flight_2.?);
     try testing.expect(ah.done());
+
+    try testing.expectEqual(0, try ah.recv("dummy footer"));
+    try testing.expect(ah.done());
+
+    std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake)});
+    std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake.InnerReader)});
+    std.debug.print("size {}\n", .{@sizeOf(Handshake(AsyncHandshake.InnerReader))});
+    std.debug.print("options size {}\n", .{@sizeOf(Options)});
+    std.debug.print("size {}\n", .{@sizeOf(CertBundle)});
+    std.debug.print("CertKeyPair {}\n", .{@sizeOf(CertKeyPair)});
+
+    std.debug.print("DhKeyPair {}\n", .{@sizeOf(DhKeyPair)});
+    std.debug.print("CertificateParser {}\n", .{@sizeOf(CertificateParser)});
+}
+
+test "enum" {
+    var s: AsyncHandshake.State = .none;
+
+    std.debug.print("s: {}\n", .{@intFromEnum(s)});
+    s.next();
+    s.next();
+    std.debug.print("s: {} {s}\n", .{ @intFromEnum(s), @tagName(s) });
+    s = .server_flight_2;
+    std.debug.print("s: {} {s}\n", .{ @intFromEnum(s), @tagName(s) });
+    //s.next();
+    std.debug.print("s: {} {s}\n", .{ @intFromEnum(s), @tagName(s) });
 }
