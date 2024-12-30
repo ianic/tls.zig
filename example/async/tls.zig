@@ -86,7 +86,7 @@ pub fn Tls(comptime ClientType: type) type {
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
-                        // TODO handle key_update and new_session_ticket separatly
+                        // TODO handle key_update and new_session_ticket separately
                         continue;
                     },
                     .alert => {
