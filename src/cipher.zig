@@ -182,6 +182,12 @@ pub const Cipher = union(CipherSuite) {
         };
     }
 
+    pub fn recordLen(c: *Cipher, cleartext_len: usize) usize {
+        return switch (c.*) {
+            inline else => |*f| f.recordLen(cleartext_len),
+        };
+    }
+
     pub fn encryptSeq(c: Cipher) u64 {
         return switch (c) {
             inline else => |f| f.encrypt_seq,
@@ -276,6 +282,10 @@ fn Aead12Type(comptime AeadType: type) type {
             return buf[0..record_len];
         }
 
+        pub fn recordLen(_: Self, cleartext_len: usize) usize {
+            return record.header_len + explicit_iv_len + cleartext_len + auth_tag_len;
+        }
+
         /// Decrypts payload into cleartext. Returns tls record content type and
         /// cleartext.
         /// Accepts tls record header and payload:
@@ -360,6 +370,10 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
 
             buf[0..record.header_len].* = record.header(content_type, ciphertext.len + auth_tag.len);
             return buf[0..record_len];
+        }
+
+        pub fn recordLen(_: Self, cleartext_len: usize) usize {
+            return record.header_len + cleartext_len + auth_tag_len;
         }
 
         /// Decrypts payload into cleartext. Returns tls record content type and
@@ -476,6 +490,11 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             AeadType.encrypt(ciphertext, auth_tag, ciphertext, header, iv, self.encrypt_key);
             self.encrypt_seq +%= 1;
             return buf[0..record_len];
+        }
+
+        pub fn recordLen(_: Self, cleartext_len: usize) usize {
+            const payload_len = cleartext_len + 1 + auth_tag_len;
+            return record.header_len + payload_len;
         }
 
         /// Decrypts payload into cleartext. Returns tls record content type and
@@ -605,6 +624,12 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
 
             // header | iv | ------ ciphertext -------
             return buf[0 .. record.header_len + iv_len + ciphertext.len];
+        }
+
+        pub fn recordLen(_: Self, cleartext_len: usize) usize {
+            const unpadded_len = cleartext_len + mac_len;
+            const padded_len = paddedLength(unpadded_len);
+            return record.header_len + iv_len + padded_len;
         }
 
         /// Decrypts payload into cleartext. Returns tls record content type and
@@ -988,6 +1013,7 @@ fn encryptDecrypt(client_cipher: *Cipher, server_cipher: *Cipher) !void {
                 };
             },
         };
+        try testing.expectEqual(client_cipher.recordLen(cleartext.len), encrypted.len);
         try testing.expectEqual(expected_encrypted_len, encrypted.len);
         // decrypt
         const content_type, const decrypted = try server_cipher.decrypt(&buf, Record.init(encrypted));

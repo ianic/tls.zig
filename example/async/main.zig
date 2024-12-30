@@ -9,15 +9,13 @@ const posix = std.posix;
 const log = std.log.scoped(.main);
 
 pub fn main() !void {
-    const host = "www.cloudflare.com";
+    const host = "www.supersport.hr";
+    //const host = "www.cloudflare.com";
     //const host = "www.google.com";
     const port = 443;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-
-    var root_ca = try tls.CertBundle.fromSystem(allocator);
-    defer root_ca.deinit(allocator);
 
     const list = try std.net.getAddressList(allocator, host, port);
     defer list.deinit();
@@ -33,16 +31,18 @@ pub fn main() !void {
     // var http: Http = undefined;
     // try http.init(allocator, &ev, host, addr);
 
-    var ca_bundle = try tls.CertBundle.fromSystem(allocator);
-    defer ca_bundle.deinit(allocator);
+    var root_ca = try tls.CertBundle.fromSystem(allocator);
+    defer root_ca.deinit(allocator);
+
     const opt: tls.ClientOptions = .{
         .host = host,
-        .root_ca = ca_bundle,
+        .root_ca = root_ca,
         //.cipher_suites = tls.cipher_suites.tls12,
         .key_log_callback = tls.key_log.callback,
     };
     var https: Https = undefined;
     try https.init(allocator, &ev, host, addr, opt);
+    defer https.deinit();
 
     catchSignals();
     var prev: u64 = 0;
@@ -70,6 +70,7 @@ pub fn main() !void {
 
         if (ev.metric.all.active() == 0) break;
     }
+    log.debug("done", .{});
 
     //try sync(allocator, root_ca);
 }
@@ -145,7 +146,6 @@ const Https = struct {
     allocator: mem.Allocator,
     host: []const u8,
     conn: Tls(*Https),
-    request: []const u8 = &.{},
 
     fn init(
         self: *Self,
@@ -161,24 +161,30 @@ const Https = struct {
             .conn = undefined,
         };
         self.conn.init(allocator, ev, self);
+        errdefer self.conn.deinit();
         try self.conn.connect(address, opt);
     }
 
+    fn deinit(self: *Self) void {
+        self.conn.deinit();
+    }
+
     pub fn onConnect(self: *Self) !void {
-        self.request = try std.fmt.allocPrint(self.allocator, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{self.host});
-        try self.conn.send(self.request);
+        const request = try std.fmt.allocPrint(self.allocator, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{self.host});
+        try self.conn.send(request);
     }
 
     pub fn onRecv(self: *Self, bytes: []const u8) !void {
-        log.debug("recv {} bytes: {s}", .{ bytes.len, bytes[0..@min(64, bytes.len)] });
-        _ = self;
-    }
+        // log.debug("recv {} bytes: {s}", .{ bytes.len, bytes }); //bytes[0..@min(128, bytes.len)] });
 
-    pub fn onSend(self: *Self, _: ?anyerror) void {
-        self.allocator.free(self.request);
+        if (std.ascii.endsWithIgnoreCase(
+            std.mem.trimRight(u8, bytes, "\r\n"),
+            "</html>",
+        ) or std.ascii.endsWithIgnoreCase(bytes, "\r\n0\r\n\r\n")) self.conn.close();
     }
 
     pub fn onClose(self: *Self) void {
+        log.debug("onClose", .{});
         _ = self;
     }
 };

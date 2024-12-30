@@ -17,6 +17,7 @@ pub const CertKeyPair = common.CertKeyPair;
 pub const record = @import("record.zig");
 const connection = @import("connection.zig").connection;
 pub const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
+pub const max_cleartext_len = @import("cipher.zig").max_cleartext_len;
 const HandshakeServer = @import("handshake_server.zig").Handshake;
 const HandshakeClient = @import("handshake_client.zig").Handshake;
 

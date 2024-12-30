@@ -9,143 +9,212 @@ const tls = @import("tls");
 
 const log = std.log.scoped(.tls);
 
-pub fn Tls(comptime AppType: type) type {
+pub fn Tls(comptime ClientType: type) type {
     return struct {
         const Self = @This();
 
         allocator: mem.Allocator,
-        app: AppType,
-        conn: Tcp(*Self),
+        client: ClientType,
+        tcp: Tcp(*Self),
         handshake: ?*tls.AsyncHandshakeClient = null,
         cipher: tls.Cipher = undefined,
         recv_buf: RecvBuf,
         write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
 
+        state: State = .closed,
+
+        const State = enum {
+            closed,
+            connecting,
+            handshake,
+            connected,
+        };
+
         pub fn init(
             self: *Self,
             allocator: mem.Allocator,
             ev: *io.Ev,
-            app: AppType,
+            client: ClientType,
         ) void {
             self.* = .{
                 .allocator = allocator,
-                .conn = Tcp(*Self).init(ev, self),
-                .app = app,
+                .tcp = Tcp(*Self).init(allocator, ev, self),
+                .client = client,
                 .recv_buf = RecvBuf.init(allocator),
             };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.tcp.deinit();
+            if (self.handshake) |h| self.allocator.destroy(h);
+            self.recv_buf.free();
         }
 
         pub fn connect(self: *Self, address: net.Address, opt: tls.ClientOptions) !void {
             const handshake = try self.allocator.create(tls.AsyncHandshakeClient);
             errdefer self.allocator.destroy(handshake);
             try handshake.init(opt);
-            try self.conn.connect(address);
+            self.tcp.connect(address);
             self.handshake = handshake;
+            self.state = .connecting;
         }
 
         pub fn onConnect(self: *Self) !void {
-            log.debug("onConnect", .{});
+            self.state = .handshake;
             try self.handshakeSend();
         }
 
         pub fn onRecv(self: *Self, bytes: []const u8) !void {
-            // log.debug("onRecv bytes.len {}", .{bytes.len});
             const buf = try self.recv_buf.append(bytes);
-            if (self.handshake) |h| {
-                // log.debug("onRecv buf.len {}", .{buf.len});
-                const n = h.recv(buf) catch |err| switch (err) {
-                    error.EndOfStream => 0,
-                    else => {
-                        log.err("handshake {}", .{err});
-                        return self.conn.shutdown();
-                    },
-                };
-                log.debug("onRecv n: {}, buf.len {}, state: {}, done: {}", .{ n, buf.len, h.state, h.done() });
-                try self.checkHandshakeDone();
-                if (n < buf.len) {
-                    try self.recv_buf.set(buf[n..]);
-                } else {
-                    self.recv_buf.free();
-                }
-                if (n > 0) try self.handshakeSend();
-                return;
-            }
 
-            self.decrypt(buf) catch |err| {
-                log.err("decrypt {}", .{err});
-                return self.conn.shutdown();
-            };
+            const n = if (self.handshake) |_|
+                try self.handshakeRecv(buf)
+            else
+                self.decrypt(buf) catch |err| {
+                    log.err("decrypt {}", .{err});
+                    return self.tcp.close();
+                };
+
+            try self.recv_buf.set(buf[n..]);
         }
 
-        fn decrypt(self: *Self, buf: []const u8) !void {
+        fn decrypt(self: *Self, buf: []const u8) !usize {
             const InnerReader = std.io.FixedBufferStream([]const u8);
             var rr = tls.record.reader(InnerReader{ .buffer = buf, .pos = 0 });
 
             while (true) {
                 const content_type, const cleartext = try rr.nextDecrypt(&self.cipher) orelse break;
+                switch (content_type) {
+                    .application_data => {},
+                    .handshake => {
+                        // TODO handle key_update and new_session_ticket separatly
+                        continue;
+                    },
+                    .alert => {
+                        self.tcp.close();
+                        return 0;
+                    },
+                    else => {
+                        log.err("unexpected content_type {}", .{content_type});
+                        self.tcp.close();
+                        return 0;
+                    },
+                }
+
                 assert(content_type == .application_data);
-                try self.app.onRecv(cleartext);
+                try self.client.onRecv(cleartext);
             }
             const ir = &rr.inner_reader;
             const unread = (ir.buffer.len - ir.pos) + (rr.end - rr.start);
-            const n = buf.len - unread;
-            if (n < buf.len) {
-                try self.recv_buf.set(buf[n..]);
-            } else {
-                self.recv_buf.free();
-            }
-        }
-
-        fn checkHandshakeDone(self: *Self) !void {
-            if (self.handshake) |h| {
-                if (h.done()) {
-                    log.debug("handshake done", .{});
-                    self.cipher = h.appCipher().?;
-                    self.allocator.destroy(h);
-                    self.handshake = null;
-                    try self.app.onConnect();
-                }
-            }
+            return buf.len - unread;
         }
 
         fn handshakeSend(self: *Self) io.Error!void {
-            if (self.handshake) |h| {
-                if (h.send() catch |err| {
-                    log.err("handshake send {}", .{err});
-                    return self.conn.shutdown();
-                }) |buf| {
-                    self.conn.send(buf) catch |err| switch (err) {
-                        error.InvalidState => {
-                            log.err("handshake conn send {}", .{err});
-                            return self.conn.shutdown();
-                        },
-                        else => |e| return e,
-                    };
-                }
+            assert(self.state == .handshake);
+            var h = self.handshake orelse unreachable;
+            if (h.send() catch |err| {
+                log.err("handshake send {}", .{err});
+                return self.tcp.close();
+            }) |buf| {
+                try self.tcp.send(buf);
             }
         }
 
-        pub fn send(self: *Self, buf: []const u8) !void {
-            const rec = self.cipher.encrypt(&self.write_buf, .application_data, buf) catch |err| {
-                log.err("encrypt {}", .{err});
-                return self.conn.shutdown();
-            };
-            self.conn.send(rec) catch |err| switch (err) {
-                error.InvalidState => {
-                    log.err("conn send {}", .{err});
-                    return self.conn.shutdown();
+        fn handshakeRecv(self: *Self, buf: []const u8) !usize {
+            assert(self.state == .handshake);
+            var h = self.handshake orelse unreachable;
+            const n = h.recv(buf) catch |err| switch (err) {
+                error.EndOfStream => 0,
+                else => {
+                    log.err("handshake recv {}", .{err});
+                    self.tcp.close();
+                    return 0;
                 },
-                else => |e| return e,
+            };
+            self.handshakeDone();
+            if (n > 0 and self.state == .handshake) try self.handshakeSend();
+            return n;
+        }
+
+        fn handshakeDone(self: *Self) void {
+            assert(self.state == .handshake);
+            var h = self.handshake orelse unreachable;
+            if (!h.done()) return;
+            log.debug("handshake done", .{});
+
+            self.cipher = h.appCipher().?;
+            self.allocator.destroy(h);
+            self.handshake = null;
+            self.state = .connected;
+            self.client.onConnect() catch |err| {
+                log.err("client connect {}", .{err});
+                self.tcp.close();
             };
         }
 
-        pub fn onSend(self: *Self, _: ?anyerror) !void {
-            try self.checkHandshakeDone();
-            try self.handshakeSend();
+        pub fn send(self: *Self, bytes: []const u8) !void {
+            if (self.state != .connected) return error.InvalidState;
+
+            var index: usize = 0;
+            while (index < bytes.len) {
+                const n = @min(bytes.len, tls.max_cleartext_len);
+                const buf = bytes[index..][0..n];
+                index += n;
+
+                const rec_buf = try self.allocator.alloc(u8, self.cipher.recordLen(buf.len));
+                const rec = self.cipher.encrypt(rec_buf, .application_data, buf) catch |err| {
+                    log.err("encrypt {}", .{err});
+                    return self.tcp.close();
+                };
+                assert(rec.len == rec_buf.len);
+                try self.tcp.send(rec);
+            }
+
+            // // TODO sta kada je buf jako velik
+
+            // // We don't know exact cipher record; some algorithms are adding padding
+            // const rec_buf = try self.allocator.alloc(u8, self.cipher.recordLen(buf.len));
+            // log.debug("send alloc {} {*}", .{ rec_buf.len, rec_buf.ptr });
+            // const rec = self.cipher.encrypt(rec_buf, .application_data, buf) catch |err| {
+            //     log.err("encrypt {}", .{err});
+            //     return self.tcp.close();
+            // };
+            // assert(rec.len == rec_buf.len);
+            // try self.tcp.send(rec);
+
+            // // const send_rec = if (self.allocator.resize(rec_buf, rec.len))
+            // //     rec
+            // // else brk: {
+            // //     log.debug("send resize new_memory {}", .{rec_buf.len});
+            // //     const new_memory = try self.allocator.alloc(u8, rec.len);
+            // //     @memcpy(new_memory, rec);
+            // //     self.allocator.free(rec_buf);
+            // //     break :brk new_memory;
+            // // };
+
+            // // log.debug("send finaly {} {*}", .{ send_rec.len, send_rec.ptr });
+            // // try self.tcp.send(send_rec);
+        }
+
+        pub fn onSend(self: *Self, buf: []const u8) void {
+            log.debug("onSend buf.len {}", .{buf.len});
+            // TODO release send buf
+            switch (self.state) {
+                .handshake => self.handshakeDone(),
+                else => {
+                    log.debug("onSend free {} {*}", .{ buf.len, buf.ptr });
+                    self.allocator.free(buf);
+                },
+            }
+        }
+
+        pub fn close(self: *Self) void {
+            self.tcp.close();
         }
 
         pub fn onClose(self: *Self) void {
-            _ = self;
+            self.state = .closed;
+            self.client.onClose();
         }
     };
 }
