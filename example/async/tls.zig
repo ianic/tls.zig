@@ -19,7 +19,6 @@ pub fn Tls(comptime ClientType: type) type {
         handshake: ?*tls.AsyncHandshakeClient = null,
         cipher: tls.Cipher = undefined,
         recv_buf: RecvBuf,
-        write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
 
         state: State = .closed,
 
@@ -136,6 +135,7 @@ pub fn Tls(comptime ClientType: type) type {
             return n;
         }
 
+        // If handshake is done copy cipher and switch state to connected.
         fn handshakeDone(self: *Self) void {
             assert(self.state == .handshake);
             var h = self.handshake orelse unreachable;
@@ -157,54 +157,27 @@ pub fn Tls(comptime ClientType: type) type {
 
             var index: usize = 0;
             while (index < bytes.len) {
+                // Split into max cleartext buffers
                 const n = @min(bytes.len, tls.max_cleartext_len);
                 const buf = bytes[index..][0..n];
                 index += n;
 
+                // allocate ciphertext record buffer and encrypt into that buffer
                 const rec_buf = try self.allocator.alloc(u8, self.cipher.recordLen(buf.len));
                 const rec = self.cipher.encrypt(rec_buf, .application_data, buf) catch |err| {
                     log.err("encrypt {}", .{err});
                     return self.tcp.close();
                 };
                 assert(rec.len == rec_buf.len);
+                // send ciphertext record
                 try self.tcp.send(rec);
             }
-
-            // // TODO sta kada je buf jako velik
-
-            // // We don't know exact cipher record; some algorithms are adding padding
-            // const rec_buf = try self.allocator.alloc(u8, self.cipher.recordLen(buf.len));
-            // log.debug("send alloc {} {*}", .{ rec_buf.len, rec_buf.ptr });
-            // const rec = self.cipher.encrypt(rec_buf, .application_data, buf) catch |err| {
-            //     log.err("encrypt {}", .{err});
-            //     return self.tcp.close();
-            // };
-            // assert(rec.len == rec_buf.len);
-            // try self.tcp.send(rec);
-
-            // // const send_rec = if (self.allocator.resize(rec_buf, rec.len))
-            // //     rec
-            // // else brk: {
-            // //     log.debug("send resize new_memory {}", .{rec_buf.len});
-            // //     const new_memory = try self.allocator.alloc(u8, rec.len);
-            // //     @memcpy(new_memory, rec);
-            // //     self.allocator.free(rec_buf);
-            // //     break :brk new_memory;
-            // // };
-
-            // // log.debug("send finaly {} {*}", .{ send_rec.len, send_rec.ptr });
-            // // try self.tcp.send(send_rec);
         }
 
         pub fn onSend(self: *Self, buf: []const u8) void {
-            log.debug("onSend buf.len {}", .{buf.len});
-            // TODO release send buf
             switch (self.state) {
                 .handshake => self.handshakeDone(),
-                else => {
-                    log.debug("onSend free {} {*}", .{ buf.len, buf.ptr });
-                    self.allocator.free(buf);
-                },
+                else => self.allocator.free(buf),
             }
         }
 
