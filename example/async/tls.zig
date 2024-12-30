@@ -17,7 +17,9 @@ pub fn Tls(comptime AppType: type) type {
         app: AppType,
         conn: Tcp(*Self),
         handshake: ?*tls.AsyncHandshakeClient = null,
+        cipher: tls.Cipher = undefined,
         recv_buf: RecvBuf,
+        write_buf: [tls.max_ciphertext_record_len]u8 = undefined,
 
         pub fn init(
             self: *Self,
@@ -43,39 +45,103 @@ pub fn Tls(comptime AppType: type) type {
 
         pub fn onConnect(self: *Self) !void {
             log.debug("onConnect", .{});
-            try self.send();
+            try self.handshakeSend();
         }
 
         pub fn onRecv(self: *Self, bytes: []const u8) !void {
-            log.debug("onRecv bytes.len {}", .{bytes.len});
+            // log.debug("onRecv bytes.len {}", .{bytes.len});
+            const buf = try self.recv_buf.append(bytes);
             if (self.handshake) |h| {
-                const buf = try self.recv_buf.append(bytes);
-                log.debug("onRecv buf.len {}", .{buf.len});
+                // log.debug("onRecv buf.len {}", .{buf.len});
                 const n = h.recv(buf) catch |err| switch (err) {
                     error.EndOfStream => 0,
-                    else => return err,
+                    else => {
+                        log.err("handshake {}", .{err});
+                        return self.conn.shutdown();
+                    },
                 };
-                log.debug("onRecv n: {}, bytes.len {}, state: {}, done: {}", .{ n, bytes.len, h.state, h.done() });
+                log.debug("onRecv n: {}, buf.len {}, state: {}, done: {}", .{ n, buf.len, h.state, h.done() });
+                try self.checkHandshakeDone();
                 if (n < buf.len) {
                     try self.recv_buf.set(buf[n..]);
                 } else {
                     self.recv_buf.free();
                 }
-                if (n > 0) try self.send();
+                if (n > 0) try self.handshakeSend();
+                return;
+            }
+
+            self.decrypt(buf) catch |err| {
+                log.err("decrypt {}", .{err});
+                return self.conn.shutdown();
+            };
+        }
+
+        fn decrypt(self: *Self, buf: []const u8) !void {
+            const InnerReader = std.io.FixedBufferStream([]const u8);
+            var rr = tls.record.reader(InnerReader{ .buffer = buf, .pos = 0 });
+
+            while (true) {
+                const content_type, const cleartext = try rr.nextDecrypt(&self.cipher) orelse break;
+                assert(content_type == .application_data);
+                try self.app.onRecv(cleartext);
+            }
+            const ir = &rr.inner_reader;
+            const unread = (ir.buffer.len - ir.pos) + (rr.end - rr.start);
+            const n = buf.len - unread;
+            if (n < buf.len) {
+                try self.recv_buf.set(buf[n..]);
+            } else {
+                self.recv_buf.free();
             }
         }
 
-        fn send(self: *Self) !void {
+        fn checkHandshakeDone(self: *Self) !void {
             if (self.handshake) |h| {
-                if (try h.send()) |buf| try self.conn.send(buf);
+                if (h.done()) {
+                    log.debug("handshake done", .{});
+                    self.cipher = h.appCipher().?;
+                    self.allocator.destroy(h);
+                    self.handshake = null;
+                    try self.app.onConnect();
+                }
             }
+        }
+
+        fn handshakeSend(self: *Self) io.Error!void {
+            if (self.handshake) |h| {
+                if (h.send() catch |err| {
+                    log.err("handshake send {}", .{err});
+                    return self.conn.shutdown();
+                }) |buf| {
+                    self.conn.send(buf) catch |err| switch (err) {
+                        error.InvalidState => {
+                            log.err("handshake conn send {}", .{err});
+                            return self.conn.shutdown();
+                        },
+                        else => |e| return e,
+                    };
+                }
+            }
+        }
+
+        pub fn send(self: *Self, buf: []const u8) !void {
+            const rec = self.cipher.encrypt(&self.write_buf, .application_data, buf) catch |err| {
+                log.err("encrypt {}", .{err});
+                return self.conn.shutdown();
+            };
+            self.conn.send(rec) catch |err| switch (err) {
+                error.InvalidState => {
+                    log.err("conn send {}", .{err});
+                    return self.conn.shutdown();
+                },
+                else => |e| return e,
+            };
         }
 
         pub fn onSend(self: *Self, _: ?anyerror) !void {
-            if (self.handshake) |h| {
-                log.debug("onSend state: {}, done: {}", .{ h.state, h.done() });
-            }
-            try self.send();
+            try self.checkHandshakeDone();
+            try self.handshakeSend();
         }
 
         pub fn onClose(self: *Self) void {

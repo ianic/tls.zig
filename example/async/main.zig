@@ -9,8 +9,8 @@ const posix = std.posix;
 const log = std.log.scoped(.main);
 
 pub fn main() !void {
-    //const host = "www.cloudflare.com";
-    const host = "www.google.com";
+    const host = "www.cloudflare.com";
+    //const host = "www.google.com";
     const port = 443;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -38,7 +38,7 @@ pub fn main() !void {
     const opt: tls.ClientOptions = .{
         .host = host,
         .root_ca = ca_bundle,
-        .cipher_suites = tls.cipher_suites.tls13,
+        //.cipher_suites = tls.cipher_suites.tls12,
         .key_log_callback = tls.key_log.callback,
     };
     var https: Https = undefined;

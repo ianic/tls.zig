@@ -14,9 +14,9 @@ const common = @import("handshake_common.zig");
 pub const CertBundle = common.CertBundle;
 pub const CertKeyPair = common.CertKeyPair;
 
-const record = @import("record.zig");
+pub const record = @import("record.zig");
 const connection = @import("connection.zig").connection;
-const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
+pub const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
 const HandshakeServer = @import("handshake_server.zig").Handshake;
 const HandshakeClient = @import("handshake_client.zig").Handshake;
 
@@ -39,6 +39,7 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
 }
 
 pub const AsyncHandshakeClient = @import("handshake_client.zig").AsyncHandshake;
+pub const Cipher = @import("cipher.zig").Cipher;
 
 test {
     _ = @import("handshake_common.zig");

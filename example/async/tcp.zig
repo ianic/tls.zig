@@ -72,9 +72,8 @@ pub fn Tcp(comptime AppType: type) type {
             self.shutdown();
         }
 
-        pub fn send(self: *Self, buf: []const u8) !void {
-            if (self.state != .connected) return error.InvalidState;
-            if (self.send_op.active()) return error.SendActive;
+        pub fn send(self: *Self, buf: []const u8) error{ InvalidState, OutOfMemory }!void {
+            if (self.state != .connected or self.send_op.active()) return error.InvalidState;
 
             assert(!self.send_op.active());
             self.send_op = io.Op.send(self.socket, buf, self, onSend, onSendFail);
@@ -102,10 +101,8 @@ pub fn Tcp(comptime AppType: type) type {
         }
 
         fn onRecv(self: *Self, bytes: []const u8) io.Error!void {
-            self.app.onRecv(bytes) catch |err| {
-                log.err("onRecv {}", .{err});
-                return error.OutOfMemory; // TODO
-            };
+            try self.app.onRecv(bytes);
+
             if (!self.recv_op.hasMore() and self.state == .connected)
                 self.ev.submit(&self.recv_op);
         }
