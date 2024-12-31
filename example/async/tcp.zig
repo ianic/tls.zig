@@ -23,6 +23,7 @@ pub fn Tcp(comptime ClientType: type) type {
         connect_op: io.Op = .{},
         close_op: io.Op = .{},
         recv_op: io.Op = .{},
+        recv_buf: RecvBuf,
         send_op: io.Op = .{},
         send_list: std.ArrayList(posix.iovec_const),
         send_iov: []posix.iovec_const = &.{},
@@ -41,12 +42,14 @@ pub fn Tcp(comptime ClientType: type) type {
                 .ev = ev,
                 .client = client,
                 .send_list = std.ArrayList(posix.iovec_const).init(allocator),
+                .recv_buf = RecvBuf.init(allocator),
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.allocator.free(self.send_iov);
             self.send_list.deinit();
+            self.recv_buf.free();
         }
 
         /// Start connect operation. `onConnect` callback will be fired when
@@ -148,7 +151,10 @@ pub fn Tcp(comptime ClientType: type) type {
         }
 
         fn onRecv(self: *Self, bytes: []const u8) io.Error!void {
-            try self.client.onRecv(bytes);
+            const buf = try self.recv_buf.append(bytes);
+            errdefer self.recv_buf.remove(bytes.len) catch self.close();
+            const n = try self.client.onRecv(buf);
+            try self.recv_buf.set(buf[n..]);
 
             if (!self.recv_op.hasMore() and self.state == .connected)
                 self.ev.submit(&self.recv_op);
@@ -196,4 +202,58 @@ pub fn Tcp(comptime ClientType: type) type {
             log.debug("{} closed", .{self.address});
         }
     };
+}
+
+pub const RecvBuf = struct {
+    allocator: mem.Allocator,
+    buf: []u8 = &.{},
+
+    const Self = @This();
+
+    pub fn init(allocator: mem.Allocator) Self {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn free(self: *Self) void {
+        self.allocator.free(self.buf);
+        self.buf = &.{};
+    }
+
+    pub fn append(self: *Self, bytes: []const u8) ![]const u8 {
+        if (self.buf.len == 0) return bytes;
+        const old_len = self.buf.len;
+        self.buf = try self.allocator.realloc(self.buf, old_len + bytes.len);
+        @memcpy(self.buf[old_len..], bytes);
+        return self.buf;
+    }
+
+    pub fn set(self: *Self, bytes: []const u8) !void {
+        if (bytes.len == 0) return self.free();
+        if (self.buf.len == bytes.len and self.buf.ptr == bytes.ptr) return;
+
+        const new_buf = try self.allocator.dupe(u8, bytes);
+        self.free();
+        self.buf = new_buf;
+    }
+
+    pub fn remove(self: *Self, n: usize) !void {
+        if (self.buf.len == 0) return;
+        const new_len = self.buf.len - n;
+        self.buf = try self.allocator.realloc(self.buf, new_len);
+    }
+};
+
+const testing = std.testing;
+
+test "recv_buf remove" {
+    var recv_buf = RecvBuf.init(testing.allocator);
+    defer recv_buf.free();
+
+    try recv_buf.set("iso medo u ducan ");
+    _ = try recv_buf.append("nije reko dobar dan");
+    try testing.expectEqual(36, recv_buf.buf.len);
+    try testing.expectEqualStrings("iso medo u ducan nije reko dobar dan", recv_buf.buf);
+    _ = try recv_buf.remove(20);
+    try testing.expectEqual(16, recv_buf.buf.len);
+    try testing.expectEqualStrings("iso medo u ducan", recv_buf.buf);
 }

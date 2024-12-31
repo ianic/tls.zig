@@ -16,7 +16,6 @@ pub fn Tls(comptime ClientType: type) type {
         allocator: mem.Allocator,
         client: ClientType,
         tcp_conn: Tcp(*Self),
-        recv_buf: RecvBuf,
         tls_conn: tls.AsyncConnection(*Self),
 
         state: State = .closed,
@@ -38,14 +37,12 @@ pub fn Tls(comptime ClientType: type) type {
                 .allocator = allocator,
                 .tcp_conn = Tcp(*Self).init(allocator, ev, self),
                 .client = client,
-                .recv_buf = RecvBuf.init(allocator),
                 .tls_conn = undefined,
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.tcp_conn.deinit();
-            self.recv_buf.free();
         }
 
         // ----------------- client api
@@ -80,15 +77,12 @@ pub fn Tls(comptime ClientType: type) type {
         }
 
         // ciphertext bytes received
-        pub fn onRecv(self: *Self, ciphertext: []const u8) !void {
-            const buf = try self.recv_buf.append(ciphertext);
-            log.debug("onRecv {} {}", .{ ciphertext.len, buf.len });
-            const n = self.tls_conn.onRecv(buf) catch |err| brk: {
+        pub fn onRecv(self: *Self, ciphertext: []const u8) !usize {
+            return self.tls_conn.onRecv(ciphertext) catch |err| brk: {
                 log.err("tls conn onRecv {}", .{err});
                 self.tcp_conn.close();
                 break :brk 0;
             };
-            try self.recv_buf.set(buf[n..]);
         }
 
         pub fn onClose(self: *Self) void {
@@ -124,36 +118,3 @@ pub fn Tls(comptime ClientType: type) type {
         }
     };
 }
-
-pub const RecvBuf = struct {
-    allocator: mem.Allocator,
-    buf: []u8 = &.{},
-
-    const Self = @This();
-
-    pub fn init(allocator: mem.Allocator) Self {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn free(self: *Self) void {
-        self.allocator.free(self.buf);
-        self.buf = &.{};
-    }
-
-    pub fn append(self: *Self, bytes: []const u8) ![]const u8 {
-        if (self.buf.len == 0) return bytes;
-        const old_len = self.buf.len;
-        self.buf = try self.allocator.realloc(self.buf, old_len + bytes.len);
-        @memcpy(self.buf[old_len..], bytes);
-        return self.buf;
-    }
-
-    pub fn set(self: *Self, bytes: []const u8) !void {
-        if (bytes.len == 0) return self.free();
-        if (self.buf.len == bytes.len and self.buf.ptr == bytes.ptr) return;
-
-        const new_buf = try self.allocator.dupe(u8, bytes);
-        self.free();
-        self.buf = new_buf;
-    }
-};
