@@ -2,7 +2,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const net = std.net;
 const mem = std.mem;
-const posix = std.posix;
 const io = @import("io/io.zig");
 const Tcp = @import("tcp.zig").Tcp;
 const tls = @import("tls");
@@ -22,9 +21,9 @@ pub fn Tls(comptime ClientType: type) type {
 
         const State = enum {
             closed,
-            connecting,
-            handshake,
-            connected,
+            connecting, // establishing tcp connection
+            handshake, // tcp connected, doing tls handshake
+            connected, // tls handshake done, client can send/receive
         };
 
         pub fn init(
@@ -67,16 +66,17 @@ pub fn Tls(comptime ClientType: type) type {
 
         // ----------------- tcp callbacks
 
-        // tcp is connected start tls handshake
+        /// tcp is connected start tls handshake
         pub fn onConnect(self: *Self) !void {
             self.state = .handshake;
-            self.tls_conn.onConnect() catch |err| {
+            self.tls_conn.startHandshake() catch |err| {
                 log.err("tls conn onConnect {}", .{err});
                 self.tcp_conn.close();
             };
         }
 
-        // ciphertext bytes received
+        /// Ciphertext bytes received from tcp, pass it to tls.
+        /// Tls will decrypt it and call onRecvCleartext.
         pub fn onRecv(self: *Self, ciphertext: []const u8) !usize {
             return self.tls_conn.onRecv(ciphertext) catch |err| brk: {
                 log.err("tls conn onRecv {}", .{err});
@@ -85,6 +85,7 @@ pub fn Tls(comptime ClientType: type) type {
             };
         }
 
+        /// Tcp connection is closed.
         pub fn onClose(self: *Self) void {
             self.state = .closed;
             self.client.onClose();

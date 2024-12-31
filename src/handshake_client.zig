@@ -1151,6 +1151,30 @@ test "async handshake" {
 }
 
 pub fn AsyncConnection(comptime ClientType: type) type {
+    // ClientType has to have this api:
+    //
+    //   onHandshake() - Notification that tcp handshake is done.
+    //   onRecvCleartext(cleartext) - Cleartext data to pass to application.
+    //   sendCiphertext(buf) - Ciphertext to pass to server (tcp connection).
+    //
+    // Api provided to the client:
+    //
+    //   startHandshake
+    //   onRecv           - data received from the server
+    //   send             - data to send to the server
+    //   onSend           - tcp is done coping buffer to the kernel
+    //
+    // Client should establish tcp connection and call startHandshake. That will
+    // fire client.sendCiphertext with tls hello. For each raw tcp data client
+    // will call onRecv. During handshake that data will be consumed here. When
+    // handshake succeeds we will have cipher, release handshake and call
+    // client.onHandshake.
+    //
+    // After that client should call send with cleartext data, that will be
+    // encrypted and pass to client.sendCiphertext. Any raw ciphertext received
+    // on tcp should be pass to onRecv to decrypt and pass to
+    // client.onRecvCleartext.
+    //
     return struct {
         const Self = @This();
 
@@ -1170,16 +1194,55 @@ pub fn AsyncConnection(comptime ClientType: type) type {
             };
         }
 
-        pub fn onConnect(self: *Self) !void {
+        // ----------------- client api
+
+        /// Client has established tcp connection, should start tls handshake on
+        /// it.
+        pub fn startHandshake(self: *Self) !void {
             try self.handshakeSend();
         }
 
+        /// `bytes` are received on plain tcp connection. Use it in handshake or
+        /// if handshake is done decrypt and send to client.
         pub fn onRecv(self: *Self, bytes: []const u8) !usize {
             return if (self.handshake) |_|
                 try self.handshakeRecv(bytes)
             else
                 try self.decrypt(bytes);
         }
+
+        /// Client sends data; encrypt it and return via sendCiphertext.
+        pub fn send(self: *Self, bytes: []const u8) !void {
+            if (self.handshake != null) return error.InvalidState;
+            const chp = &(self.cipher orelse return error.InvalidState);
+
+            var index: usize = 0;
+            while (index < bytes.len) {
+                // Split into max cleartext buffers
+                const n = @min(bytes.len, cipher.max_cleartext_len);
+                const buf = bytes[index..][0..n];
+                index += n;
+
+                // allocate ciphertext record buffer and encrypt into that buffer
+                const rec_buf = try self.allocator.alloc(u8, chp.recordLen(buf.len));
+                const rec = try chp.encrypt(rec_buf, .application_data, buf);
+                assert(rec.len == rec_buf.len);
+                // send ciphertext record
+                try self.client.sendCiphertext(rec);
+            }
+        }
+
+        /// Buffer allocated in send is copied to the kernel, safe to free it
+        /// now.
+        pub fn onSend(self: *Self, buf: []const u8) void {
+            if (self.handshake) |_| {
+                self.handshakeDone();
+            } else {
+                self.allocator.free(buf);
+            }
+        }
+
+        // ----------------- client api
 
         fn decrypt(self: *Self, buf: []const u8) !usize {
             const chp = &(self.cipher orelse return error.InvalidState);
@@ -1240,34 +1303,6 @@ pub fn AsyncConnection(comptime ClientType: type) type {
             var handshake = self.handshake orelse unreachable;
             if (try handshake.send()) |buf|
                 try self.client.sendCiphertext(buf);
-        }
-
-        pub fn send(self: *Self, bytes: []const u8) !void {
-            if (self.handshake != null) return error.InvalidState;
-            const chp = &(self.cipher orelse return error.InvalidState);
-
-            var index: usize = 0;
-            while (index < bytes.len) {
-                // Split into max cleartext buffers
-                const n = @min(bytes.len, cipher.max_cleartext_len);
-                const buf = bytes[index..][0..n];
-                index += n;
-
-                // allocate ciphertext record buffer and encrypt into that buffer
-                const rec_buf = try self.allocator.alloc(u8, chp.recordLen(buf.len));
-                const rec = try chp.encrypt(rec_buf, .application_data, buf);
-                assert(rec.len == rec_buf.len);
-                // send ciphertext record
-                try self.client.sendCiphertext(rec);
-            }
-        }
-
-        pub fn onSend(self: *Self, buf: []const u8) void {
-            if (self.handshake) |_| {
-                self.handshakeDone();
-            } else {
-                self.allocator.free(buf);
-            }
         }
     };
 }
