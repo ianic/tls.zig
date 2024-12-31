@@ -175,7 +175,7 @@ const Https = struct {
     }
 
     pub fn onRecv(self: *Self, bytes: []const u8) !void {
-        // log.debug("recv {} bytes: {s}", .{ bytes.len, bytes }); //bytes[0..@min(128, bytes.len)] });
+        log.debug("recv {} bytes: {s}", .{ bytes.len, bytes }); //bytes[0..@min(128, bytes.len)] });
 
         if (std.ascii.endsWithIgnoreCase(
             std.mem.trimRight(u8, bytes, "\r\n"),

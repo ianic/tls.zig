@@ -41,6 +41,7 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
 
 pub const AsyncHandshakeClient = @import("handshake_client.zig").AsyncHandshake;
 pub const Cipher = @import("cipher.zig").Cipher;
+pub const AsyncConnection = @import("handshake_client.zig").AsyncConnection;
 
 test {
     _ = @import("handshake_common.zig");

@@ -24,6 +24,8 @@ const DhKeyPair = common.DhKeyPair;
 const CertBundle = common.CertBundle;
 const CertKeyPair = common.CertKeyPair;
 
+const log = std.log.scoped(.tls);
+
 pub const Options = struct {
     host: []const u8,
     /// Set of root certificate authorities that clients use when verifying
@@ -1134,26 +1136,138 @@ test "async handshake" {
     try testing.expectEqual(0, try ah.recv("dummy footer"));
     try testing.expect(ah.done());
 
-    std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake)});
+    std.debug.print("AsyncHandshake {}\n", .{@sizeOf(AsyncHandshake)});
     std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake.InnerReader)});
-    std.debug.print("size {}\n", .{@sizeOf(Handshake(AsyncHandshake.InnerReader))});
+    std.debug.print("Handshake(AsyncHandshake.InnerReader)) {}\n", .{@sizeOf(Handshake(AsyncHandshake.InnerReader))});
     std.debug.print("options size {}\n", .{@sizeOf(Options)});
     std.debug.print("size {}\n", .{@sizeOf(CertBundle)});
     std.debug.print("CertKeyPair {}\n", .{@sizeOf(CertKeyPair)});
 
     std.debug.print("DhKeyPair {}\n", .{@sizeOf(DhKeyPair)});
     std.debug.print("CertificateParser {}\n", .{@sizeOf(CertificateParser)});
+    const T = struct {};
+    std.debug.print("AsyncConnection {}\n", .{@sizeOf(AsyncConnection(*T))});
+    std.debug.print("Cipher {}\n", .{@sizeOf(Cipher)});
 }
 
-test "enum" {
-    var s: AsyncHandshake.State = .none;
+pub fn AsyncConnection(comptime ClientType: type) type {
+    return struct {
+        const Self = @This();
 
-    std.debug.print("s: {}\n", .{@intFromEnum(s)});
-    s.next();
-    s.next();
-    std.debug.print("s: {} {s}\n", .{ @intFromEnum(s), @tagName(s) });
-    s = .server_flight_2;
-    std.debug.print("s: {} {s}\n", .{ @intFromEnum(s), @tagName(s) });
-    //s.next();
-    std.debug.print("s: {} {s}\n", .{ @intFromEnum(s), @tagName(s) });
+        allocator: mem.Allocator,
+        client: ClientType,
+        handshake: ?*AsyncHandshake = null,
+        cipher: ?Cipher = null,
+
+        pub fn init(allocator: mem.Allocator, client: ClientType, opt: Options) !Self {
+            const handshake = try allocator.create(AsyncHandshake);
+            errdefer allocator.destroy(handshake);
+            try handshake.init(opt);
+            return .{
+                .allocator = allocator,
+                .client = client,
+                .handshake = handshake,
+            };
+        }
+
+        pub fn onConnect(self: *Self) !void {
+            try self.handshakeSend();
+        }
+
+        pub fn onRecv(self: *Self, bytes: []const u8) !usize {
+            return if (self.handshake) |_|
+                try self.handshakeRecv(bytes)
+            else
+                try self.decrypt(bytes);
+        }
+
+        fn decrypt(self: *Self, buf: []const u8) !usize {
+            const chp = &(self.cipher orelse return error.InvalidState);
+
+            const InnerReader = std.io.FixedBufferStream([]const u8);
+            var rr = record.reader(InnerReader{ .buffer = buf, .pos = 0 });
+
+            while (true) {
+                const content_type, const cleartext = try rr.nextDecrypt(chp) orelse break;
+                switch (content_type) {
+                    .application_data => {},
+                    .handshake => {
+                        // TODO handle key_update and new_session_ticket separately
+                        continue;
+                    },
+                    .alert => {
+                        if (cleartext.len < 2) return error.TlsUnexpectedMessage;
+                        try proto.Alert.parse(cleartext[0..2].*).toError();
+                        return error.TlsUnexpectedMessage;
+                    },
+                    else => {
+                        log.err("unexpected content_type {}", .{content_type});
+                        return error.TlsUnexpectedMessage;
+                    },
+                }
+
+                assert(content_type == .application_data);
+                try self.client.onRecvCleartext(cleartext);
+            }
+            const ir = &rr.inner_reader;
+            const unread = (ir.buffer.len - ir.pos) + (rr.end - rr.start);
+            return buf.len - unread;
+        }
+
+        fn handshakeRecv(self: *Self, buf: []const u8) !usize {
+            var h = self.handshake orelse unreachable;
+            const n = h.recv(buf) catch |err| switch (err) {
+                error.EndOfStream => 0,
+                else => return err,
+            };
+            self.handshakeDone();
+            if (n > 0) try self.handshakeSend();
+            return n;
+        }
+
+        fn handshakeDone(self: *Self) void {
+            var h = self.handshake orelse return;
+            if (!h.done()) return;
+
+            self.cipher = h.appCipher().?;
+            self.allocator.destroy(h);
+            self.handshake = null;
+
+            self.client.onHandshake();
+        }
+
+        fn handshakeSend(self: *Self) !void {
+            var handshake = self.handshake orelse unreachable;
+            if (try handshake.send()) |buf|
+                try self.client.sendCiphertext(buf);
+        }
+
+        pub fn send(self: *Self, bytes: []const u8) !void {
+            if (self.handshake != null) return error.InvalidState;
+            const chp = &(self.cipher orelse return error.InvalidState);
+
+            var index: usize = 0;
+            while (index < bytes.len) {
+                // Split into max cleartext buffers
+                const n = @min(bytes.len, cipher.max_cleartext_len);
+                const buf = bytes[index..][0..n];
+                index += n;
+
+                // allocate ciphertext record buffer and encrypt into that buffer
+                const rec_buf = try self.allocator.alloc(u8, chp.recordLen(buf.len));
+                const rec = try chp.encrypt(rec_buf, .application_data, buf);
+                assert(rec.len == rec_buf.len);
+                // send ciphertext record
+                try self.client.sendCiphertext(rec);
+            }
+        }
+
+        pub fn onSend(self: *Self, buf: []const u8) void {
+            if (self.handshake) |_| {
+                self.handshakeDone();
+            } else {
+                self.allocator.free(buf);
+            }
+        }
+    };
 }

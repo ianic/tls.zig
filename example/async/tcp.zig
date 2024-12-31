@@ -6,6 +6,9 @@ const io = @import("io/io.zig");
 const posix = std.posix;
 const log = std.log.scoped(.tcp);
 
+// TODO:
+// - connect timeout
+// - listener accepted connection, without connect
 pub fn Tcp(comptime ClientType: type) type {
     return struct {
         const Self = @This();
@@ -15,6 +18,7 @@ pub fn Tcp(comptime ClientType: type) type {
         client: ClientType,
         address: std.net.Address = undefined,
         socket: posix.socket_t = 0,
+        state: State = .closed,
 
         connect_op: io.Op = .{},
         close_op: io.Op = .{},
@@ -23,8 +27,6 @@ pub fn Tcp(comptime ClientType: type) type {
         send_list: std.ArrayList(posix.iovec_const),
         send_iov: []posix.iovec_const = &.{},
         send_msghdr: posix.msghdr_const = .{ .iov = undefined, .iovlen = 0, .name = null, .namelen = 0, .control = null, .controllen = 0, .flags = 0 },
-
-        state: State = .closed,
 
         const State = enum {
             closed,
@@ -51,9 +53,7 @@ pub fn Tcp(comptime ClientType: type) type {
         /// finished.
         pub fn connect(self: *Self, address: net.Address) void {
             assert(self.state == .closed);
-            assert(!self.connect_op.active());
-            assert(!self.send_op.active());
-            assert(!self.recv_op.active());
+            assert(!self.connect_op.active() and !self.send_op.active() and !self.recv_op.active() and !self.close_op.active());
             assert(self.socket == 0);
 
             self.address = address;
