@@ -987,11 +987,11 @@ test "handshake verify server finished message" {
     try h.readServerFlight2();
 }
 
-pub const AsyncHandshake = struct {
+const AsyncHandshake = struct {
     const Self = @This();
-    const InnerReader = io.FixedBufferStream([]const u8);
 
-    h: Handshake(InnerReader) = undefined,
+    // inner sync handshake
+    inner: Handshake([]u8) = undefined,
     opt: Options = undefined,
     write_buf: [cipher.max_ciphertext_record_len]u8 = undefined,
     state: State = .none,
@@ -1011,10 +1011,10 @@ pub const AsyncHandshake = struct {
 
     pub fn init(self: *Self, opt: Options) !void {
         self.* = .{
-            .h = Handshake(InnerReader).init(&self.write_buf, undefined),
+            .inner = Handshake([]u8).init(&self.write_buf, undefined),
             .opt = opt,
         };
-        try self.h.initKeys(opt);
+        try self.inner.initKeys(opt);
         self.state = .init;
     }
 
@@ -1022,12 +1022,12 @@ pub const AsyncHandshake = struct {
     pub fn send(self: *Self) !?[]const u8 {
         switch (self.state) {
             .init => {
-                const buf = try self.h.clientFlight1(self.opt);
+                const buf = try self.inner.clientFlight1(self.opt);
                 self.state.next();
                 return buf;
             },
             .server_flight_1 => {
-                const buf = try self.h.clientFlight2(self.opt);
+                const buf = try self.inner.clientFlight2(self.opt);
                 self.state.next();
                 return buf;
             },
@@ -1036,38 +1036,31 @@ pub const AsyncHandshake = struct {
     }
 
     // Returns number of bytes consumed from buf
-    pub fn recv(self: *Self, buf: []const u8) !usize {
-        const prev: Transcript = self.h.transcript;
-        errdefer self.h.transcript = prev;
+    pub fn recv(self: *Self, buf: []u8) !usize {
+        const prev: Transcript = self.inner.transcript;
+        errdefer self.inner.transcript = prev;
 
-        var rr = record.reader(InnerReader{ .buffer = buf, .pos = 0 });
-        self.h.rec_rdr = &rr;
+        var rdr = record.bufferReader(buf);
+        self.inner.rec_rdr = &rdr;
 
         switch (self.state) {
             .client_flight_1 => {
-                try self.h.serverFlight1(self.opt);
+                try self.inner.serverFlight1(self.opt);
                 self.state.next();
             },
             .client_flight_2 => {
-                try self.h.serverFlight2(self.opt);
+                try self.inner.serverFlight2(self.opt);
                 self.state.next();
             },
             else => return error.TlsUnexpectedMessage,
         }
 
-        const ir = &rr.inner_reader;
-        const unread = (ir.buffer.len - ir.pos) + (rr.end - rr.start);
-        return buf.len - unread;
+        return rdr.bytesRead();
     }
 
     pub fn done(self: *Self) bool {
         return self.state == .server_flight_2 or
-            (self.h.tls_version == .tls_1_3 and self.state == .client_flight_2);
-    }
-
-    pub fn appCipher(self: *Self) ?Cipher {
-        if (!self.done()) return null;
-        return self.h.cipher;
+            (self.inner.tls_version == .tls_1_3 and self.state == .client_flight_2);
     }
 };
 
@@ -1080,7 +1073,7 @@ test "async handshake" {
         .cipher_suites = &[_]CipherSuite{CipherSuite.AES_256_GCM_SHA384},
         .named_groups = &[_]proto.NamedGroup{.x25519},
     });
-    var h = &ah.h;
+    var h = &ah.inner;
     { // update secrets to well known from example
         h.client_random = data13.client_random;
         h.dh_kp.x25519_kp = .{
@@ -1115,10 +1108,10 @@ test "async handshake" {
     // parsing partial server flight message returns error.EndOfStream
     for (1..data13.server_flight_1.len - 1) |i| {
         const buf = data13.server_flight_1[0..i];
-        try testing.expectError(error.EndOfStream, ah.recv(buf));
+        try testing.expectError(error.EndOfStream, ah.recv(@constCast(buf)));
     }
 
-    const n = try ah.recv(&(data13.server_flight_1 ++ "dummy footer".*));
+    const n = try ah.recv(@constCast(&(data13.server_flight_1 ++ "dummy footer".*)));
     { // inspect
         try testing.expectEqual(data13.server_flight_1.len, n); // footer is not touched
         try testing.expectEqual(.tls_1_3, h.tls_version);
@@ -1133,12 +1126,12 @@ test "async handshake" {
     try testing.expectEqualSlices(u8, &data13.client_flight_2, client_flight_2.?);
     try testing.expect(ah.done());
 
-    try testing.expectEqual(0, try ah.recv("dummy footer"));
+    try testing.expectEqual(0, try ah.recv(@constCast("dummy footer")));
     try testing.expect(ah.done());
 
     std.debug.print("AsyncHandshake {}\n", .{@sizeOf(AsyncHandshake)});
-    std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake.InnerReader)});
-    std.debug.print("Handshake(AsyncHandshake.InnerReader)) {}\n", .{@sizeOf(Handshake(AsyncHandshake.InnerReader))});
+    //std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake.InnerReader)});
+    std.debug.print("Handshake([]u8)) {}\n", .{@sizeOf(Handshake([]u8))});
     std.debug.print("options size {}\n", .{@sizeOf(Options)});
     std.debug.print("size {}\n", .{@sizeOf(CertBundle)});
     std.debug.print("CertKeyPair {}\n", .{@sizeOf(CertKeyPair)});
@@ -1194,6 +1187,11 @@ pub fn AsyncConnection(comptime ClientType: type) type {
             };
         }
 
+        pub fn deinit(self: *Self) void {
+            if (self.handshake) |handshake|
+                self.allocator.destroy(handshake);
+        }
+
         // ----------------- client api
 
         /// Client has established tcp connection, should start tls handshake on
@@ -1204,7 +1202,7 @@ pub fn AsyncConnection(comptime ClientType: type) type {
 
         /// `bytes` are received on plain tcp connection. Use it in handshake or
         /// if handshake is done decrypt and send to client.
-        pub fn onRecv(self: *Self, bytes: []const u8) !usize {
+        pub fn onRecv(self: *Self, bytes: []u8) !usize {
             return if (self.handshake) |_|
                 try self.handshakeRecv(bytes)
             else
@@ -1244,14 +1242,13 @@ pub fn AsyncConnection(comptime ClientType: type) type {
 
         // ----------------- client api
 
-        fn decrypt(self: *Self, buf: []const u8) !usize {
+        /// NOTE: decrypt reuses provided ciphertext buf for cleartext data
+        fn decrypt(self: *Self, buf: []u8) !usize {
             const chp = &(self.cipher orelse return error.InvalidState);
 
-            const InnerReader = std.io.FixedBufferStream([]const u8);
-            var rr = record.reader(InnerReader{ .buffer = buf, .pos = 0 });
-
+            var rdr = record.bufferReader(buf);
             while (true) {
-                const content_type, const cleartext = try rr.nextDecrypt(chp) orelse break;
+                const content_type, const cleartext = try rdr.nextDecrypt(chp) orelse break;
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
@@ -1261,6 +1258,7 @@ pub fn AsyncConnection(comptime ClientType: type) type {
                     .alert => {
                         if (cleartext.len < 2) return error.TlsUnexpectedMessage;
                         try proto.Alert.parse(cleartext[0..2].*).toError();
+                        // TODO handle close_notify
                         return error.TlsUnexpectedMessage;
                     },
                     else => {
@@ -1272,14 +1270,12 @@ pub fn AsyncConnection(comptime ClientType: type) type {
                 assert(content_type == .application_data);
                 try self.client.onRecvCleartext(cleartext);
             }
-            const ir = &rr.inner_reader;
-            const unread = (ir.buffer.len - ir.pos) + (rr.end - rr.start);
-            return buf.len - unread;
+            return rdr.bytesRead();
         }
 
-        fn handshakeRecv(self: *Self, buf: []const u8) !usize {
-            var h = self.handshake orelse unreachable;
-            const n = h.recv(buf) catch |err| switch (err) {
+        fn handshakeRecv(self: *Self, buf: []u8) !usize {
+            var handshake = self.handshake orelse unreachable;
+            const n = handshake.recv(buf) catch |err| switch (err) {
                 error.EndOfStream => 0,
                 else => return err,
             };
@@ -1289,11 +1285,11 @@ pub fn AsyncConnection(comptime ClientType: type) type {
         }
 
         fn handshakeDone(self: *Self) void {
-            var h = self.handshake orelse return;
-            if (!h.done()) return;
+            var handshake = self.handshake orelse return;
+            if (!handshake.done()) return;
 
-            self.cipher = h.appCipher().?;
-            self.allocator.destroy(h);
+            self.cipher = handshake.inner.cipher;
+            self.allocator.destroy(handshake);
             self.handshake = null;
 
             self.client.onHandshake();

@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
+const io = std.io;
 
 const proto = @import("protocol.zig");
 const cipher = @import("cipher.zig");
@@ -35,11 +36,20 @@ pub fn reader(inner_reader: anytype) Reader(@TypeOf(inner_reader)) {
     return .{ .inner_reader = inner_reader };
 }
 
-pub fn Reader(comptime InnerReader: type) type {
-    return struct {
-        inner_reader: InnerReader,
+pub fn bufferReader(buf: []u8) Reader([]u8) {
+    return .{
+        .inner_reader = undefined,
+        .buffer = buf,
+        .end = buf.len,
+    };
+}
 
-        buffer: [cipher.max_ciphertext_record_len]u8 = undefined,
+pub fn Reader(comptime InnerReader: type) type {
+    const is_slice = isSlice(InnerReader);
+    return struct {
+        inner_reader: if (is_slice) void else InnerReader,
+
+        buffer: if (is_slice) InnerReader else [cipher.max_ciphertext_record_len]u8 = undefined,
         start: usize = 0,
         end: usize = 0,
 
@@ -81,6 +91,8 @@ pub fn Reader(comptime InnerReader: type) type {
                         return Record.init(buffer[0..record_len]);
                     }
                 }
+                if (is_slice) return null;
+
                 { // Move dirty part to the start of the buffer.
                     const n = r.end - r.start;
                     if (n > 0 and r.start > 0) {
@@ -119,6 +131,10 @@ pub fn Reader(comptime InnerReader: type) type {
 
         pub fn hasMore(r: *ReaderT) bool {
             return r.end > r.start;
+        }
+
+        pub fn bytesRead(r: *ReaderT) usize {
+            return r.start;
         }
     };
 }
@@ -231,7 +247,7 @@ const testu = @import("testu.zig");
 const CipherSuite = @import("cipher.zig").CipherSuite;
 
 test Reader {
-    var fbs = std.io.fixedBufferStream(&data12.server_responses);
+    var fbs = io.fixedBufferStream(&data12.server_responses);
     var rdr = reader(fbs.reader());
 
     const expected = [_]struct {
@@ -251,10 +267,26 @@ test Reader {
         try testing.expectEqual(e.payload_len, rec.payload.len);
         try testing.expectEqual(.tls_1_2, rec.protocol_version);
     }
+
+    {
+        var fr = bufferReader(@constCast(&data12.server_responses));
+        var n: usize = 0;
+        for (expected) |e| {
+            const rec = (try fr.next()).?;
+            try testing.expectEqual(e.content_type, rec.content_type);
+            try testing.expectEqual(e.payload_len, rec.payload.len);
+            try testing.expectEqual(.tls_1_2, rec.protocol_version);
+
+            n += rec.payload.len + record.header_len;
+            try testing.expectEqual(n, fr.bytesRead());
+        }
+        try testing.expectEqual(data12.server_responses.len, fr.bytesRead());
+        try testing.expect(try fr.next() == null);
+    }
 }
 
 test Decoder {
-    var fbs = std.io.fixedBufferStream(&data12.server_responses);
+    var fbs = io.fixedBufferStream(&data12.server_responses);
     var rdr = reader(fbs.reader());
 
     var d = (try rdr.nextDecoder());
@@ -412,4 +444,26 @@ test "Writer" {
     try w.writeEnum(proto.NamedGroup.x25519);
     try w.writeInt(@as(u16, 0x1234));
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
+}
+
+test isSlice {
+    try comptime testing.expect(isSlice([]const u8));
+    try comptime testing.expect(isSlice([]u8));
+    try comptime testing.expect(!isSlice(io.FixedBufferStream([]u8)));
+}
+
+test "sizes" {
+    try testing.expectEqual(32, @sizeOf(Reader([]u8)));
+    try testing.expectEqual(32, @sizeOf(Reader([]const u8)));
+    try testing.expectEqual(16688, @sizeOf(Reader(io.FixedBufferStream([]u8))));
+}
+
+fn isSlice(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .pointer => |ptr_info| switch (ptr_info.size) {
+            .Slice => true,
+            else => false,
+        },
+        else => false,
+    };
 }

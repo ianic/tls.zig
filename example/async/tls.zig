@@ -41,6 +41,7 @@ pub fn Tls(comptime ClientType: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.tls_conn.deinit();
             self.tcp_conn.deinit();
         }
 
@@ -77,7 +78,7 @@ pub fn Tls(comptime ClientType: type) type {
 
         /// Ciphertext bytes received from tcp, pass it to tls.
         /// Tls will decrypt it and call onRecvCleartext.
-        pub fn onRecv(self: *Self, ciphertext: []const u8) !usize {
+        pub fn onRecv(self: *Self, ciphertext: []u8) !usize {
             return self.tls_conn.onRecv(ciphertext) catch |err| brk: {
                 log.err("tls conn onRecv {}", .{err});
                 self.tcp_conn.close();

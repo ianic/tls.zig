@@ -150,7 +150,7 @@ pub fn Tcp(comptime ClientType: type) type {
             self.close();
         }
 
-        fn onRecv(self: *Self, bytes: []const u8) io.Error!void {
+        fn onRecv(self: *Self, bytes: []u8) io.Error!void {
             const buf = try self.recv_buf.append(bytes);
             errdefer self.recv_buf.remove(bytes.len) catch self.close();
             const n = try self.client.onRecv(buf);
@@ -219,7 +219,7 @@ pub const RecvBuf = struct {
         self.buf = &.{};
     }
 
-    pub fn append(self: *Self, bytes: []const u8) ![]const u8 {
+    pub fn append(self: *Self, bytes: []u8) ![]u8 {
         if (self.buf.len == 0) return bytes;
         const old_len = self.buf.len;
         self.buf = try self.allocator.realloc(self.buf, old_len + bytes.len);
