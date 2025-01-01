@@ -91,7 +91,7 @@ fn catchSignals() void {
     posix.sigaction(posix.SIG.PIPE, &act, null);
 }
 
-const Tcp = @import("tcp.zig").Tcp;
+const Tcp = @import("io/tcp.zig").Tcp;
 
 const Http = struct {
     const Self = @This();

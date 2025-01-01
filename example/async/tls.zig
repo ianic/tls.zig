@@ -3,7 +3,6 @@ const assert = std.debug.assert;
 const net = std.net;
 const mem = std.mem;
 const io = @import("io/io.zig");
-const Tcp = @import("tcp.zig").Tcp;
 const tls = @import("tls");
 
 const log = std.log.scoped(.tls);
@@ -14,7 +13,7 @@ pub fn Tls(comptime ClientType: type) type {
 
         allocator: mem.Allocator,
         client: ClientType,
-        tcp_conn: Tcp(*Self),
+        tcp_conn: io.Tcp(*Self),
         tls_conn: tls.AsyncConnection(*Self),
 
         state: State = .closed,
@@ -34,7 +33,7 @@ pub fn Tls(comptime ClientType: type) type {
         ) void {
             self.* = .{
                 .allocator = allocator,
-                .tcp_conn = Tcp(*Self).init(allocator, io_loop, self),
+                .tcp_conn = io.Tcp(*Self).init(allocator, io_loop, self),
                 .client = client,
                 .tls_conn = undefined,
             };
