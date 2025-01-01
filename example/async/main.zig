@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
+const net = std.net;
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 const io = @import("io/io.zig");
@@ -9,39 +10,32 @@ const posix = std.posix;
 const log = std.log.scoped(.main);
 
 pub fn main() !void {
-    const host = "www.supersport.hr";
-    //const host = "www.cloudflare.com";
-    //const host = "www.google.com";
+    // const host = "www.supersport.hr";
+    // const host = "www.cloudflare.com";
+    const host = "www.google.com";
     const port = 443;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const list = try std.net.getAddressList(allocator, host, port);
-    defer list.deinit();
-    if (list.addrs.len == 0) return error.UnknownHostName;
-    if (list.addrs.len > 0)
-        std.debug.print("list.addrs: {any}\n", .{list.addrs});
-    const addr = list.addrs[0];
-
     var ev: io.Ev = undefined;
     try ev.init(allocator, .{});
     defer ev.deinit();
 
-    // var http: Http = undefined;
-    // try http.init(allocator, &ev, host, addr);
-
     var root_ca = try tls.CertBundle.fromSystem(allocator);
     defer root_ca.deinit(allocator);
+    const addr = try getAddress(allocator, host, port);
 
+    var diagnostic: tls.ClientOptions.Diagnostic = .{};
     const opt: tls.ClientOptions = .{
         .host = host,
         .root_ca = root_ca,
-        //.cipher_suites = tls.cipher_suites.tls12,
+        .cipher_suites = tls.cipher_suites.all,
         .key_log_callback = tls.key_log.callback,
+        .diagnostic = &diagnostic,
     };
     var https: Https = undefined;
-    try https.init(allocator, &ev, host, addr, opt);
+    try https.init(allocator, &ev, addr, opt);
     defer https.deinit();
 
     catchSignals();
@@ -70,9 +64,9 @@ pub fn main() !void {
 
         if (ev.metric.all.active() == 0) break;
     }
-    log.debug("done", .{});
+    // log.debug("done", .{});
 
-    //try sync(allocator, root_ca);
+    showDiagnostic(&diagnostic, host);
 }
 
 var signal = std.atomic.Value(c_int).init(0);
@@ -151,13 +145,12 @@ const Https = struct {
         self: *Self,
         allocator: mem.Allocator,
         ev: *io.Ev,
-        host: []const u8,
         address: std.net.Address,
         opt: tls.ClientOptions,
     ) !void {
         self.* = .{
             .allocator = allocator,
-            .host = host,
+            .host = opt.host,
             .conn = undefined,
         };
         self.conn.init(allocator, ev, self);
@@ -175,7 +168,7 @@ const Https = struct {
     }
 
     pub fn onRecv(self: *Self, bytes: []const u8) !void {
-        log.debug("recv {} bytes: {s}", .{ bytes.len, bytes }); //bytes[0..@min(128, bytes.len)] });
+        //log.debug("recv {} bytes: {s}", .{ bytes.len, bytes }); //bytes[0..@min(128, bytes.len)] });
 
         if (std.ascii.endsWithIgnoreCase(
             std.mem.trimRight(u8, bytes, "\r\n"),
@@ -220,4 +213,29 @@ fn sync(allocator: mem.Allocator, root_ca: tls.CertBundle, host: []const u8, por
     try conn.close();
 
     std.debug.print("{} bytes read\n{}\n", .{ n, diagnostic });
+}
+
+fn getAddress(allocator: mem.Allocator, host: []const u8, port: u16) !net.Address {
+    const list = try std.net.getAddressList(allocator, host, port);
+    defer list.deinit();
+    if (list.addrs.len == 0) return error.UnknownHostName;
+    // if (list.addrs.len > 0)
+    //     std.debug.print("list.addrs: {any}\n", .{list.addrs});
+    return list.addrs[0];
+}
+
+pub fn showDiagnostic(stats: *tls.ClientOptions.Diagnostic, domain: []const u8) void {
+    std.debug.print(
+        "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n",
+        .{
+            domain,
+            if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
+            if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
+            if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
+            if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
+        },
+    );
+    if (@intFromEnum(stats.client_signature_scheme) != 0) {
+        std.debug.print("\t client signature scheme: {s}\n", .{@tagName(stats.client_signature_scheme)});
+    }
 }

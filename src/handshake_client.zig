@@ -105,6 +105,8 @@ pub fn Handshake(comptime Stream: type) type {
 
         const HandshakeT = @This();
 
+        // `buf` is used for creating client messages and for decrypting server
+        // ciphertext messages.
         pub fn init(buf: []u8, rec_rdr: *RecordReaderT) HandshakeT {
             return .{
                 .client_random = undefined,
@@ -993,7 +995,7 @@ const AsyncHandshake = struct {
     // inner sync handshake
     inner: Handshake([]u8) = undefined,
     opt: Options = undefined,
-    write_buf: [cipher.max_ciphertext_record_len]u8 = undefined,
+    buffer: [cipher.max_ciphertext_record_len]u8 = undefined,
     state: State = .none,
 
     const State = enum {
@@ -1011,7 +1013,7 @@ const AsyncHandshake = struct {
 
     pub fn init(self: *Self, opt: Options) !void {
         self.* = .{
-            .inner = Handshake([]u8).init(&self.write_buf, undefined),
+            .inner = Handshake([]u8).init(&self.buffer, undefined),
             .opt = opt,
         };
         try self.inner.initKeys(opt);
@@ -1128,19 +1130,19 @@ test "async handshake" {
 
     try testing.expectEqual(0, try ah.recv(@constCast("dummy footer")));
     try testing.expect(ah.done());
+}
 
-    std.debug.print("AsyncHandshake {}\n", .{@sizeOf(AsyncHandshake)});
-    //std.debug.print("size {}\n", .{@sizeOf(AsyncHandshake.InnerReader)});
-    std.debug.print("Handshake([]u8)) {}\n", .{@sizeOf(Handshake([]u8))});
-    std.debug.print("options size {}\n", .{@sizeOf(Options)});
-    std.debug.print("size {}\n", .{@sizeOf(CertBundle)});
-    std.debug.print("CertKeyPair {}\n", .{@sizeOf(CertKeyPair)});
-
-    std.debug.print("DhKeyPair {}\n", .{@sizeOf(DhKeyPair)});
-    std.debug.print("CertificateParser {}\n", .{@sizeOf(CertificateParser)});
+test "sizes" {
+    try testing.expectEqual(39360, @sizeOf(AsyncHandshake));
+    try testing.expectEqual(19792, @sizeOf(Handshake([]u8)));
+    try testing.expectEqual(14384, @sizeOf(DhKeyPair));
+    try testing.expectEqual(2920, @sizeOf(Options));
+    try testing.expectEqual(2792, @sizeOf(CertKeyPair));
+    try testing.expectEqual(1736, @sizeOf(CertificateParser));
+    try testing.expectEqual(48, @sizeOf(CertBundle));
     const T = struct {};
-    std.debug.print("AsyncConnection {}\n", .{@sizeOf(AsyncConnection(*T))});
-    std.debug.print("Cipher {}\n", .{@sizeOf(Cipher)});
+    try testing.expectEqual(248, @sizeOf(AsyncConnection(*T)));
+    try testing.expectEqual(208, @sizeOf(Cipher));
 }
 
 pub fn AsyncConnection(comptime ClientType: type) type {
@@ -1285,9 +1287,10 @@ pub fn AsyncConnection(comptime ClientType: type) type {
         }
 
         fn handshakeDone(self: *Self) void {
-            var handshake = self.handshake orelse return;
+            var handshake = self.handshake orelse unreachable;
             if (!handshake.done()) return;
 
+            handshake.inner.updateDiagnostic(handshake.opt);
             self.cipher = handshake.inner.cipher;
             self.allocator.destroy(handshake);
             self.handshake = null;
@@ -1296,7 +1299,7 @@ pub fn AsyncConnection(comptime ClientType: type) type {
         }
 
         fn handshakeSend(self: *Self) !void {
-            var handshake = self.handshake orelse unreachable;
+            var handshake = self.handshake orelse return;
             if (try handshake.send()) |buf|
                 try self.client.sendCiphertext(buf);
         }
