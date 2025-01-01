@@ -20,21 +20,21 @@ pub fn Tls(comptime ClientType: type) type {
         state: State = .closed,
 
         const State = enum {
-            closed,
+            closed, //     initial/final state
             connecting, // establishing tcp connection
-            handshake, // tcp connected, doing tls handshake
-            connected, // tls handshake done, client can send/receive
+            handshake, //  tcp connected, doing tls handshake
+            connected, //  tls handshake done, client can send/receive
         };
 
         pub fn init(
             self: *Self,
             allocator: mem.Allocator,
-            ev: *io.Ev,
+            io_loop: *io.Loop,
             client: ClientType,
         ) void {
             self.* = .{
                 .allocator = allocator,
-                .tcp_conn = Tcp(*Self).init(allocator, ev, self),
+                .tcp_conn = Tcp(*Self).init(allocator, io_loop, self),
                 .client = client,
                 .tls_conn = undefined,
             };

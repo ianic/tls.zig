@@ -18,9 +18,10 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var ev: io.Ev = undefined;
-    try ev.init(allocator, .{});
-    defer ev.deinit();
+    var io_loop: io.Loop = undefined;
+    try io_loop.init(allocator, .{});
+    defer io_loop.deinit();
+    io_loop.connect_timeout = .{ .sec = 1, .nsec = 0 };
 
     var root_ca = try tls.CertBundle.fromSystem(allocator);
     defer root_ca.deinit(allocator);
@@ -35,14 +36,14 @@ pub fn main() !void {
         .diagnostic = &diagnostic,
     };
     var https: Https = undefined;
-    try https.init(allocator, &ev, addr, opt);
+    try https.init(allocator, &io_loop, addr, opt);
     defer https.deinit();
 
     catchSignals();
     var prev: u64 = 0;
     while (true) {
-        const ts = ev.timestamp + 2 * std.time.ns_per_s;
-        ev.tickTs(ts) catch |err| {
+        const ts = io_loop.timestamp + 2 * std.time.ns_per_s;
+        io_loop.tickTs(ts) catch |err| {
             switch (err) {
                 error.SignalInterrupt => {},
                 else => log.err("{}", .{err}),
@@ -51,7 +52,7 @@ pub fn main() !void {
         };
 
         //log.debug("tick {}", .{ev.timestamp - prev});
-        prev = ev.timestamp;
+        prev = io_loop.timestamp;
 
         const sig = signal.load(.monotonic);
         if (sig != 0) {
@@ -62,7 +63,7 @@ pub fn main() !void {
             }
         }
 
-        if (ev.metric.all.active() == 0) break;
+        if (io_loop.metric.all.active() == 0) break;
     }
     // log.debug("done", .{});
 
@@ -144,7 +145,7 @@ const Https = struct {
     fn init(
         self: *Self,
         allocator: mem.Allocator,
-        ev: *io.Ev,
+        ev: *io.Loop,
         address: std.net.Address,
         opt: tls.ClientOptions,
     ) !void {

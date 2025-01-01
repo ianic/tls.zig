@@ -2,19 +2,17 @@ const std = @import("std");
 const net = std.net;
 const mem = std.mem;
 const assert = std.debug.assert;
-const io = @import("io/io.zig");
 const posix = std.posix;
+const io = @import("io/io.zig");
+
 const log = std.log.scoped(.tcp);
 
-// TODO:
-// - connect timeout
-// - listener accepted connection, without connect
 pub fn Tcp(comptime ClientType: type) type {
     return struct {
         const Self = @This();
 
         allocator: mem.Allocator,
-        ev: *io.Ev,
+        io_loop: *io.Loop,
         client: ClientType,
         address: std.net.Address = undefined,
         socket: posix.socket_t = 0,
@@ -36,10 +34,10 @@ pub fn Tcp(comptime ClientType: type) type {
             closing,
         };
 
-        pub fn init(allocator: mem.Allocator, ev: *io.Ev, client: ClientType) Self {
+        pub fn init(allocator: mem.Allocator, io_loop: *io.Loop, client: ClientType) Self {
             return .{
                 .allocator = allocator,
-                .ev = ev,
+                .io_loop = io_loop,
                 .client = client,
                 .send_list = std.ArrayList(posix.iovec_const).init(allocator),
                 .recv_buf = RecvBuf.init(allocator),
@@ -61,32 +59,33 @@ pub fn Tcp(comptime ClientType: type) type {
 
             self.address = address;
             self.connect_op = io.Op.connect(
-                .{
-                    .domain = address.any.family,
-                    .addr = &self.address,
-                },
+                .{ .addr = &self.address },
                 self,
                 onConnect,
                 onConnectFail,
             );
-            self.ev.submit(&self.connect_op);
+            self.io_loop.submit(&self.connect_op);
             self.state = .connecting;
         }
 
         fn onConnect(self: *Self, socket: posix.socket_t) io.Error!void {
             log.debug("{} connected", .{self.address});
-
-            self.socket = socket;
-            self.state = .connected;
-            self.recv_op = io.Op.recv(self.socket, self, onRecv, onRecvFail);
-            self.ev.submit(&self.recv_op);
-
+            self.connected(socket);
             try self.client.onConnect();
         }
 
         fn onConnectFail(self: *Self, err: ?anyerror) void {
             if (err) |e| log.info("{} connect failed {}", .{ self.address, e });
             self.close();
+        }
+
+        /// Set connected tcp socket. After successful client connect operation
+        /// or after server listener accepts client socket.
+        pub fn connected(self: *Self, socket: posix.socket_t) void {
+            self.socket = socket;
+            self.state = .connected;
+            self.recv_op = io.Op.recv(self.socket, self, onRecv, onRecvFail);
+            self.io_loop.submit(&self.recv_op);
         }
 
         /// Send `buf` to the tcp connection. It is client's responsibility to
@@ -110,7 +109,7 @@ pub fn Tcp(comptime ClientType: type) type {
             self.send_msghdr.iovlen = @intCast(self.send_iov.len);
             // Start send operation
             self.send_op = io.Op.sendv(self.socket, &self.send_msghdr, self, onSend, onSendFail);
-            self.ev.submit(&self.send_op);
+            self.io_loop.submit(&self.send_op);
         }
 
         /// Send operation is completed, release pending resources and notify
@@ -157,7 +156,7 @@ pub fn Tcp(comptime ClientType: type) type {
             try self.recv_buf.set(buf[n..]);
 
             if (!self.recv_op.hasMore() and self.state == .connected)
-                self.ev.submit(&self.recv_op);
+                self.io_loop.submit(&self.recv_op);
         }
 
         fn onRecvFail(self: *Self, err: anyerror) io.Error!void {
@@ -178,16 +177,16 @@ pub fn Tcp(comptime ClientType: type) type {
 
             if (self.connect_op.active() and !self.close_op.active()) {
                 self.close_op = io.Op.cancel(&self.connect_op, self, onCancel);
-                return self.ev.submit(&self.close_op);
+                return self.io_loop.submit(&self.close_op);
             }
             if (self.socket != 0 and !self.close_op.active()) {
                 self.close_op = io.Op.shutdown(self.socket, self, onCancel);
                 self.socket = 0;
-                return self.ev.submit(&self.close_op);
+                return self.io_loop.submit(&self.close_op);
             }
             if (self.recv_op.active() and !self.close_op.active()) {
                 self.close_op = io.Op.cancel(&self.recv_op, self, onCancel);
-                return self.ev.submit(&self.close_op);
+                return self.io_loop.submit(&self.close_op);
             }
 
             if (self.connect_op.active() or
@@ -197,8 +196,8 @@ pub fn Tcp(comptime ClientType: type) type {
                 return;
 
             self.state = .closed;
-            self.client.onClose();
             self.sendRelease();
+            self.client.onClose();
             log.debug("{} closed", .{self.address});
         }
     };
@@ -250,7 +249,7 @@ test "recv_buf remove" {
     defer recv_buf.free();
 
     try recv_buf.set("iso medo u ducan ");
-    _ = try recv_buf.append("nije reko dobar dan");
+    _ = try recv_buf.append(@constCast("nije reko dobar dan"));
     try testing.expectEqual(36, recv_buf.buf.len);
     try testing.expectEqualStrings("iso medo u ducan nije reko dobar dan", recv_buf.buf);
     _ = try recv_buf.remove(20);
