@@ -557,9 +557,6 @@ pub fn Async(comptime ClientType: type, HandshakeType: type, Options: type) type
             var handshake = self.handshake orelse unreachable;
             if (!handshake.done()) return;
 
-            if (@hasDecl(HandshakeType.Inner, "updateDiagnostic")) {
-                handshake.inner.updateDiagnostic(handshake.opt);
-            }
             self.cipher = handshake.inner.cipher;
             self.allocator.destroy(handshake);
             self.handshake = null;
