@@ -38,7 +38,9 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
     return conn;
 }
 
-pub const AsyncConnection = @import("handshake_client.zig").AsyncConnection;
+pub const asyn = struct {
+    pub const Client = @import("handshake_client.zig").AsyncConnection;
+};
 
 test {
     _ = @import("handshake_common.zig");
