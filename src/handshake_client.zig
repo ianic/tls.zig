@@ -991,9 +991,10 @@ test "handshake verify server finished message" {
 
 const AsyncHandshake = struct {
     const Self = @This();
+    pub const Inner = Handshake([]u8);
 
     // inner sync handshake
-    inner: Handshake([]u8) = undefined,
+    inner: Inner = undefined,
     opt: Options = undefined,
     buffer: [cipher.max_ciphertext_record_len]u8 = undefined,
     state: State = .none,
@@ -1013,7 +1014,7 @@ const AsyncHandshake = struct {
 
     pub fn init(self: *Self, opt: Options) !void {
         self.* = .{
-            .inner = Handshake([]u8).init(&self.buffer, undefined),
+            .inner = Inner.init(&self.buffer, undefined),
             .opt = opt,
         };
         try self.inner.initKeys(opt);
@@ -1146,6 +1147,10 @@ test "sizes" {
 }
 
 pub fn AsyncConnection(comptime ClientType: type) type {
+    return @import("connection.zig").Async(ClientType, AsyncHandshake, Options);
+}
+
+pub fn _AsyncConnection(comptime ClientType: type) type {
     // ClientType has to have this api:
     //
     //   onHandshake() - Notification that tcp handshake is done.

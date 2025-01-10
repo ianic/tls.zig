@@ -40,6 +40,7 @@ pub fn server(stream: anytype, opt: ServerOptions) !Connection(@TypeOf(stream)) 
 
 pub const asyn = struct {
     pub const Client = @import("handshake_client.zig").AsyncConnection;
+    pub const Server = @import("handshake_server.zig").AsyncConnection;
 };
 
 test {
