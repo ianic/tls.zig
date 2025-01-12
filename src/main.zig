@@ -80,7 +80,6 @@ test {
 test "sizes" {
     std.debug.print("{}\n", .{@sizeOf(options.Client)});
     std.debug.print("{}\n", .{@sizeOf(options.Server)});
-    std.debug.print("{}\n", .{@sizeOf(Options)});
     std.debug.print("{}\n", .{@sizeOf(CertKeyPair)});
     std.debug.print("{}\n", .{@sizeOf(CertBundle)});
     std.debug.print("{}\n", .{@sizeOf(@import("handshake_server.zig").ClientAuth)});

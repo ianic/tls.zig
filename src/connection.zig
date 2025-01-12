@@ -536,7 +536,7 @@ pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime O
                 }
 
                 assert(content_type == .application_data);
-                try self.client.onRecvCleartext(cleartext);
+                try self.client.onRecvCleartext(@constCast(cleartext));
             }
             return rdr.bytesRead();
         }

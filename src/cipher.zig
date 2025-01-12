@@ -588,8 +588,7 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             content_type: proto.ContentType,
             cleartext: []const u8,
         ) ![]const u8 {
-            const max_record_len = record.header_len + iv_len + cleartext.len + mac_len + max_padding;
-            if (buf.len < max_record_len) return error.BufferOverflow;
+            if (buf.len < self.recordLen(cleartext.len)) return error.BufferOverflow;
             const cleartext_idx = record.header_len + iv_len; // position of cleartext in buf
             @memcpy(buf[cleartext_idx..][0..cleartext.len], cleartext);
 
@@ -703,7 +702,7 @@ fn additionalData(seq: u64, content_type: proto.ContentType, payload_len: usize)
 // https://ciphersuite.info/page/faq/
 // https://github.com/golang/go/blob/73186ba00251b3ed8baaab36e4f5278c7681155b/src/crypto/tls/cipher_suites.go#L226
 pub const cipher_suites = struct {
-    const tls12_secure = if (crypto.core.aes.has_hardware_support) [_]CipherSuite{
+    pub const tls12_secure = if (crypto.core.aes.has_hardware_support) [_]CipherSuite{
         // recommended
         .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
@@ -723,7 +722,7 @@ pub const cipher_suites = struct {
         .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
     };
-    const tls12_week = [_]CipherSuite{
+    pub const tls12_week = [_]CipherSuite{
         // week
         .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
         .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
