@@ -413,16 +413,16 @@ test "client/server connection" {
     }
 }
 
-pub fn Async(comptime ClientType: type, HandshakeType: type, Options: type) type {
+pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime Options: type) type {
     // ClientType has to have this api:
     //
-    //   onHandshake() - Notification that tcp handshake is done.
-    //   onRecvCleartext(cleartext) - Cleartext data to pass to application.
-    //   sendCiphertext(buf) - Ciphertext to pass to server (tcp connection).
+    //   onHandshake()              - notification that tcp handshake is done.
+    //   onRecvCleartext(cleartext) - cleartext data to pass to application.
+    //   sendCiphertext(buf)        - ciphertext to pass to server (tcp connection).
     //
     // Api provided to the client:
     //
-    //   startHandshake
+    //   onConnect        - should be called after tcp client connection is established
     //   onRecv           - data received from the server
     //   send             - data to send to the server
     //   onSend           - tcp is done coping buffer to the kernel
@@ -464,9 +464,8 @@ pub fn Async(comptime ClientType: type, HandshakeType: type, Options: type) type
 
         // ----------------- client api
 
-        /// Client has established tcp connection, should start tls handshake on
-        /// it.
-        pub fn startHandshake(self: *Self) !void {
+        /// Client has established tcp connection, start tls handshake
+        pub fn onConnect(self: *Self) !void {
             try self.handshakeSend();
         }
 
@@ -479,7 +478,7 @@ pub fn Async(comptime ClientType: type, HandshakeType: type, Options: type) type
                 try self.decrypt(bytes);
         }
 
-        /// Client sends data; encrypt it and return via sendCiphertext.
+        /// Client sends data; encrypt it and return to client via sendCiphertext.
         pub fn send(self: *Self, bytes: []const u8) !void {
             if (self.handshake != null) return error.InvalidState;
             const chp = &(self.cipher orelse return error.InvalidState);
@@ -504,7 +503,7 @@ pub fn Async(comptime ClientType: type, HandshakeType: type, Options: type) type
         /// now.
         pub fn onSend(self: *Self, buf: []const u8) void {
             if (self.handshake) |_| {
-                self.handshakeDone();
+                self.checkHandshakeDone();
             } else {
                 self.allocator.free(buf);
             }
@@ -548,12 +547,12 @@ pub fn Async(comptime ClientType: type, HandshakeType: type, Options: type) type
                 error.EndOfStream => 0,
                 else => return err,
             };
-            self.handshakeDone();
+            self.checkHandshakeDone();
             if (n > 0) try self.handshakeSend();
             return n;
         }
 
-        fn handshakeDone(self: *Self) void {
+        fn checkHandshakeDone(self: *Self) void {
             var handshake = self.handshake orelse unreachable;
             if (!handshake.done()) return;
 

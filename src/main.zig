@@ -46,9 +46,23 @@ pub const asyn = struct {
     pub fn Client(T: type) type {
         return Async(T, _hc.Async, _hc.Options);
     }
-    pub fn Server(T: type) type {
+    pub fn Conn(T: type) type {
         return Async(T, _hs.Async, _hs.Options);
     }
+};
+
+pub const options = struct {
+    pub const CipherSuite = @import("cipher.zig").CipherSuite;
+    pub const cipher_suites = @import("cipher.zig").cipher_suites;
+    pub const PrivateKey = @import("PrivateKey.zig");
+    pub const key_log = @import("key_log.zig");
+    pub const NamedGroup = proto.NamedGroup;
+    pub const Version = proto.Version;
+    pub const CertBundle = common.CertBundle;
+    pub const CertKeyPair = common.CertKeyPair;
+
+    pub const Client = @import("handshake_client.zig").Options;
+    pub const Server = @import("handshake_server.zig").Options;
 };
 
 test {
@@ -61,4 +75,13 @@ test {
     _ = @import("record.zig");
     _ = @import("transcript.zig");
     _ = @import("PrivateKey.zig");
+}
+
+test "sizes" {
+    std.debug.print("{}\n", .{@sizeOf(options.Client)});
+    std.debug.print("{}\n", .{@sizeOf(options.Server)});
+    std.debug.print("{}\n", .{@sizeOf(Options)});
+    std.debug.print("{}\n", .{@sizeOf(CertKeyPair)});
+    std.debug.print("{}\n", .{@sizeOf(CertBundle)});
+    std.debug.print("{}\n", .{@sizeOf(@import("handshake_server.zig").ClientAuth)});
 }
