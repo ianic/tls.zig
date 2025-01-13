@@ -15,7 +15,7 @@ pub fn main() !void {
     defer tcp.close();
 
     // Load system root certificates
-    var root_ca = try tls.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
