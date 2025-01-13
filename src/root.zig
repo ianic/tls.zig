@@ -66,3 +66,5 @@ test {
     _ = @import("transcript.zig");
     _ = @import("PrivateKey.zig");
 }
+
+pub const CertBundle = @compileError("deprecated: use config.CertBundle, see:https://github.com/ianic/tls.zig/commit/c028a2845d546298fdac3a1d3e3849090c8fc1ff");
