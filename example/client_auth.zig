@@ -22,7 +22,7 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
-    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const host = "localhost";
@@ -39,9 +39,9 @@ pub fn main() !void {
         "client_rsa_4096",
     };
     //
-    for ([_][]const tls.CipherSuite{
-        tls.cipher_suites.tls13,
-        tls.cipher_suites.tls12,
+    for ([_][]const tls.config.CipherSuite{
+        tls.config.cipher_suites.tls13,
+        tls.config.cipher_suites.tls12,
     }) |cipher_suites| {
         for (client_keys) |sub_path| {
             // Make tcp connection
@@ -50,18 +50,18 @@ pub fn main() !void {
 
             // Prepare client authentication key pair
             const cert_dir = try dir.openDir(sub_path, .{});
-            var auth = try tls.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+            var auth = try tls.config.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
             defer auth.deinit(allocator);
 
             // Upgrade tcp connection to tls client
-            var diagnostic: tls.ClientOptions.Diagnostic = .{};
+            var diagnostic: tls.config.Client.Diagnostic = .{};
             var cli = try tls.client(tcp, .{
                 .host = host,
                 .root_ca = root_ca,
                 .cipher_suites = cipher_suites,
                 .auth = auth,
                 .diagnostic = &diagnostic,
-                .key_log_callback = tls.key_log.callback,
+                .key_log_callback = tls.config.key_log.callback,
             });
 
             // Show response

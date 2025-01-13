@@ -8,25 +8,25 @@ pub fn main() !void {
 
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var rsa_auth = try tls.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var rsa_auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer rsa_auth.deinit(allocator);
 
-    var ec_auth = try tls.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var ec_auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer ec_auth.deinit(allocator);
 
     // ca to check client certificate
-    var client_root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var client_root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer client_root_ca.deinit(allocator);
 
-    const opt1: tls.ServerOptions = .{ .auth = rsa_auth };
-    const opt2: tls.ServerOptions = .{
+    const opt1: tls.config.Server = .{ .auth = rsa_auth };
+    const opt2: tls.config.Server = .{
         .client_auth = .{
             .auth_type = .request,
             .root_ca = client_root_ca,
         },
         .auth = rsa_auth,
     };
-    const opt4: tls.ServerOptions = .{ .auth = ec_auth };
+    const opt4: tls.config.Server = .{ .auth = ec_auth };
 
     const s1 = try std.Thread.spawn(.{}, runServer, .{ 4433, opt1 });
     const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ 4435, opt1 });
@@ -40,7 +40,7 @@ pub fn main() !void {
     s4.join();
 }
 
-fn runServer(port: u16, opt: tls.ServerOptions) !void {
+fn runServer(port: u16, opt: tls.config.Server) !void {
     const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
     var server = try address.listen(.{ .reuse_address = true });
 
@@ -61,7 +61,7 @@ fn runServer(port: u16, opt: tls.ServerOptions) !void {
     }
 }
 
-fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
+fn acceptUpgrade(server: *std.net.Server, opt: tls.config.Server) !void {
     const tcp = try server.accept();
     defer tcp.stream.close();
 
@@ -78,7 +78,7 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.ServerOptions) !void {
     try conn.close();
 }
 
-fn runEchoServer(port: u16, opt: tls.ServerOptions) !void {
+fn runEchoServer(port: u16, opt: tls.config.Server) !void {
     const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
     var server = try address.listen(.{ .reuse_address = true });
 
@@ -95,7 +95,7 @@ fn runEchoServer(port: u16, opt: tls.ServerOptions) !void {
     }
 }
 
-fn acceptEcho(server: *std.net.Server, opt: tls.ServerOptions) !void {
+fn acceptEcho(server: *std.net.Server, opt: tls.config.Server) !void {
     const tcp = try server.accept();
     defer tcp.stream.close();
 

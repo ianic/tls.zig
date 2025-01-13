@@ -28,7 +28,7 @@ To upgrade existing tcp connection to the tls connection call `tls.client`:
     defer tcp.close();
 
     // Load system root certificates
-    var root_ca = try tls.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
@@ -41,7 +41,7 @@ After that you can use `conn` read/write methods as on plain tcp connection.
 
 ## Options
 
-Second parameter in calling `tls.client` are [tls.ClientOptions](https://github.com/ianic/tls.zig/blob/main/src/handshake_client.zig#L28-L73) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates, collect handshake diagnostics, exchange session keys with Wireshark to view decrypted traffic.
+Second parameter in calling `tls.client` are [tls.config.Client](https://github.com/ianic/tls.zig/blob/main/src/handshake_client.zig#L28-L73) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates, collect handshake diagnostics, exchange session keys with Wireshark to view decrypted traffic.
 
 ### Select cipher suite
 
@@ -62,7 +62,7 @@ If server requires client authentication set `auth` attribute in options. You ne
 
 ```zig
     // Prepare client authentication key pair
-    var auth = try tls.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
     defer auth.deinit(allocator);
 
     var conn = try tls.client(tcp, .{
@@ -86,7 +86,7 @@ Key logging is enabled by setting the environment variable SSLKEYLOGFILE to poin
     var conn = try tls.client(tcp, .{
         .host = host,
         .root_ca = root_ca,
-        .key_log_callback = tls.key_log.callback,
+        .key_log_callback = tls.config.key_log.callback,
     });
 ```
 
@@ -96,7 +96,7 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
 
 ```zig
     // Load server certificate key pair
-    var auth = try tls.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
     
     // Tcp listener

@@ -11,7 +11,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const dir = try std.fs.cwd().openDir("example/cert", .{});
-    var root_ca = try tls.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt = try parseArgs(allocator);
@@ -26,19 +26,19 @@ pub fn main() !void {
     }
 }
 
-fn thisLib(allocator: std.mem.Allocator, root_ca: tls.CertBundle, verbose: bool) !void {
+fn thisLib(allocator: std.mem.Allocator, root_ca: tls.config.CertBundle, verbose: bool) !void {
     // Make tcp connection
     var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
 
     // Upgrade tcp connection to tls
-    var diagnostic: tls.ClientOptions.Diagnostic = .{};
+    var diagnostic: tls.config.Client.Diagnostic = .{};
     var conn = try tls.client(tcp, .{
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .named_groups = &.{ .x25519, .secp256r1, .x25519_kyber768d00 }, // use same set as in std lib
-        .key_log_callback = tls.key_log.callback,
+        .key_log_callback = tls.config.key_log.callback,
     });
 
     // Show response
@@ -54,7 +54,7 @@ fn thisLib(allocator: std.mem.Allocator, root_ca: tls.CertBundle, verbose: bool)
     }
 }
 
-fn stdLib(allocator: std.mem.Allocator, root_ca: tls.CertBundle, verbose: bool) !void {
+fn stdLib(allocator: std.mem.Allocator, root_ca: tls.config.CertBundle, verbose: bool) !void {
     var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
 

@@ -10,7 +10,7 @@ pub fn main() !void {
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = allocator, .n_jobs = 128 });
 
-    var root_ca = try tls.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     var counter: cmn.Counter = .{};
@@ -36,15 +36,15 @@ pub fn main() !void {
     if (counter.failRate() > 0.005) std.posix.exit(1);
 }
 
-pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.CertBundle, counter: *cmn.Counter) void {
-    var diagnostic: tls.ClientOptions.Diagnostic = .{};
-    var opt: tls.ClientOptions = .{
+pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config.CertBundle, counter: *cmn.Counter) void {
+    var diagnostic: tls.config.Client.Diagnostic = .{};
+    var opt: tls.config.Client = .{
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
     };
     if (cmn.inList(domain, &cmn.no_keyber)) {
-        opt.named_groups = &[_]tls.NamedGroup{ .x25519, .secp256r1 };
+        opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };
     }
 
     cmn.get(allocator, domain, null, false, false, opt) catch |err| {

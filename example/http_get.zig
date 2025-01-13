@@ -12,7 +12,7 @@ pub fn main() !void {
     if (args.len > 1) {
         const domain = args[1];
 
-        var ca_bundle = try tls.CertBundle.fromSystem(allocator);
+        var ca_bundle = try tls.config.CertBundle.fromSystem(allocator);
         defer ca_bundle.deinit(allocator);
 
         try cmn.get(allocator, domain, null, true, true, .{
@@ -22,8 +22,8 @@ pub fn main() !void {
             //   .cipher_suites = &[_]tls.CipherSuite{.CHACHA20_POLY1305_SHA256},
             // to force cipher from specific tls version:
             //   .cipher_suites = tls.cipher_suites.tls12,
-            .cipher_suites = tls.cipher_suites.secure,
-            .key_log_callback = tls.key_log.callback,
+            .cipher_suites = tls.config.cipher_suites.secure,
+            .key_log_callback = tls.config.key_log.callback,
         });
     }
 }

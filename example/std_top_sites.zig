@@ -70,7 +70,7 @@ pub fn get(allocator: std.mem.Allocator, domain: []const u8) !void {
 }
 
 fn connWithTimeout(allocator: std.mem.Allocator, client: *http.Client, uri: std.Uri) !*http.Client.Connection {
-    const root_ca = try tls.CertBundle.fromSystem(allocator);
+    const root_ca = try tls.config.CertBundle.fromSystem(allocator);
     client.ca_bundle = root_ca.bundle;
 
     const conn = try client.connectTcp(uri.host.?.percent_encoded, 443, .tls);

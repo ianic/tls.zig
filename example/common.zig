@@ -2,7 +2,7 @@ const std = @import("std");
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 
-pub fn showDiagnostic(stats: *tls.ClientOptions.Diagnostic, domain: []const u8) void {
+pub fn showDiagnostic(stats: *tls.config.Client.Diagnostic, domain: []const u8) void {
     std.debug.print(
         "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n",
         .{
@@ -158,7 +158,7 @@ pub const Counter = struct {
         }
     }
 
-    pub fn addSuccess(self: *@This(), version: tls.Version) void {
+    pub fn addSuccess(self: *@This(), version: tls.config.Version) void {
         self.mu.lock();
         defer self.mu.unlock();
 
@@ -198,7 +198,7 @@ pub fn get(
     port: ?u16,
     show_handshake_stat: bool,
     show_response: bool,
-    opt_: tls.ClientOptions,
+    opt_: tls.config.Client,
 ) !void {
     var opt = opt_;
 
@@ -240,7 +240,7 @@ pub fn get(
 
     // Prepare and show handshake stats
     if (show_handshake_stat and opt.diagnostic == null) {
-        var diagnostic: tls.ClientOptions.Diagnostic = .{};
+        var diagnostic: tls.config.Client.Diagnostic = .{};
         opt.diagnostic = &diagnostic;
     }
     defer if (show_handshake_stat) showDiagnostic(opt.diagnostic.?, domain);
