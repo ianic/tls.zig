@@ -84,7 +84,7 @@ test "server with ec key key pair" {
     var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = auth };
+    const opt: tls.config.Server = .{ .auth = &auth };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
@@ -109,7 +109,7 @@ test "server with rsa key key pair" {
     var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = auth };
+    const opt: tls.config.Server = .{ .auth = &auth };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
@@ -139,7 +139,7 @@ test "server request client authentication" {
             .auth_type = .request,
             .root_ca = root_ca,
         },
-        .auth = auth,
+        .auth = &auth,
     };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 2 + client_keys.len });
@@ -160,7 +160,7 @@ test "server request client authentication" {
         const client_opt: tls.config.Client = .{
             .host = host,
             .root_ca = root_ca,
-            .auth = client_auth,
+            .auth = &client_auth,
         };
         try connectReceive(server.listen_address, client_opt);
     }
@@ -183,7 +183,7 @@ test "server require client authentication" {
             .auth_type = .require,
             .root_ca = root_ca,
         },
-        .auth = auth,
+        .auth = &auth,
     };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ &server, opt, 1 + client_keys.len });
@@ -202,7 +202,7 @@ test "server require client authentication" {
         const client_opt: tls.config.Client = .{
             .host = host,
             .root_ca = root_ca,
-            .auth = client_auth,
+            .auth = &client_auth,
         };
         try connectReceive(server.listen_address, client_opt);
     }
@@ -220,7 +220,7 @@ test "server send key update" {
     var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = auth };
+    const opt: tls.config.Server = .{ .auth = &auth };
     var server = try address.listen(.{});
     const thr = try std.Thread.spawn(.{}, acceptSendKeyUpdate, .{ &server, opt });
     // client will receive key multiple  times

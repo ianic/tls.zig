@@ -26,7 +26,7 @@ const log = std.log.scoped(.tls);
 pub const Options = struct {
     /// Server authentication. If null server will not send Certificate and
     /// CertificateVerify message.
-    auth: ?CertKeyPair,
+    auth: ?*CertKeyPair,
 
     /// If not null server will request client certificate. If auth_type is
     /// .request empty client certificate message will be accepted.

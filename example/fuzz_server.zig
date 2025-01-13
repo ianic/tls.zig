@@ -18,15 +18,15 @@ pub fn main() !void {
     var client_root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     defer client_root_ca.deinit(allocator);
 
-    const opt1: tls.config.Server = .{ .auth = rsa_auth };
+    const opt1: tls.config.Server = .{ .auth = &rsa_auth };
     const opt2: tls.config.Server = .{
         .client_auth = .{
             .auth_type = .request,
             .root_ca = client_root_ca,
         },
-        .auth = rsa_auth,
+        .auth = &rsa_auth,
     };
-    const opt4: tls.config.Server = .{ .auth = ec_auth };
+    const opt4: tls.config.Server = .{ .auth = &ec_auth };
 
     const s1 = try std.Thread.spawn(.{}, runServer, .{ 4433, opt1 });
     const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ 4435, opt1 });

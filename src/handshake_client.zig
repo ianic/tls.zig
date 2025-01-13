@@ -49,7 +49,7 @@ pub const Options = struct {
     named_groups: []const proto.NamedGroup = supported_named_groups,
 
     /// Client authentication certificates and private key.
-    auth: ?CertKeyPair = null,
+    auth: ?*CertKeyPair = null,
 
     /// If this structure is provided it will be filled with handshake attributes
     /// at the end of the handshake process.
@@ -575,7 +575,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// finished messages for tls 1.2.
         /// If client certificate is requested also adds client certificate and
         /// certificate verify messages.
-        fn makeClientFlight2Tls12(h: *HandshakeT, auth: ?CertKeyPair) ![]const u8 {
+        fn makeClientFlight2Tls12(h: *HandshakeT, auth: ?*CertKeyPair) ![]const u8 {
             var w = record.Writer{ .buf = h.buffer };
             var cert_builder: ?CertificateBuilder = null;
 
@@ -629,7 +629,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// and client certificate verify messages are also created. If the
         /// server has requested certificate but the client is not configured
         /// empty certificate message is sent, as is required by rfc.
-        fn makeClientFlight2Tls13(h: *HandshakeT, auth: ?CertKeyPair) ![]const u8 {
+        fn makeClientFlight2Tls13(h: *HandshakeT, auth: ?*CertKeyPair) ![]const u8 {
             var w = record.Writer{ .buf = h.buffer };
 
             // Client change cipher spec message
@@ -666,7 +666,7 @@ pub fn Handshake(comptime Stream: type) type {
             return w.getWritten();
         }
 
-        fn certificateBuilder(h: *HandshakeT, auth: CertKeyPair) CertificateBuilder {
+        fn certificateBuilder(h: *HandshakeT, auth: *CertKeyPair) CertificateBuilder {
             return .{
                 .bundle = auth.bundle,
                 .key = auth.key,
@@ -1138,10 +1138,10 @@ test "async handshake" {
 }
 
 test "sizes" {
-    try testing.expectEqual(39360, @sizeOf(Async));
+    try testing.expectEqual(36576, @sizeOf(Async));
     try testing.expectEqual(19792, @sizeOf(Handshake([]u8)));
     try testing.expectEqual(14384, @sizeOf(DhKeyPair));
-    try testing.expectEqual(2920, @sizeOf(Options));
+    try testing.expectEqual(128, @sizeOf(Options));
     try testing.expectEqual(2792, @sizeOf(CertKeyPair));
     try testing.expectEqual(1736, @sizeOf(CertificateParser));
     try testing.expectEqual(48, @sizeOf(CertBundle));

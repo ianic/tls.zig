@@ -66,11 +66,3 @@ test {
     _ = @import("transcript.zig");
     _ = @import("PrivateKey.zig");
 }
-
-test "sizes" {
-    std.debug.print("{}\n", .{@sizeOf(config.Client)});
-    std.debug.print("{}\n", .{@sizeOf(config.Server)});
-    std.debug.print("{}\n", .{@sizeOf(config.CertKeyPair)});
-    std.debug.print("{}\n", .{@sizeOf(config.CertBundle)});
-    std.debug.print("{}\n", .{@sizeOf(@import("handshake_server.zig").ClientAuth)});
-}

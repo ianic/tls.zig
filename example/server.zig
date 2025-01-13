@@ -42,7 +42,7 @@ pub fn main() !void {
             //     .auth_type = .request,
             //     .root_ca = client_root_ca,
             // },
-            .auth = auth,
+            .auth = &auth,
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             continue;
