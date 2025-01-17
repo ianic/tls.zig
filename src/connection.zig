@@ -413,7 +413,7 @@ test "client/server connection" {
     }
 }
 
-pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime Options: type) type {
+pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Options: type) type {
     // ClientType has to have this api:
     //
     //   onHandshake()              - notification that tcp handshake is done.
@@ -442,17 +442,17 @@ pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime O
         const Self = @This();
 
         allocator: mem.Allocator,
-        client: ClientType,
+        handler: *Handler,
         handshake: ?*HandshakeType = null,
         cipher: ?Cipher = null,
 
-        pub fn init(allocator: mem.Allocator, client: ClientType, opt: Options) !Self {
+        pub fn init(allocator: mem.Allocator, handler: *Handler, opt: Options) !Self {
             const handshake = try allocator.create(HandshakeType);
             errdefer allocator.destroy(handshake);
             try handshake.init(opt);
             return .{
                 .allocator = allocator,
-                .client = client,
+                .handler = handler,
                 .handshake = handshake,
             };
         }
@@ -465,13 +465,13 @@ pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime O
         // ----------------- client api
 
         /// Client has established tcp connection, start tls handshake
-        pub fn onConnect(self: *Self) !void {
+        pub fn connect(self: *Self) !void {
             try self.handshakeSend();
         }
 
         /// `bytes` are received on plain tcp connection. Use it in handshake or
         /// if handshake is done decrypt and send to client.
-        pub fn onRecv(self: *Self, bytes: []u8) !usize {
+        pub fn recv(self: *Self, bytes: []u8) !usize {
             return if (self.handshake) |_|
                 try self.handshakeRecv(bytes)
             else
@@ -492,10 +492,11 @@ pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime O
 
                 // allocate ciphertext record buffer and encrypt into that buffer
                 const rec_buf = try self.allocator.alloc(u8, chp.recordLen(buf.len));
+                errdefer self.allocator.free(rec_buf);
                 const rec = try chp.encrypt(rec_buf, .application_data, buf);
                 assert(rec.len == rec_buf.len);
                 // send ciphertext record
-                try self.client.sendCiphertext(rec);
+                try self.handler.sendZc(rec);
             }
         }
 
@@ -536,7 +537,7 @@ pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime O
                 }
 
                 assert(content_type == .application_data);
-                try self.client.onRecvCleartext(@constCast(cleartext));
+                self.handler.onRecv(@constCast(cleartext));
             }
             return rdr.bytesRead();
         }
@@ -560,13 +561,13 @@ pub fn Async(comptime ClientType: type, comptime HandshakeType: type, comptime O
             self.allocator.destroy(handshake);
             self.handshake = null;
 
-            self.client.onHandshake();
+            self.handler.onConnect();
         }
 
         fn handshakeSend(self: *Self) !void {
             var handshake = self.handshake orelse return;
             if (try handshake.send()) |buf|
-                try self.client.sendCiphertext(buf);
+                try self.handler.sendZc(buf);
         }
     };
 }
