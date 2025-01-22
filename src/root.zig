@@ -50,7 +50,7 @@ pub const asyn = struct {
     pub fn Client(T: type) type {
         return Async(T, _hc.Async, _hc.Options);
     }
-    pub fn Conn(T: type) type {
+    pub fn Server(T: type) type {
         return Async(T, _hs.Async, _hs.Options);
     }
 };
