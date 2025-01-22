@@ -461,7 +461,7 @@ test "sizes" {
 fn isSlice(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .pointer => |ptr_info| switch (ptr_info.size) {
-            .Slice => true,
+            .slice => true,
             else => false,
         },
         else => false,
