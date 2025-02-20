@@ -19,6 +19,7 @@ pub fn main() !void {
     while (rdr.next()) |domain| {
         if (domain.len == 0) continue;
         if (cmn.skipDomain(domain)) {
+            std.debug.print("➰ {s:<25} SKIP\n", .{domain});
             counter.add(.skip);
             continue;
         }

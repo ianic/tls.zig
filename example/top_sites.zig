@@ -25,6 +25,7 @@ pub fn main() !void {
     var rdr = cmn.CsvReader.init(@embedFile("domains"));
     while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {
+            std.debug.print("➰ {s:<25} SKIP\n", .{domain});
             counter.add(.skip);
             continue;
         }

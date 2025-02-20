@@ -8,7 +8,6 @@ Zig TLS library, characteristics:
 * options to select client cipher suites to use, named groups, ...
 * can configure Wireshark to show decrypted traffic
 * better performance, more modular, more testable, connect to more real world sites than standard library implementation
-* can be used with standard library HTTP client (There is [proposal](https://github.com/ziglang/zig/issues/18963) to allow changing TLS implementation of std.http, for now we need to to modify std lib source to switch to alternate TLS library.)
 
 <!--
 * solved many [issues](https://github.com/ziglang/zig/issues/14172#issuecomment-2181202318) which I found in std 

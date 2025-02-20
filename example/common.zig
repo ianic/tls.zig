@@ -74,7 +74,7 @@ pub fn skipDomain(domain: []const u8) bool {
 
 pub const domainsToSkip = [_][]const u8{
     "dw.com", // timeout after long time, fine on www.dw.com
-    "alicdn.com",
+    "alicdn.com", //           error.ConnectionTimedOut
     "usnews.com",
     "canada.ca", //            SSL certificate problem: unable to get local issuer certificate
     "nhk.or.jp", //            error error.UnknownHostName curl error: error.CouldntResolveHost
