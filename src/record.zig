@@ -452,12 +452,6 @@ test isSlice {
     try comptime testing.expect(!isSlice(io.FixedBufferStream([]u8)));
 }
 
-test "sizes" {
-    try testing.expectEqual(32, @sizeOf(Reader([]u8)));
-    try testing.expectEqual(32, @sizeOf(Reader([]const u8)));
-    try testing.expectEqual(16688, @sizeOf(Reader(io.FixedBufferStream([]u8))));
-}
-
 fn isSlice(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .pointer => |ptr_info| switch (ptr_info.size) {

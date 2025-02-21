@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const std_options = std.Options{ .http_enable_ssl_key_log_file = true };
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
