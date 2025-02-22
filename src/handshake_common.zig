@@ -231,7 +231,6 @@ pub const CertificateParser = struct {
         const start_idx = d.idx;
         while (d.idx - start_idx < certs_len) {
             const cert_len = try d.decode(u24);
-            // std.debug.print("=> {} {} {} {}\n", .{ certs_len, d.idx, cert_len, d.payload.len });
             const cert = try d.slice(cert_len);
             if (tls_version == .tls_1_3) {
                 // certificate extensions present in tls 1.3

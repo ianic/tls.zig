@@ -313,15 +313,15 @@ pub const Writer = struct {
     pos: usize = 0,
 
     pub fn write(self: *Writer, data: []const u8) !void {
-        defer self.pos += data.len;
         if (self.pos + data.len > self.buf.len) return error.BufferOverflow;
         @memcpy(self.buf[self.pos..][0..data.len], data);
+        self.pos += data.len;
     }
 
     pub fn writeByte(self: *Writer, b: u8) !void {
-        defer self.pos += 1;
         if (self.pos == self.buf.len) return error.BufferOverflow;
         self.buf[self.pos] = b;
+        self.pos += 1;
     }
 
     pub fn writeEnum(self: *Writer, value: anytype) !void {
