@@ -49,14 +49,13 @@ pub const CertKeyPair = struct {
 
     pub fn load(
         allocator: std.mem.Allocator,
-        dir: std.fs.Dir,
         cert_path: []const u8,
         key_path: []const u8,
     ) !CertKeyPair {
         var bundle: Certificate.Bundle = .{};
-        try bundle.addCertsFromFilePath(allocator, dir, cert_path);
+        try bundle.addCertsFromFilePathAbsolute(allocator, cert_path);
 
-        const key_file = try dir.openFile(key_path, .{});
+        const key_file = try std.fs.openFileAbsolute(key_path, .{});
         defer key_file.close();
         const key = try PrivateKey.fromFile(allocator, key_file);
 
@@ -75,9 +74,9 @@ pub const CertBundle = struct {
     // forms valid trust chain.
     bundle: Certificate.Bundle = .{},
 
-    pub fn fromFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !CertBundle {
+    pub fn fromFile(allocator: std.mem.Allocator, path: []const u8) !CertBundle {
         var bundle: Certificate.Bundle = .{};
-        try bundle.addCertsFromFilePath(allocator, dir, path);
+        try bundle.addCertsFromFilePathAbsolute(allocator, path);
         return .{ .bundle = bundle };
     }
 

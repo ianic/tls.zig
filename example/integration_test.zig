@@ -76,12 +76,11 @@ test "server without certificate" {
 
 test "server with ec key key pair" {
     const allocator = testing.allocator;
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, "example/cert/localhost_ec/cert.pem", "example/cert/localhost_ec/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, "example/cert/minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth };
@@ -101,12 +100,11 @@ test "server with ec key key pair" {
 
 test "server with rsa key key pair" {
     const allocator = testing.allocator;
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, "example/cert/localhost_rsa/cert.pem", "example/cert/localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, "example/cert/minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth };
@@ -126,12 +124,11 @@ test "server with rsa key key pair" {
 
 test "server request client authentication" {
     const allocator = testing.allocator;
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, "example/cert/localhost_rsa/cert.pem", "example/cert/localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, "example/cert/minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{
@@ -152,9 +149,10 @@ test "server request client authentication" {
 
     // client with client certificate
     for (client_keys) |sub_path| {
+        const dir = try std.fs.cwd().openDir("example/cert", .{});
         const cert_dir = try dir.openDir(sub_path, .{});
 
-        var client_auth = try tls.config.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+        var client_auth = try tls.config.CertKeyPair.load(allocator, std.fs.path.join(allocator, [][]const u8{ cert_dir, "cert.pem" }), std.fs.path.join(allocator, [][]const u8{ cert_dir, "key.pem" }));
         defer client_auth.deinit(allocator);
 
         const client_opt: tls.config.Client = .{
@@ -170,12 +168,11 @@ test "server request client authentication" {
 
 test "server require client authentication" {
     const allocator = testing.allocator;
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, "example/cert/localhost_rsa/cert.pem", "example/cert/localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, "example/cert/minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{
@@ -196,8 +193,9 @@ test "server require client authentication" {
 
     // load client certificate and connect
     for (client_keys) |sub_path| {
+        const dir = try std.fs.cwd().openDir("example/cert", .{});
         const cert_dir = try dir.openDir(sub_path, .{});
-        var client_auth = try tls.config.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+        var client_auth = try tls.config.CertKeyPair.load(allocator, std.fs.path.join(allocator, [][]const u8{ cert_dir, "cert.pem" }), std.fs.path.join(allocator, [][]const u8{ cert_dir, "key.pem" }));
         defer client_auth.deinit(allocator);
         const client_opt: tls.config.Client = .{
             .host = host,
@@ -212,12 +210,11 @@ test "server require client authentication" {
 
 test "server send key update" {
     const allocator = testing.allocator;
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, "example/cert/localhost_rsa/cert.pem", "example/cert/localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.CertBundle.fromFile(allocator, "example/cert/minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth };
