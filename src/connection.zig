@@ -136,20 +136,20 @@ pub fn Connection(comptime Stream: type) type {
 
         pub const ReadError = Stream.ReadError || proto.Alert.Error ||
             error{
-            TlsBadVersion,
-            TlsUnexpectedMessage,
-            TlsRecordOverflow,
-            TlsDecryptError,
-            TlsDecodeError,
-            TlsBadRecordMac,
-            TlsIllegalParameter,
-            BufferOverflow,
-        };
+                TlsBadVersion,
+                TlsUnexpectedMessage,
+                TlsRecordOverflow,
+                TlsDecryptError,
+                TlsDecodeError,
+                TlsBadRecordMac,
+                TlsIllegalParameter,
+                BufferOverflow,
+            };
         pub const WriteError = Stream.WriteError ||
             error{
-            BufferOverflow,
-            TlsUnexpectedMessage,
-        };
+                BufferOverflow,
+                TlsUnexpectedMessage,
+            };
 
         pub const Reader = std.io.Reader(*Self, ReadError, read);
         pub const Writer = std.io.Writer(*Self, WriteError, write);
