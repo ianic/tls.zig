@@ -67,8 +67,13 @@ pub fn Connection(comptime Stream: type) type {
         ///   while (try client.next()) |buf| { ... }
         pub fn next(c: *Self) ReadError!?[]const u8 {
             const content_type, const data = c.nextRecord() catch |err| {
-                try c.writeAlert(err);
-                return err;
+                switch (err) {
+                    error.WouldBlock => return err,
+                    else => {
+                        try c.writeAlert(err);
+                        return err;
+                    },
+                }
             } orelse return null;
             if (content_type != .application_data) return error.TlsUnexpectedMessage;
             return data;
