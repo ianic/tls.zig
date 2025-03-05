@@ -1,5 +1,6 @@
 .{
-    .name = "tls",
+    .name = .tls,
+    .fingerprint = 0xacfd1db3dcfc7b4b,
     .version = "0.1.0",
     .dependencies = .{},
     .paths = .{
