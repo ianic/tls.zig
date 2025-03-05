@@ -67,7 +67,12 @@ pub fn Connection(comptime Stream: type) type {
         ///   while (try client.next()) |buf| { ... }
         pub fn next(c: *Self) ReadError!?[]const u8 {
             const content_type, const data = c.nextRecord() catch |err| {
-                try c.writeAlert(err);
+                // Write alert on tls errors.
+                // Stream errors return to the caller.
+                if (std.mem.startsWith(u8, @errorName(err), "Tls") or
+                    std.mem.startsWith(u8, @errorName(err), "TlsAlert") or
+                    err == error.BufferOverflow)
+                    try c.writeAlert(err);
                 return err;
             } orelse return null;
             if (content_type != .application_data) return error.TlsUnexpectedMessage;
