@@ -313,13 +313,13 @@ pub const Writer = struct {
     pos: usize = 0,
 
     pub fn write(self: *Writer, data: []const u8) !void {
-        if (self.pos + data.len > self.buf.len) return error.BufferOverflow;
+        if (self.pos + data.len > self.buf.len) return error.NoSpaceLeft;
         @memcpy(self.buf[self.pos..][0..data.len], data);
         self.pos += data.len;
     }
 
     pub fn writeByte(self: *Writer, b: u8) !void {
-        if (self.pos == self.buf.len) return error.BufferOverflow;
+        if (self.pos == self.buf.len) return error.NoSpaceLeft;
         self.buf[self.pos] = b;
         self.pos += 1;
     }
@@ -332,7 +332,7 @@ pub const Writer = struct {
         const IntT = @TypeOf(value);
         const bytes = @divExact(@typeInfo(IntT).int.bits, 8);
         const free = self.buf[self.pos..];
-        if (free.len < bytes) return error.BufferOverflow;
+        if (free.len < bytes) return error.NoSpaceLeft;
         mem.writeInt(IntT, free[0..bytes], value, .big);
         self.pos += bytes;
     }
