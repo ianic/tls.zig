@@ -2,9 +2,8 @@ name: test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master", "ci" ]
   pull_request:
-    branches: [ "main" ]
 
 jobs:
   test:
@@ -15,5 +14,29 @@ jobs:
       - uses: mlugg/setup-zig@v1
         with:
           version: master
+
       - run: zig build
       - run: zig build test --summary all
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.2'
+
+      - name: Create certificates
+        run: |
+          cd example
+          ./cert.sh
+
+      - run: zig build integration --summary all
+
+      - run: zig build -Doptimize=ReleaseFast
+      - run: example/ci_tlsfuzzer.sh
+      - run: zig-out/bin/top_sites
+      - run: zig-out/bin/badssl
+      - run: zig-out/bin/all_ciphers

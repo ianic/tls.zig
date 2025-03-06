@@ -3,7 +3,7 @@ const tls = @import("tls");
 const net = std.net;
 const Certificate = std.crypto.Certificate;
 
-const data = @embedFile("cert/pg2600.txt");
+const data = @embedFile("cert/random");
 
 const testing = std.testing;
 const host = "localhost";

@@ -54,6 +54,9 @@ do
 done
 
 # download war and peace, larger text file used in tests
-if [[ ! -f pg2600.txt  ]]; then
+if [[ -z "${GITHUB_ACTION}" && ! -f pg2600.txt  ]]; then
   wget https://www.gutenberg.org/cache/epub/2600/pg2600.txt
 fi
+
+head -c 10M </dev/urandom >random
+ls -al

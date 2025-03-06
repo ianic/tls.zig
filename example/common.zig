@@ -182,7 +182,8 @@ pub const Counter = struct {
     }
 
     pub fn failRate(self: @This()) f64 {
-        return @as(f64, @floatFromInt(self.total() - self.success)) / @as(f64, @floatFromInt(self.total()));
+        const all = self.success + self.fail;
+        return @as(f64, @floatFromInt(all - self.success)) / @as(f64, @floatFromInt(all));
     }
 };
 

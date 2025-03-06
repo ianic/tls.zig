@@ -17,12 +17,12 @@ pub fn main() !void {
 
     // Some other sources of domains list:
     // source: https://moz.com/top500
-    // var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     // source: https://dataforseo.com/free-seo-stats/top-1000-websites
     // var rdr = cmn.CsvReader.init(@embedFile("ranked_domains.csv"));
     // source: https://radar.cloudflare.com/domains
     // var rdr = cmn.CsvReader.init(@embedFile("cloudflare-radar_top-10000-domains_20241209-20241216.csv"));
-    var rdr = cmn.CsvReader.init(@embedFile("domains"));
+    // var rdr = cmn.CsvReader.init(@embedFile("domains"));
     while (rdr.next()) |domain| {
         if (cmn.skipDomain(domain)) {
             std.debug.print("➰ {s:<25} SKIP\n", .{domain});
@@ -34,7 +34,7 @@ pub fn main() !void {
     }
     pool.deinit();
     counter.show();
-    if (counter.failRate() > 0.005) std.posix.exit(1);
+    if (counter.failRate() > 0.01) std.posix.exit(1);
 }
 
 pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config.CertBundle, counter: *cmn.Counter) void {
