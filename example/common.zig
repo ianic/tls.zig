@@ -230,11 +230,7 @@ pub fn get(
     }
     defer tcp.close();
     // Set socket timeout
-    // (make it buildable with master and previous version)
-    const read_timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
-        .{ .tv_sec = 10, .tv_usec = 0 }
-    else
-        .{ .sec = 10, .usec = 0 };
+    const read_timeout: std.posix.timeval = .{ .sec = 10, .usec = 0 };
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
     try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
