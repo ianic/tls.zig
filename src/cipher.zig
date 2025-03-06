@@ -265,7 +265,7 @@ fn Aead12Type(comptime AeadType: type) type {
             cleartext: []const u8,
         ) ![]const u8 {
             const record_len = record.header_len + explicit_iv_len + cleartext.len + auth_tag_len;
-            if (buf.len < record_len) return error.BufferOverflow;
+            if (buf.len < record_len) return error.TlsCipherNoSpaceLeft;
 
             const header = buf[0..record.header_len];
             const explicit_iv = buf[record.header_len..][0..explicit_iv_len];
@@ -299,7 +299,7 @@ fn Aead12Type(comptime AeadType: type) type {
             const overhead = explicit_iv_len + auth_tag_len;
             if (rec.payload.len < overhead) return error.TlsDecryptError;
             const cleartext_len = rec.payload.len - overhead;
-            if (buf.len < cleartext_len) return error.BufferOverflow;
+            if (buf.len < cleartext_len) return error.TlsCipherNoSpaceLeft;
 
             const explicit_iv = rec.payload[0..explicit_iv_len];
             const ciphertext = rec.payload[explicit_iv_len..][0..cleartext_len];
@@ -358,7 +358,7 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             cleartext: []const u8,
         ) ![]const u8 {
             const record_len = record.header_len + cleartext.len + auth_tag_len;
-            if (buf.len < record_len) return error.BufferOverflow;
+            if (buf.len < record_len) return error.TlsCipherNoSpaceLeft;
 
             const ciphertext = buf[record.header_len..][0..cleartext.len];
             const auth_tag = buf[record.header_len + ciphertext.len ..][0..auth_tag_len];
@@ -389,7 +389,7 @@ fn Aead12ChaChaType(comptime AeadType: type) type {
             const overhead = auth_tag_len;
             if (rec.payload.len < overhead) return error.TlsDecryptError;
             const cleartext_len = rec.payload.len - overhead;
-            if (buf.len < cleartext_len) return error.BufferOverflow;
+            if (buf.len < cleartext_len) return error.TlsCipherNoSpaceLeft;
 
             const ciphertext = rec.payload[0..cleartext_len];
             const auth_tag = rec.payload[cleartext_len..][0..auth_tag_len];
@@ -473,7 +473,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
         ) ![]const u8 {
             const payload_len = cleartext.len + 1 + auth_tag_len;
             const record_len = record.header_len + payload_len;
-            if (buf.len < record_len) return error.BufferOverflow;
+            if (buf.len < record_len) return error.TlsCipherNoSpaceLeft;
 
             const header = buf[0..record.header_len];
             header.* = record.header(.application_data, payload_len);
@@ -512,7 +512,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             const overhead = auth_tag_len + 1;
             if (rec.payload.len < overhead) return error.TlsDecryptError;
             const ciphertext_len = rec.payload.len - auth_tag_len;
-            if (buf.len < ciphertext_len) return error.BufferOverflow;
+            if (buf.len < ciphertext_len) return error.TlsCipherNoSpaceLeft;
 
             const ciphertext = rec.payload[0..ciphertext_len];
             const auth_tag = rec.payload[ciphertext_len..][0..auth_tag_len];
@@ -588,7 +588,7 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             content_type: proto.ContentType,
             cleartext: []const u8,
         ) ![]const u8 {
-            if (buf.len < self.recordLen(cleartext.len)) return error.BufferOverflow;
+            if (buf.len < self.recordLen(cleartext.len)) return error.TlsCipherNoSpaceLeft;
             const cleartext_idx = record.header_len + iv_len; // position of cleartext in buf
             @memcpy(buf[cleartext_idx..][0..cleartext.len], cleartext);
 
@@ -646,7 +646,7 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             const iv = rec.payload[0..iv_len];
             const ciphertext = rec.payload[iv_len..];
 
-            if (buf.len < ciphertext.len + additional_data_len) return error.BufferOverflow;
+            if (buf.len < ciphertext.len + additional_data_len) return error.TlsCipherNoSpaceLeft;
             // ---------- buf ---------------
             // ad | ------ plaintext --------
             // ad | cleartext | mac | padding

@@ -69,9 +69,7 @@ pub fn Connection(comptime Stream: type) type {
             const content_type, const data = c.nextRecord() catch |err| {
                 // Write alert on tls errors.
                 // Stream errors return to the caller.
-                if (std.mem.startsWith(u8, @errorName(err), "Tls") or
-                    std.mem.startsWith(u8, @errorName(err), "TlsAlert") or
-                    err == error.BufferOverflow)
+                if (mem.startsWith(u8, @errorName(err), "Tls"))
                     try c.writeAlert(err);
                 return err;
             } orelse return null;
@@ -143,11 +141,11 @@ pub fn Connection(comptime Stream: type) type {
                 TlsDecodeError,
                 TlsBadRecordMac,
                 TlsIllegalParameter,
-                BufferOverflow,
+                TlsCipherNoSpaceLeft,
             };
         pub const WriteError = Stream.WriteError ||
             error{
-                BufferOverflow,
+                TlsCipherNoSpaceLeft,
                 TlsUnexpectedMessage,
             };
 
