@@ -1,15 +1,10 @@
 #!/bin/bash -e
 
 declare -a single=(
-    "test-tls13-finished.py -n 1000
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 16777183'
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 16777167'
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 196608'
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 131072'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 16777183'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 16777167'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 196608'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 131072'
+    "test-tls13-zero-length-data.py
+     -x 'zero-len app data with large padding interleaved in handshake'
+     -x 'zero-len app data with padding interleaved in handshake'
+     -x 'zero-length app data interleaved in handshake'
     "
 )
 
@@ -23,25 +18,28 @@ declare -a tests=(
     "test-tls13-invalid-ciphers.py"
     "test-tls13-nociphers.py"
     "test-tls13-legacy-version.py"
-    "test-tls13-record-layer-limits.py -e 'too big ClientHello msg, with 16168 bytes of padding' -e 'max size of Finished msg, with 16587 bytes of record layer padding TLS_AES_128_GCM_SHA256' -e 'max size of Finished msg, with 16587 bytes of record layer padding TLS_CHACHA20_POLY1305_SHA256' -e 'too big plaintext, size: 2**14 - 8, with an additional 9 bytes of padding, cipher TLS_AES_128_GCM_SHA256' -e 'too big plaintext, size: 2**14 - 8, with an additional 9 bytes of padding, cipher TLS_CHACHA20_POLY1305_SHA256'"
+    "test-tls13-record-layer-limits.py"
     "test-tls13-record-padding.py"
     "test-tls13-pkcs-signature.py"
 
-    # we dont't support records longer than 16, so disabling that cases
+    # we dont't support records longer than 16K, expect those to fail
     "test-tls13-finished.py
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 16777183'
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 16777167'
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 196608'
-        -e 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 131072'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 16777183'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 16777167'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 196608'
-        -e 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 131072'
+        -x 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 16777183'
+        -x 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 16777167'
+        -x 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 196608'
+        -x 'padding - cipher TLS_AES_128_GCM_SHA256, pad_byte 0, pad_left 0, pad_right 131072'
+        -x 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 16777183'
+        -x 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 16777167'
+        -x 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 196608'
+        -x 'padding - cipher TLS_AES_256_GCM_SHA384, pad_byte 0, pad_left 0, pad_right 131072'
     "
 
+    # those three require unexpected_message alert but we are returning decode_error which is just fine, expect to fail
+    "test-tls13-zero-length-data.py
+        -x 'zero-len app data with large padding interleaved in handshake'
+        -x 'zero-len app data with padding interleaved in handshake'
+        -x 'zero-length app data interleaved in handshake'"
 
-    # those three require unexpected_message alert but we are returning decode_error which is just fine, so skipping
-    "test-tls13-zero-length-data.py -e 'zero-len app data with large padding interleaved in handshake' -e 'zero-len app data with padding interleaved in handshake' -e 'zero-length app data interleaved in handshake'"
     "test-tls13-zero-content-type.py"
     "test-tls13-unencrypted-alert.py"
     "test-tls13-empty-alert.py"
@@ -82,7 +80,6 @@ declare -a tests=(
         -e 'check that fuzzed signatures are rejected. Malformed rsa - xor 0x40 at 0'
         -e 'check that fuzzed signatures are rejected. Malformed rsa - xor 0x80 at 0'
         "
-
 
     "test-tls13-ecdsa-in-certificate-verify.py -p 4434
         -s 'ecdsa_secp256r1_sha256 ecdsa_secp384r1_sha384 rsa_pss_rsae_sha256 rsa_pss_rsae_sha384 rsa_pss_rsae_sha512 ed25519 rsa_pkcs1_sha1 rsa_pkcs1_sha256 rsa_pkcs1_sha384'

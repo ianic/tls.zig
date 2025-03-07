@@ -512,6 +512,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             const overhead = auth_tag_len + 1;
             if (rec.payload.len < overhead) return error.TlsDecryptError;
             const ciphertext_len = rec.payload.len - auth_tag_len;
+            if (ciphertext_len > max_cleartext_len + 1) return error.TlsRecordOverflow;
             if (buf.len < ciphertext_len) return error.TlsCipherNoSpaceLeft;
 
             const ciphertext = rec.payload[0..ciphertext_len];

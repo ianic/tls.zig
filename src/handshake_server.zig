@@ -365,6 +365,7 @@ pub fn Handshake(comptime Stream: type) type {
 
         fn readClientHello(h: *HandshakeT) !void {
             var d = try h.rec_rdr.nextDecoder();
+            if (d.payload.len > cipher.max_cleartext_len) return error.TlsRecordOverflow;
             try d.expectContentType(.handshake);
             h.transcript.update(d.payload);
 
