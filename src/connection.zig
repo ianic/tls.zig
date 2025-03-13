@@ -416,31 +416,40 @@ test "client/server connection" {
     }
 }
 
+/// Asynchronous, non-blocking tls connection. Does not depend on inner network
+/// stream reader. For use in io_uring or similar completion based io.
+///
+/// This implementation works for both client and server tls handsake type; that
+/// is why it is generic over handshake type and options.
+///
+/// Handler should connect this library with upstream application and downstream
+/// tcp connection.
+///
+/// Handler methods which will be called:
+///
+///   onConnect()           - notification that tls handshake is done
+///   onRecv(cleartext)     - cleartext data to pass to the application
+///   send(buf)             - ciphertext to pass to the underlying tcp connection
+///
+/// Interface provided to the handler:
+///
+///   onConnect()        - should be called after tcp connection is established
+///   onRecv(ciphertext) - data received on the underlying tcp connection
+///   send               - data to send by the underlying tcp connection
+///   onSend             - notification that tcp is done coping buffer to the kernel
+///
+/// Handler should establish tcp connection and call onConnect(). That will
+/// fire handler.send with tls hello (in the case of client handshake type).
+/// For each raw tcp data handler should call onRecv(). During handshake that
+/// data will be consumed here. When handshake succeeds we will have cipher,
+/// release handshake and call handler.onRecv() with decrypted cleartext data.
+///
+/// After handshake handler can call send with cleartext data, that will be
+/// encrypted and pass to handler.send(). Any raw ciphertext received
+/// on tcp should be pass to onRecv() to decrypt and pass to
+/// handler.onRecv().
+///
 pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Options: type) type {
-    // ClientType has to have this api:
-    //
-    //   onHandshake()              - notification that tcp handshake is done.
-    //   onRecvCleartext(cleartext) - cleartext data to pass to application.
-    //   sendCiphertext(buf)        - ciphertext to pass to server (tcp connection).
-    //
-    // Api provided to the client:
-    //
-    //   onConnect        - should be called after tcp client connection is established
-    //   onRecv           - data received from the server
-    //   send             - data to send to the server
-    //   onSend           - tcp is done coping buffer to the kernel
-    //
-    // Client should establish tcp connection and call startHandshake. That will
-    // fire client.sendCiphertext with tls hello. For each raw tcp data client
-    // will call onRecv. During handshake that data will be consumed here. When
-    // handshake succeeds we will have cipher, release handshake and call
-    // client.onHandshake.
-    //
-    // After that client should call send with cleartext data, that will be
-    // encrypted and pass to client.sendCiphertext. Any raw ciphertext received
-    // on tcp should be pass to onRecv to decrypt and pass to
-    // client.onRecvCleartext.
-    //
     return struct {
         const Self = @This();
 
@@ -465,55 +474,62 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                 self.allocator.destroy(handshake);
         }
 
-        // ----------------- client api
+        // ----------------- Handler interface
 
-        /// Client has established tcp connection, start tls handshake
-        pub fn connect(self: *Self) !void {
+        /// Notification that tcp connection has been established. For client
+        /// tls handshake type this will start tls handshake.
+        pub fn onConnect(self: *Self) !void {
             try self.handshakeSend();
         }
 
-        /// `bytes` are received on plain tcp connection. Use it in handshake or
-        /// if handshake is done decrypt and send to client.
-        pub fn recv(self: *Self, bytes: []u8) !usize {
+        /// Notification that underlying tcp connection has received data. It
+        /// will be used in handshake or if handshake is done it will be
+        /// decrypted and handler's onRecv will be called with cleartext data.
+        pub fn onRecv(self: *Self, ciphertext: []u8) !usize {
             return if (self.handshake) |_|
-                try self.handshakeRecv(bytes)
+                try self.handshakeRecv(ciphertext)
             else
-                try self.decrypt(bytes);
+                try self.decrypt(ciphertext);
         }
 
-        /// Client sends data; encrypt it and return to client via sendCiphertext.
-        pub fn send(self: *Self, bytes: []const u8) !void {
+        /// Handler call this when need to send data. Cleartext data will be
+        /// encrypted and sent to the underlying tcp connection by calling
+        /// handler's send method with ciphertext data.
+        pub fn send(self: *Self, cleartext: []const u8) !void {
             if (self.handshake != null) return error.InvalidState;
             const chp = &(self.cipher orelse return error.InvalidState);
 
             var index: usize = 0;
-            while (index < bytes.len) {
+            while (index < cleartext.len) {
                 // Split into max cleartext buffers
-                const n = @min(bytes.len, cipher.max_cleartext_len);
-                const buf = bytes[index..][0..n];
+                const n = @min(cleartext.len, cipher.max_cleartext_len);
+                const buf = cleartext[index..][0..n];
                 index += n;
 
-                // allocate ciphertext record buffer and encrypt into that buffer
+                // Allocate ciphertext record buffer and encrypt into that buffer
                 const rec_buf = try self.allocator.alloc(u8, chp.recordLen(buf.len));
                 errdefer self.allocator.free(rec_buf);
                 const rec = try chp.encrypt(rec_buf, .application_data, buf);
                 assert(rec.len == rec_buf.len);
-                // send ciphertext record
-                try self.handler.sendZc(rec);
+                // Send ciphertext record.
+                // Allocated record need to be alive while onSend callback if fired.
+                try self.handler.send(rec);
             }
         }
 
-        /// Buffer allocated in send is copied to the kernel, safe to free it
-        /// now.
-        pub fn onSend(self: *Self, buf: []const u8) void {
+        /// Notification that buffer allocated in send is copied to the kernel,
+        /// it is safe to free it now.
+        pub fn onSend(self: *Self, ciphertext: []const u8) void {
             if (self.handshake) |_| {
+                // Nothing to release during handshake, handshake uses static
+                // write buffer.
                 self.checkHandshakeDone();
             } else {
-                self.allocator.free(buf);
+                self.allocator.free(ciphertext);
             }
         }
 
-        // ----------------- client api
+        // ----------------- Handler interface end
 
         /// NOTE: decrypt reuses provided ciphertext buf for cleartext data
         fn decrypt(self: *Self, buf: []u8) !usize {
@@ -525,7 +541,7 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                 switch (content_type) {
                     .application_data => {},
                     .handshake => {
-                        // TODO handle key_update and new_session_ticket separately
+                        // TODO: handle key_update and new_session_ticket separately
                         continue;
                     },
                     .alert => {
@@ -540,7 +556,7 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                 }
 
                 assert(content_type == .application_data);
-                self.handler.onRecv(@constCast(cleartext));
+                try self.handler.onRecv(@constCast(cleartext));
             }
             return rdr.bytesRead();
         }
@@ -570,7 +586,7 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
         fn handshakeSend(self: *Self) !void {
             var handshake = self.handshake orelse return;
             if (try handshake.send()) |buf|
-                try self.handler.sendZc(buf);
+                try self.handler.send(buf);
         }
     };
 }
