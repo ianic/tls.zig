@@ -454,11 +454,11 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
         const Self = @This();
 
         allocator: mem.Allocator,
-        handler: *Handler,
+        handler: Handler,
         handshake: ?*HandshakeType = null,
         cipher: ?Cipher = null,
 
-        pub fn init(allocator: mem.Allocator, handler: *Handler, opt: Options) !Self {
+        pub fn init(allocator: mem.Allocator, handler: Handler, opt: Options) !Self {
             const handshake = try allocator.create(HandshakeType);
             errdefer allocator.destroy(handshake);
             try handshake.init(opt);
