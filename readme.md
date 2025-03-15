@@ -95,7 +95,7 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
 
 ```zig
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.load(allocator, "example/cert/localhost_ec/cert.pem", "example/cert/localhost_ec/key.pem");
     defer auth.deinit(allocator);
     
     // Tcp listener
