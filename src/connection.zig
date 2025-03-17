@@ -502,7 +502,7 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
             var index: usize = 0;
             while (index < cleartext.len) {
                 // Split into max cleartext buffers
-                const n = @min(cleartext.len, cipher.max_cleartext_len);
+                const n = @min(cleartext[index..].len, cipher.max_cleartext_len);
                 const buf = cleartext[index..][0..n];
                 index += n;
 
