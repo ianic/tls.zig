@@ -13,11 +13,11 @@ pub fn main() !void {
     // Load server certificate key pair
     var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
+    // try auth.bundle.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     // // Load ca to check client certificate
-    // var client_root_ca: Certificate.Bundle = .{};
+    // var client_root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
     // defer client_root_ca.deinit(allocator);
-    // try client_root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     // Tcp listener
     const port = 9443;
