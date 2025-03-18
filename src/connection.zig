@@ -429,6 +429,8 @@ test "client/server connection" {
 ///
 ///   onConnect()           - notification that tls handshake is done
 ///   onRecv(cleartext)     - cleartext data to pass to the application
+///                           returning true stops any additional processing
+///                           on the buffer
 ///   send(buf)             - ciphertext to pass to the underlying tcp connection
 ///
 /// Interface provided to the handler:
@@ -556,7 +558,9 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                 }
 
                 assert(content_type == .application_data);
-                try self.handler.onRecv(@constCast(cleartext));
+                if (try self.handler.onRecv(@constCast(cleartext)) == false) {
+                    return;
+                }
             }
             return rdr.bytesRead();
         }
