@@ -531,17 +531,27 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
 
         // ----------------- Handler interface end
 
-        /// NOTE: decrypt reuses provided ciphertext buf for cleartext data
-        fn decrypt(self: *Self, buf: []u8) !usize {
+        /// NOTE: decrypt reuses provided ciphertext buffer for cleartext data
+        fn decrypt(self: *Self, ciphertext: []u8) !usize {
             const chp = &(self.cipher orelse return error.InvalidState);
 
-            var rdr = record.bufferReader(buf);
+            // Part of the ciphertext buffer filled with cleartext
+            var cleartext_len: usize = 0;
+
+            var rdr = record.bufferReader(ciphertext);
             while (true) {
-                const content_type, const cleartext = try rdr.nextDecrypt(chp) orelse break;
+                // Find full tls record
+                const rec = (try rdr.next()) orelse break;
+                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+
+                // Decrypt record
+                const content_type, const cleartext = try chp.decrypt(ciphertext[cleartext_len..], rec);
+
                 switch (content_type) {
-                    .application_data => {},
+                    // Move cleartext pointer
+                    .application_data => cleartext_len += cleartext.len,
                     .handshake => {
-                        // TODO: handle key_update and new_session_ticket separately
+                        // TODO: handle key_update and new_session_ticket
                         continue;
                     },
                     .alert => {
@@ -549,15 +559,12 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                         try proto.Alert.parse(cleartext[0..2].*).toError();
                         return error.EndOfFile; // close notify received
                     },
-                    else => {
-                        //log.err("unexpected content_type {}", .{content_type});
-                        return error.TlsUnexpectedMessage;
-                    },
+                    else => return error.TlsUnexpectedMessage,
                 }
-
-                assert(content_type == .application_data);
-                try self.handler.onRecv(@constCast(cleartext));
             }
+
+            if (cleartext_len > 0)
+                try self.handler.onRecv(ciphertext[0..cleartext_len]);
             return rdr.bytesRead();
         }
 
