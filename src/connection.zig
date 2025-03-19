@@ -499,22 +499,33 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
             if (self.handshake != null) return error.InvalidState;
             const chp = &(self.cipher orelse return error.InvalidState);
 
-            var index: usize = 0;
-            while (index < cleartext.len) {
-                // Split into max cleartext buffers
-                const n = @min(cleartext[index..].len, cipher.max_cleartext_len);
-                const buf = cleartext[index..][0..n];
-                index += n;
+            // Calculate required ciphertext buffer len
+            const chunks = cleartext.len / cipher.max_cleartext_len;
+            const ciphertext_buf_len = if (chunks == 0)
+                chp.recordLen(cleartext.len)
+            else brk: {
+                const last_chunk_len = cleartext.len - cipher.max_cleartext_len * chunks;
+                break :brk chp.recordLen(cipher.max_cleartext_len) * chunks +
+                    if (last_chunk_len == 0) 0 else chp.recordLen(last_chunk_len);
+            };
 
-                // Allocate ciphertext record buffer and encrypt into that buffer
-                const rec_buf = try self.allocator.alloc(u8, chp.recordLen(buf.len));
-                errdefer self.allocator.free(rec_buf);
-                const rec = try chp.encrypt(rec_buf, .application_data, buf);
-                assert(rec.len == rec_buf.len);
-                // Send ciphertext record.
-                // Allocated record need to be alive while onSend callback if fired.
-                try self.handler.send(rec);
+            // Allocate ciphertext buffer
+            const ciphertext = try self.allocator.alloc(u8, ciphertext_buf_len);
+            errdefer self.allocator.free(ciphertext);
+
+            // Fill ciphertext with encrypted tls records
+            var cleartext_index: usize = 0;
+            var ciphertext_index: usize = 0;
+            while (cleartext_index < cleartext.len) {
+                const cleartext_record_len = @min(cleartext[cleartext_index..].len, cipher.max_cleartext_len);
+                const cleartext_record = cleartext[cleartext_index..][0..cleartext_record_len];
+                const ciphertext_record = try chp.encrypt(ciphertext[ciphertext_index..], .application_data, cleartext_record);
+                cleartext_index += cleartext_record_len;
+                ciphertext_index += ciphertext_record.len;
             }
+
+            assert(ciphertext_index == ciphertext.len);
+            try self.handler.send(ciphertext);
         }
 
         /// Notification that buffer allocated in send is copied to the kernel,
