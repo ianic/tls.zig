@@ -544,11 +544,18 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
 
         /// NOTE: decrypt reuses provided ciphertext buffer for cleartext data
         fn decrypt(self: *Self, ciphertext: []u8) !usize {
-            const chp = &(self.cipher orelse return error.InvalidState);
-
             // Part of the ciphertext buffer filled with cleartext
             var cleartext_len: usize = 0;
+            const ret = self.decrypt_(ciphertext, &cleartext_len);
+            if (cleartext_len > 0)
+                try self.handler.onRecv(ciphertext[0..cleartext_len]);
+            return ret;
+        }
 
+        /// Returns number of bytes consumed from ciphertext.
+        /// cleartext_len defines part of ciphertext with decrypted cleartext data.
+        fn decrypt_(self: *Self, ciphertext: []u8, cleartext_len: *usize) !usize {
+            const chp = &(self.cipher orelse return error.InvalidState);
             var rdr = record.bufferReader(ciphertext);
             while (true) {
                 // Find full tls record
@@ -556,11 +563,11 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                 if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
                 // Decrypt record
-                const content_type, const cleartext = try chp.decrypt(ciphertext[cleartext_len..], rec);
+                const content_type, const cleartext = try chp.decrypt(ciphertext[cleartext_len.*..], rec);
 
                 switch (content_type) {
                     // Move cleartext pointer
-                    .application_data => cleartext_len += cleartext.len,
+                    .application_data => cleartext_len.* += cleartext.len,
                     .handshake => {
                         // TODO: handle key_update and new_session_ticket
                         continue;
@@ -573,9 +580,6 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                     else => return error.TlsUnexpectedMessage,
                 }
             }
-
-            if (cleartext_len > 0)
-                try self.handler.onRecv(ciphertext[0..cleartext_len]);
             return rdr.bytesRead();
         }
 
