@@ -608,3 +608,55 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
         }
     };
 }
+
+test "async decrypt" {
+    const Handler = struct {
+        const Self = @This();
+        allocator: mem.Allocator,
+        bytes: []u8 = &.{},
+
+        pub fn onRecv(self: *Self, cleartext: []const u8) !void {
+            // append cleartext to self.bytes
+            self.bytes = try self.allocator.realloc(self.bytes, self.bytes.len + cleartext.len);
+            @memcpy(self.bytes[self.bytes.len - cleartext.len ..], cleartext);
+        }
+    };
+    var handler: Handler = .{
+        .allocator = testing.allocator,
+    };
+    defer testing.allocator.free(handler.bytes);
+
+    var client_cipher, const server_cipher = cipher.testCiphers();
+
+    var conn: Async(*Handler, void, void) = .{
+        .allocator = undefined,
+        .handshake = null,
+        .cipher = server_cipher,
+        .handler = &handler,
+    };
+    defer conn.deinit();
+
+    var ciphertext: [1024]u8 = undefined;
+    var ciphertext_len: usize = 0;
+
+    var cleartext: [512]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    prng.random().bytes(&cleartext);
+
+    { // expect handler.onRecv to be called with cleartext
+        ciphertext_len = (try client_cipher.encrypt(&ciphertext, .application_data, &cleartext)).len;
+        try testing.expectEqual(ciphertext_len, try conn.decrypt(ciphertext[0..ciphertext_len]));
+        try testing.expectEqualSlices(u8, handler.bytes, &cleartext);
+    }
+    { // expect handler.onRecv to be called with cleartext and decrypt to return error.EndOfFile
+        // split cleartext into two tls records
+        ciphertext_len = (try client_cipher.encrypt(&ciphertext, .application_data, cleartext[0 .. cleartext.len / 2])).len;
+        ciphertext_len += (try client_cipher.encrypt(ciphertext[ciphertext_len..], .application_data, cleartext[cleartext.len / 2 ..])).len;
+        // add close notify alert record at the end
+        ciphertext_len += (try client_cipher.encrypt(ciphertext[ciphertext_len..], .alert, &proto.Alert.closeNotify())).len;
+        try testing.expectEqual(580, ciphertext_len);
+
+        try testing.expectError(error.EndOfFile, conn.decrypt(ciphertext[0..ciphertext_len]));
+        try testing.expectEqualSlices(u8, handler.bytes[cleartext.len..], &cleartext);
+    }
+}

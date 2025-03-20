@@ -1028,3 +1028,48 @@ fn encryptDecrypt(client_cipher: *Cipher, server_cipher: *Cipher) !void {
         try testing.expectEqual(.application_data, content_type);
     }
 }
+
+const data13 = @import("testdata/tls13.zig");
+
+/// Pair of ciphers based on keys from well-known key/iv pairs
+pub fn testCiphers() struct { Cipher, Cipher } {
+    const client_cipher: Cipher = .{ .AES_256_GCM_SHA384 = .{
+        .encrypt_secret = undefined,
+        .decrypt_secret = undefined,
+        .encrypt_key = data13.client_application_key,
+        .decrypt_key = data13.server_application_key,
+        .encrypt_iv = data13.client_application_iv,
+        .decrypt_iv = data13.server_application_iv,
+    } };
+    const server_cipher: Cipher = .{ .AES_256_GCM_SHA384 = .{
+        .encrypt_secret = undefined,
+        .decrypt_secret = undefined,
+        .encrypt_key = data13.server_application_key,
+        .decrypt_key = data13.client_application_key,
+        .encrypt_iv = data13.server_application_iv,
+        .decrypt_iv = data13.client_application_iv,
+    } };
+    return .{ client_cipher, server_cipher };
+}
+
+test testCiphers {
+    var client_cipher, var server_cipher = testCiphers();
+    var buffer: [1024]u8 = undefined;
+    {
+        const payload = "ping";
+        const ciphertext = try client_cipher.encrypt(&buffer, .application_data, payload);
+        try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, ciphertext);
+
+        const content_type, const cleartext = try server_cipher.decrypt(&buffer, record.Record.init(ciphertext));
+        try testing.expectEqualStrings(payload, cleartext);
+        try testing.expectEqual(.application_data, content_type);
+    }
+    {
+        const close_notify = &proto.Alert.closeNotify();
+        const ciphertext = try client_cipher.encrypt(&buffer, .alert, close_notify);
+
+        const content_type, const cleartext = try server_cipher.decrypt(&buffer, record.Record.init(ciphertext));
+        try testing.expectEqualStrings(close_notify, cleartext);
+        try testing.expectEqual(.alert, content_type);
+    }
+}
