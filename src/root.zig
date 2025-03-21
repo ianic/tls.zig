@@ -55,6 +55,19 @@ pub const asyn = struct {
     }
 };
 
+pub const nb = struct {
+    const NonBlocking = @import("connection.zig").NonBlocking;
+    const _hc = @import("handshake_client.zig");
+    const _hs = @import("handshake_server.zig");
+
+    pub fn Client() type {
+        return NonBlocking(_hc.Async, _hc.Options);
+    }
+    pub fn Server() type {
+        return NonBlocking(_hs.Async, _hs.Options);
+    }
+};
+
 test {
     _ = @import("handshake_common.zig");
     _ = @import("handshake_server.zig");
