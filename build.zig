@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
         "client_auth",
         "client_std",
         "fuzz_server",
+        "http_get_nb",
     };
     inline for (examples) |path| {
         const source_file = "example/" ++ path ++ ".zig";

@@ -856,3 +856,134 @@ pub fn NonBlocking(comptime HandshakeType: type, comptime Options: type) type {
         }
     };
 }
+
+pub const NBConnection = struct {
+    const Self = @This();
+
+    cipher: Cipher,
+
+    pub fn init(c: Cipher) Self {
+        return .{ .cipher = c };
+    }
+
+    /// Required ciphertext buffer length for the given cleartext length.
+    pub fn encryptedLength(self: *Self, cleartext_len: usize) usize {
+        const records_count = cleartext_len / cipher.max_cleartext_len;
+
+        // if we have cipher return exact buffer size
+        if (self.cipher) |*chp| {
+            return if (records_count == 0)
+                chp.recordLen(cleartext_len)
+            else brk: {
+                const last_chunk_len = cleartext_len - cipher.max_cleartext_len * records_count;
+                break :brk chp.recordLen(cipher.max_cleartext_len) * records_count +
+                    if (last_chunk_len == 0) 0 else chp.recordLen(last_chunk_len);
+            };
+        }
+
+        // max, works for all ciphers
+        return cipher.max_ciphertext_record_len * (1 + records_count);
+    }
+
+    /// Encrypts cleartext into ciphertext.
+    /// If ciphertext.len is >= encryptedLength(cleartext.len) whole
+    /// cleartext will be consumed.
+    pub fn encrypt(
+        self: *Self,
+        /// Cleartext data to encrypt
+        cleartext: []const u8,
+        /// Write buffer for ciphertext; encrypted data
+        ciphertext: []u8,
+    ) !struct {
+        /// Number of bytes consumed from cleartext
+        cleartext_pos: usize = 0,
+        /// Unused part of the provided cleartext buffer
+        unused_cleartext: []const u8,
+        /// Encrypted ciphertext data
+        ciphertext: []u8,
+    } {
+        var cleartext_pos: usize = 0;
+        var ciphertext_pos: usize = 0;
+        while (cleartext_pos < cleartext.len) {
+            const cleartext_record_len = @min(cleartext[cleartext_pos..].len, cipher.max_cleartext_len);
+            if (self.cipher.recordLen(cleartext_record_len) > (ciphertext.len - ciphertext_pos)) break; // not enough space in ciphertext
+            const cleartext_record = cleartext[cleartext_pos..][0..cleartext_record_len];
+            const ciphertext_record = try self.cipher.encrypt(
+                ciphertext[ciphertext_pos..],
+                .application_data,
+                cleartext_record,
+            );
+            cleartext_pos += cleartext_record_len;
+            ciphertext_pos += ciphertext_record.len;
+        }
+        return .{
+            .cleartext_pos = cleartext_pos,
+            .unused_cleartext = cleartext[cleartext_pos..],
+            .ciphertext = ciphertext[0..ciphertext_pos],
+        };
+    }
+
+    /// Decrypts ciphertext into cleartext.
+    /// NOTE: It is safe to reuses ciphertext buffer for cleartext data.
+    pub fn decrypt(
+        self: *Self,
+        /// Ciphertext data recieved from the other side of the tls connection
+        ciphertext: []const u8,
+        /// Write buffer for cleartext; decrypted data
+        cleartext: []u8,
+    ) !struct {
+        /// Number of bytes consumed from provided ciphertext buffer
+        ciphertext_pos: usize,
+        /// Unconsumed part of the provided ciphertext buffer
+        unused_ciphertext: []const u8,
+        /// Decrypted cleartext data
+        cleartext: []u8,
+        /// Is clear notify alert received
+        closed: bool = false,
+    } {
+        // Part of the ciphertext buffer filled with cleartext
+        var cleartext_len: usize = 0;
+        // TODO: rethink this const cast, no needed here to be mutable
+        var rdr = record.bufferReader(@constCast(ciphertext));
+        while (true) {
+            // Find full tls record
+            const rec = (try rdr.next()) orelse break;
+            if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+
+            // Decrypt record
+            const content_type, const cleartext_rec = try self.cipher.decrypt(cleartext[cleartext_len..], rec);
+
+            switch (content_type) {
+                // Move cleartext pointer
+                .application_data => cleartext_len += cleartext_rec.len,
+                .handshake => {
+                    // TODO: handle key_update and new_session_ticket
+                    continue;
+                },
+                .alert => {
+                    if (cleartext.len < 2) return error.TlsUnexpectedMessage;
+                    try proto.Alert.parse(cleartext_rec[0..2].*).toError();
+                    // return error.EndOfFile;
+                    // close notify received
+                    return .{
+                        .ciphertext_pos = rdr.bytesRead(),
+                        .unused_ciphertext = ciphertext[rdr.bytesRead()..],
+                        .cleartext = cleartext[0..cleartext_len],
+                        .closed = true,
+                    };
+                },
+                else => return error.TlsUnexpectedMessage,
+            }
+        }
+
+        return .{
+            .ciphertext_pos = rdr.bytesRead(),
+            .unused_ciphertext = ciphertext[rdr.bytesRead()..],
+            .cleartext = cleartext[0..cleartext_len],
+        };
+    }
+
+    pub fn close(self: *Self, ciphertext: []u8) ![]const u8 {
+        return try self.cipher.encrypt(ciphertext, .alert, &proto.Alert.closeNotify());
+    }
+};

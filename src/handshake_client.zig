@@ -994,6 +994,9 @@ test "handshake verify server finished message" {
     try h.readServerFlight2();
 }
 
+//TODO: remove this
+const max_ciphertext_record_len = cipher.max_ciphertext_record_len;
+
 pub const Async = struct {
     const Self = @This();
     pub const Inner = Handshake([]u8);
@@ -1001,7 +1004,8 @@ pub const Async = struct {
     // inner sync handshake
     inner: Inner = undefined,
     opt: Options = undefined,
-    buffer: [cipher.max_ciphertext_record_len]u8 = undefined,
+    //TODO: remove this
+    buffer: [max_ciphertext_record_len]u8 = undefined,
     state: State = .none,
 
     const State = enum {
@@ -1017,7 +1021,7 @@ pub const Async = struct {
         }
     };
 
-    pub fn init(self: *Self, opt: Options) !void {
+    pub fn init(self: *Self, opt: Options) !Self {
         self.* = .{
             .inner = Inner.init(&self.buffer, undefined),
             .opt = opt,
@@ -1026,7 +1030,7 @@ pub const Async = struct {
         self.state = .init;
     }
 
-    // Returns null if there is nothing to send at this state
+    /// Returns null if there is nothing to send at this state
     pub fn send(self: *Self) !?[]const u8 {
         switch (self.state) {
             .init => {
@@ -1037,14 +1041,16 @@ pub const Async = struct {
             .server_flight_1 => {
                 const buf = try self.inner.clientFlight2(self.opt);
                 self.state.next();
+                if (self.done()) self.inner.updateDiagnostic(self.opt);
                 return buf;
             },
             else => return null,
         }
     }
 
-    // Returns number of bytes consumed from buf
+    /// Returns number of bytes consumed from buf
     pub fn recv(self: *Self, buf: []u8) !usize {
+        if (buf.len == 0) return 0;
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
 
@@ -1059,20 +1065,62 @@ pub const Async = struct {
             .client_flight_2 => {
                 try self.inner.serverFlight2(self.opt);
                 self.state.next();
+                if (self.done()) self.inner.updateDiagnostic(self.opt);
             },
-            else => return error.TlsUnexpectedMessage,
+            else => return 0,
         }
 
         return rdr.bytesRead();
     }
 
-    pub fn done(self: *Self) bool {
-        const is_done = self.state == .server_flight_2 or
+    /// True when handshake is successfully finished
+    pub fn done(self: Self) bool {
+        return self.state == .server_flight_2 or
             (self.inner.tls_version == .tls_1_3 and self.state == .client_flight_2);
-        if (is_done) {
-            self.inner.updateDiagnostic(self.opt);
-        }
-        return is_done;
+    }
+
+    /// Runs next handshake step.
+    pub fn run(
+        self: *Self,
+        /// Data received from the peer
+        recv_buf: []u8,
+        /// Scratch buffer where data to be sent to the peer will be prepared
+        send_buf: []u8,
+    ) !struct {
+        /// Number of bytes consumed from recv_buf
+        recv_pos: usize,
+        /// Number of bytes prepared in send_buf
+        send_pos: usize,
+        /// Unused part of the recv_buf,
+        unused_recv: []const u8,
+        /// Part of the send_buf that should be sent to the peer
+        send: []const u8,
+    } {
+        if (self.done()) return .{
+            .recv_pos = 0,
+            .send_pos = 0,
+            .unused_recv = &.{},
+            .send = &.{},
+        };
+        self.inner.buffer = send_buf;
+
+        const recv_pos = self.recv(recv_buf) catch |err| switch (err) {
+            error.EndOfStream => 0,
+            else => return err,
+        };
+
+        const send_pos: usize = if (try self.send()) |buf| buf.len else 0;
+        return .{
+            .recv_pos = recv_pos,
+            .send_pos = send_pos,
+            .unused_recv = recv_buf[recv_pos..],
+            .send = send_buf[0..send_pos],
+        };
+    }
+
+    /// Cipher produced in handshake, null until successful handshake.
+    pub fn cipher(self: Self) ?Cipher {
+        return if (self.done()) self.inner.cipher else null;
     }
 };
 
