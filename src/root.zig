@@ -83,14 +83,12 @@ test "non blocking handshake and connection" {
 
     // client/server handshake produces ciphers
     const cli_cipher, const srv_cipher = brk: {
-        var cli: nb.HandshakeClient = undefined;
-        try cli.init(.{
+        var cli = nb.HandshakeClient.init(.{
             .root_ca = .{},
             .host = &.{},
             .insecure_skip_verify = true,
         });
-        var srv: nb.HandshakeServer = undefined;
-        srv.init(.{ .auth = null });
+        var srv = nb.HandshakeServer.init(.{ .auth = null });
 
         // client flight1; client hello is in buf1
         var cr = try cli.run(&sc_buf, &cs_buf);

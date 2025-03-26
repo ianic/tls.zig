@@ -182,9 +182,9 @@ pub const Cipher = union(CipherSuite) {
         };
     }
 
-    pub fn recordLen(c: *Cipher, cleartext_len: usize) usize {
-        return switch (c.*) {
-            inline else => |*f| f.recordLen(cleartext_len),
+    pub fn recordLen(c: Cipher, cleartext_len: usize) usize {
+        return switch (c) {
+            inline else => |f| f.recordLen(cleartext_len),
         };
     }
 

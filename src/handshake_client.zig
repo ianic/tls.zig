@@ -994,9 +994,6 @@ test "handshake verify server finished message" {
     try h.readServerFlight2();
 }
 
-//TODO: remove this
-const max_ciphertext_record_len = cipher.max_ciphertext_record_len;
-
 pub const Async = struct {
     const Self = @This();
     pub const Inner = Handshake([]u8);
@@ -1004,8 +1001,6 @@ pub const Async = struct {
     // inner sync handshake
     inner: Inner = undefined,
     opt: Options = undefined,
-    //TODO: remove this
-    buffer: [max_ciphertext_record_len]u8 = undefined,
     state: State = .none,
 
     const State = enum {
@@ -1021,17 +1016,18 @@ pub const Async = struct {
         }
     };
 
-    pub fn init(self: *Self, opt: Options) !Self {
-        self.* = .{
-            .inner = Inner.init(&self.buffer, undefined),
+    pub fn init(opt: Options) Self {
+        var inner = Inner.init(undefined, undefined);
+        inner.initKeys(opt) catch unreachable;
+        return .{
+            .inner = inner,
             .opt = opt,
+            .state = .init,
         };
-        try self.inner.initKeys(opt);
-        self.state = .init;
     }
 
     /// Returns null if there is nothing to send at this state
-    pub fn send(self: *Self) !?[]const u8 {
+    fn send(self: *Self) !?[]const u8 {
         switch (self.state) {
             .init => {
                 const buf = try self.inner.clientFlight1(self.opt);
@@ -1049,12 +1045,13 @@ pub const Async = struct {
     }
 
     /// Returns number of bytes consumed from buf
-    pub fn recv(self: *Self, buf: []u8) !usize {
+    fn recv(self: *Self, buf: []const u8) !usize {
         if (buf.len == 0) return 0;
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
 
-        var rdr = record.bufferReader(buf);
+        // TODO: fix const cast
+        var rdr = record.bufferReader(@constCast(buf));
         self.inner.rec_rdr = &rdr;
 
         switch (self.state) {
@@ -1083,7 +1080,7 @@ pub const Async = struct {
     pub fn run(
         self: *Self,
         /// Data received from the peer
-        recv_buf: []u8,
+        recv_buf: []const u8,
         /// Scratch buffer where data to be sent to the peer will be prepared
         send_buf: []u8,
     ) !struct {
@@ -1125,8 +1122,8 @@ pub const Async = struct {
 };
 
 test "async handshake" {
-    var ah: Async = .{};
-    try ah.init(.{
+    var buffer: [cipher.max_ciphertext_record_len]u8 = undefined;
+    var ah = Async.init(.{
         .host = "example.ulfheim.net",
         .insecure_skip_verify = true,
         .root_ca = .{},
@@ -1135,6 +1132,7 @@ test "async handshake" {
     });
     var h = &ah.inner;
     { // update secrets to well known from example
+        h.buffer = &buffer;
         h.client_random = data13.client_random;
         h.dh_kp.x25519_kp = .{
             .public_key = data13.client_public_key,

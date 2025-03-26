@@ -456,12 +456,11 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
         allocator: mem.Allocator,
         handler: Handler,
         handshake: ?*HandshakeType = null,
-        cipher: ?Cipher = null,
+        connection: ?NBConnection = null,
 
         pub fn init(allocator: mem.Allocator, handler: Handler, opt: Options) !Self {
             const handshake = try allocator.create(HandshakeType);
-            errdefer allocator.destroy(handshake);
-            try handshake.init(opt);
+            handshake.* = HandshakeType.init(opt);
             return .{
                 .allocator = allocator,
                 .handler = handler,
@@ -474,157 +473,68 @@ pub fn Async(comptime Handler: type, comptime HandshakeType: type, comptime Opti
                 self.allocator.destroy(handshake);
         }
 
+        fn handshakeRun(self: *Self, recv_buf: []const u8) !usize {
+            var handshake = self.handshake orelse unreachable;
+
+            var send_buf: [cipher.max_ciphertext_record_len]u8 = undefined;
+            const res = try handshake.run(recv_buf, &send_buf);
+            if (res.send.len > 0) {
+                const buf = try self.allocator.dupe(u8, res.send);
+                try self.handler.send(buf);
+            }
+
+            if (handshake.done()) {
+                self.connection = NBConnection.init(handshake.inner.cipher);
+                self.allocator.destroy(handshake);
+                self.handshake = null;
+                self.handler.onConnect();
+            }
+            return res.recv_pos;
+        }
+
         // ----------------- Handler interface
 
         /// Notification that tcp connection has been established. For client
         /// tls handshake type this will start tls handshake.
         pub fn onConnect(self: *Self) !void {
-            try self.handshakeSend();
+            _ = try self.handshakeRun(&.{});
         }
 
         /// Notification that underlying tcp connection has received data. It
         /// will be used in handshake or if handshake is done it will be
         /// decrypted and handler's onRecv will be called with cleartext data.
         pub fn onRecv(self: *Self, ciphertext: []u8) !usize {
-            return if (self.handshake) |_|
-                try self.handshakeRecv(ciphertext)
-            else
-                try self.decrypt(ciphertext);
+            if (self.handshake) |_| return try self.handshakeRun(ciphertext);
+
+            var conn = &(self.connection orelse unreachable);
+            const res = try conn.decrypt(ciphertext, ciphertext);
+            if (res.cleartext.len > 0)
+                try self.handler.onRecv(res.cleartext);
+            return res.ciphertext_pos;
         }
 
         /// Handler call this when need to send data. Cleartext data will be
         /// encrypted and sent to the underlying tcp connection by calling
         /// handler's send method with ciphertext data.
         pub fn send(self: *Self, cleartext: []const u8) !void {
-            if (self.handshake != null) return error.InvalidState;
+            var conn = &(self.connection orelse return error.InvalidState);
+            if (cleartext.len == 0) return;
+
             // Allocate ciphertext buffer
-            const ciphertext = try self.allocator.alloc(u8, self.encryptedLength(cleartext.len));
+            const ciphertext = try self.allocator.alloc(u8, conn.encryptedLength(cleartext.len));
             errdefer self.allocator.free(ciphertext);
             // Fill ciphertext with encrypted tls records
-            const cleartext_index, const ciphertext_index = try self.encrypt(cleartext, ciphertext);
-            //
-            assert(ciphertext_index == ciphertext.len);
-            assert(cleartext_index == cleartext.len);
+            const res = try conn.encrypt(cleartext, ciphertext);
+            assert(res.cleartext_pos == cleartext.len);
+            assert(res.unused_cleartext.len == 0);
+            assert(res.ciphertext.len == ciphertext.len);
             try self.handler.send(ciphertext);
-        }
-
-        /// Required ciphertext buffer length for the given cleartext length.
-        fn encryptedLength(self: *Self, cleartext_len: usize) usize {
-            const records_count = cleartext_len / cipher.max_cleartext_len;
-
-            // if we have cipher return exact buffer size
-            if (self.cipher) |*chp| {
-                return if (records_count == 0)
-                    chp.recordLen(cleartext_len)
-                else brk: {
-                    const last_chunk_len = cleartext_len - cipher.max_cleartext_len * records_count;
-                    break :brk chp.recordLen(cipher.max_cleartext_len) * records_count +
-                        if (last_chunk_len == 0) 0 else chp.recordLen(last_chunk_len);
-                };
-            }
-
-            // max, works for all ciphers
-            return cipher.max_ciphertext_record_len * (1 + records_count);
-        }
-
-        /// Encrypts cleartext into ciphertext. Returns number of bytes consumed
-        /// from cleartext and number of bytes written to the ciphertext.
-        fn encrypt(self: *Self, cleartext: []const u8, ciphertext: []u8) !struct { usize, usize } {
-            const chp = &(self.cipher orelse return error.InvalidState);
-            var cleartext_index: usize = 0;
-            var ciphertext_index: usize = 0;
-            while (cleartext_index < cleartext.len) {
-                const cleartext_record_len = @min(cleartext[cleartext_index..].len, cipher.max_cleartext_len);
-                if (chp.recordLen(cleartext_record_len) > (ciphertext.len - ciphertext_index)) break; // not enough space in ciphertext
-                const cleartext_record = cleartext[cleartext_index..][0..cleartext_record_len];
-                const ciphertext_record = try chp.encrypt(ciphertext[ciphertext_index..], .application_data, cleartext_record);
-                cleartext_index += cleartext_record_len;
-                ciphertext_index += ciphertext_record.len;
-            }
-            return .{ cleartext_index, ciphertext_index };
         }
 
         /// Notification that buffer allocated in send is copied to the kernel,
         /// it is safe to free it now.
         pub fn onSend(self: *Self, ciphertext: []const u8) void {
-            if (self.handshake) |_| {
-                // Nothing to release during handshake, handshake uses static
-                // write buffer.
-                self.checkHandshakeDone();
-            } else {
-                self.allocator.free(ciphertext);
-            }
-        }
-
-        // ----------------- Handler interface end
-
-        /// NOTE: decrypt reuses provided ciphertext buffer for cleartext data
-        fn decrypt(self: *Self, ciphertext: []u8) !usize {
-            // Part of the ciphertext buffer filled with cleartext
-            var cleartext_len: usize = 0;
-            const ret = self.decrypt_(ciphertext, &cleartext_len);
-            if (cleartext_len > 0)
-                try self.handler.onRecv(ciphertext[0..cleartext_len]);
-            return ret;
-        }
-
-        /// Returns number of bytes consumed from ciphertext.
-        /// cleartext_len defines part of ciphertext with decrypted cleartext data.
-        fn decrypt_(self: *Self, ciphertext: []u8, cleartext_len: *usize) !usize {
-            const chp = &(self.cipher orelse return error.InvalidState);
-            var rdr = record.bufferReader(ciphertext);
-            while (true) {
-                // Find full tls record
-                const rec = (try rdr.next()) orelse break;
-                if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-
-                // Decrypt record
-                const content_type, const cleartext = try chp.decrypt(ciphertext[cleartext_len.*..], rec);
-
-                switch (content_type) {
-                    // Move cleartext pointer
-                    .application_data => cleartext_len.* += cleartext.len,
-                    .handshake => {
-                        // TODO: handle key_update and new_session_ticket
-                        continue;
-                    },
-                    .alert => {
-                        if (cleartext.len < 2) return error.TlsUnexpectedMessage;
-                        try proto.Alert.parse(cleartext[0..2].*).toError();
-                        return error.EndOfFile; // close notify received
-                    },
-                    else => return error.TlsUnexpectedMessage,
-                }
-            }
-            return rdr.bytesRead();
-        }
-
-        fn handshakeRecv(self: *Self, buf: []u8) !usize {
-            var handshake = self.handshake orelse unreachable;
-            const n = handshake.recv(buf) catch |err| switch (err) {
-                error.EndOfStream => 0,
-                else => return err,
-            };
-            self.checkHandshakeDone();
-            if (n > 0) try self.handshakeSend();
-            return n;
-        }
-
-        fn checkHandshakeDone(self: *Self) void {
-            var handshake = self.handshake orelse unreachable;
-            if (!handshake.done()) return;
-
-            self.cipher = handshake.inner.cipher;
-            self.allocator.destroy(handshake);
-            self.handshake = null;
-
-            self.handler.onConnect();
-        }
-
-        fn handshakeSend(self: *Self) !void {
-            var handshake = self.handshake orelse return;
-            if (try handshake.send()) |buf|
-                try self.handler.send(buf);
+            self.allocator.free(ciphertext);
         }
     };
 }
@@ -867,22 +777,12 @@ pub const NBConnection = struct {
     }
 
     /// Required ciphertext buffer length for the given cleartext length.
-    pub fn encryptedLength(self: *Self, cleartext_len: usize) usize {
+    pub fn encryptedLength(self: Self, cleartext_len: usize) usize {
         const records_count = cleartext_len / cipher.max_cleartext_len;
-
-        // if we have cipher return exact buffer size
-        if (self.cipher) |*chp| {
-            return if (records_count == 0)
-                chp.recordLen(cleartext_len)
-            else brk: {
-                const last_chunk_len = cleartext_len - cipher.max_cleartext_len * records_count;
-                break :brk chp.recordLen(cipher.max_cleartext_len) * records_count +
-                    if (last_chunk_len == 0) 0 else chp.recordLen(last_chunk_len);
-            };
-        }
-
-        // max, works for all ciphers
-        return cipher.max_ciphertext_record_len * (1 + records_count);
+        if (records_count == 0) return self.cipher.recordLen(cleartext_len);
+        const last_chunk_len = cleartext_len - cipher.max_cleartext_len * records_count;
+        return self.cipher.recordLen(cipher.max_cleartext_len) * records_count +
+            if (last_chunk_len == 0) 0 else self.cipher.recordLen(last_chunk_len);
     }
 
     /// Encrypts cleartext into ciphertext.
@@ -963,8 +863,6 @@ pub const NBConnection = struct {
                 .alert => {
                     if (cleartext.len < 2) return error.TlsUnexpectedMessage;
                     try proto.Alert.parse(cleartext_rec[0..2].*).toError();
-                    // return error.EndOfFile;
-                    // close notify received
                     return .{
                         .ciphertext_pos = rdr.bytesRead(),
                         .unused_ciphertext = ciphertext[rdr.bytesRead()..],

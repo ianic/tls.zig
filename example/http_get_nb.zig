@@ -31,8 +31,7 @@ pub fn main() !void {
             .cipher_suites = tls.config.cipher_suites.secure,
             .key_log_callback = tls.config.key_log.callback,
         };
-        var handshake: tls.nb.HandshakeClient = undefined;
-        try handshake.init(config);
+        var handshake = tls.nb.HandshakeClient.init(config);
 
         while (true) { // run handshake until done
             const res = try handshake.run(recv_buf[0..recv_pos], &send_buf);

@@ -537,9 +537,6 @@ test "make certificate request" {
     try testing.expectEqualSlices(u8, &expected, actual);
 }
 
-//TODO: remove this
-const max_ciphertext_record_len = cipher.max_ciphertext_record_len;
-
 pub const Async = struct {
     const Self = @This();
     pub const Inner = Handshake([]u8);
@@ -547,8 +544,6 @@ pub const Async = struct {
     // inner sync handshake
     inner: Inner = undefined,
     opt: Options = undefined,
-    //TODO: remove this
-    buffer: [max_ciphertext_record_len]u8 = undefined,
     state: State = .none,
 
     const State = enum {
@@ -563,17 +558,18 @@ pub const Async = struct {
         }
     };
 
-    pub fn init(self: *Self, opt: Options) void {
-        self.* = .{
-            .inner = Inner.init(&self.buffer, undefined),
+    pub fn init(opt: Options) Self {
+        var inner = Inner.init(undefined, undefined);
+        inner.initKeys(opt);
+        return .{
             .opt = opt,
+            .inner = inner,
+            .state = .init,
         };
-        self.inner.initKeys(opt);
-        self.state = .init;
     }
 
     /// Returns null if there is nothing to send at this state
-    pub fn send(self: *Self) !?[]const u8 {
+    fn send(self: *Self) !?[]const u8 {
         switch (self.state) {
             .client_flight_1 => {
                 const buf = try self.inner.serverFlight(self.opt);
@@ -585,13 +581,13 @@ pub const Async = struct {
     }
 
     /// Returns number of bytes consumed from buf
-    pub fn recv(self: *Self, buf: []u8) !usize {
+    fn recv(self: *Self, buf: []const u8) !usize {
         if (buf.len == 0) return 0;
 
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
 
-        var rdr = record.bufferReader(buf);
+        var rdr = record.bufferReader(@constCast(buf));
         self.inner.rec_rdr = &rdr;
 
         switch (self.state) {
@@ -618,7 +614,7 @@ pub const Async = struct {
     pub fn run(
         self: *Self,
         /// Data received from the peer
-        recv_buf: []u8,
+        recv_buf: []const u8,
         /// Scratch buffer where data to be sent to the peer will be prepared
         send_buf: []u8,
     ) !struct {
