@@ -537,7 +537,7 @@ test "make certificate request" {
     try testing.expectEqualSlices(u8, &expected, actual);
 }
 
-pub const Async = struct {
+pub const NonBlock = struct {
     const Self = @This();
     pub const Inner = Handshake([]u8);
 

@@ -994,7 +994,7 @@ test "handshake verify server finished message" {
     try h.readServerFlight2();
 }
 
-pub const Async = struct {
+pub const NonBlock = struct {
     const Self = @This();
     pub const Inner = Handshake([]u8);
 
@@ -1121,9 +1121,9 @@ pub const Async = struct {
     }
 };
 
-test "async handshake" {
+test "nonblock handshake" {
     var buffer: [cipher.max_ciphertext_record_len]u8 = undefined;
-    var ah = Async.init(.{
+    var ah = NonBlock.init(.{
         .host = "example.ulfheim.net",
         .insecure_skip_verify = true,
         .root_ca = .{},
@@ -1192,9 +1192,9 @@ test "note about sizes" {
     // values valid only for 64 bit platform, so skip in ci
     if (true) return error.SkipZigTest;
 
-    try testing.expectEqual(36576, @sizeOf(Async));
-    try testing.expectEqual(19792, @sizeOf(Handshake([]u8)));
-    try testing.expectEqual(14384, @sizeOf(DhKeyPair));
+    try testing.expectEqual(33920, @sizeOf(NonBlock));
+    try testing.expectEqual(33776, @sizeOf(Handshake([]u8)));
+    try testing.expectEqual(28368, @sizeOf(DhKeyPair));
     try testing.expectEqual(128, @sizeOf(Options));
     try testing.expectEqual(2792, @sizeOf(CertKeyPair));
     try testing.expectEqual(1736, @sizeOf(CertificateParser));
