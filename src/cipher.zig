@@ -723,8 +723,8 @@ pub const cipher_suites = struct {
         .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
     };
-    pub const tls12_week = [_]CipherSuite{
-        // week
+    pub const tls12_weak = [_]CipherSuite{
+        // weak
         .ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
         .ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
         .ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
@@ -748,9 +748,9 @@ pub const cipher_suites = struct {
     };
 
     pub const tls13 = &tls13_;
-    pub const tls12 = &(tls12_secure ++ tls12_week);
+    pub const tls12 = &(tls12_secure ++ tls12_weak);
     pub const secure = &(tls13_ ++ tls12_secure);
-    pub const all = &(tls13_ ++ tls12_secure ++ tls12_week);
+    pub const all = &(tls13_ ++ tls12_secure ++ tls12_weak);
 
     pub fn includes(list: []const CipherSuite, cs: CipherSuite) bool {
         for (list) |s| {
@@ -760,19 +760,19 @@ pub const cipher_suites = struct {
     }
 };
 
-// Week, secure, recommended grades are from https://ciphersuite.info/page/faq/
+// Weak, secure, recommended grades are from https://ciphersuite.info/page/faq/
 pub const CipherSuite = enum(u16) {
     // tls 1.2 cbc sha1
-    ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009, // week
-    ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013, // week
-    RSA_WITH_AES_128_CBC_SHA = 0x002F, // week
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009, // weak
+    ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013, // weak
+    RSA_WITH_AES_128_CBC_SHA = 0x002F, // weak
     // tls 1.2 cbc sha256
-    ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 = 0xc023, // week
-    ECDHE_RSA_WITH_AES_128_CBC_SHA256 = 0xc027, // week
-    RSA_WITH_AES_128_CBC_SHA256 = 0x003c, // week
+    ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 = 0xc023, // weak
+    ECDHE_RSA_WITH_AES_128_CBC_SHA256 = 0xc027, // weak
+    RSA_WITH_AES_128_CBC_SHA256 = 0x003c, // weak
     // tls 1.2 cbc sha384
-    ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 = 0xc024, // week
-    ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028, // week
+    ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 = 0xc024, // weak
+    ECDHE_RSA_WITH_AES_256_CBC_SHA384 = 0xc028, // weak
     // tls 1.2 gcm
     ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xc02b, // recommended
     ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 = 0xc02c, // recommended
