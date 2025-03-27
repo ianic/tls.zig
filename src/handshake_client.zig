@@ -714,8 +714,8 @@ pub fn Handshake(comptime Stream: type) type {
             // content of the server finished message is based on transcript
             // hash and master secret.
             {
-                const content_type, const server_finished =
-                    try h.rec_rdr.nextDecrypt(&h.cipher) orelse return error.EndOfStream;
+                const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
+                const content_type, const server_finished = try h.cipher.decrypt(h.buffer, rec);
                 if (content_type != .handshake)
                     return error.TlsUnexpectedMessage;
                 const expected = record.handshakeHeader(.finished, 12) ++ h.transcript.serverFinishedTls12(&h.master_secret);
@@ -996,7 +996,7 @@ test "handshake verify server finished message" {
 
 pub const NonBlock = struct {
     const Self = @This();
-    pub const Inner = Handshake([]u8);
+    pub const Inner = Handshake([]const u8);
 
     // inner sync handshake
     inner: Inner = undefined,
@@ -1050,8 +1050,7 @@ pub const NonBlock = struct {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
 
-        // TODO: fix const cast
-        var rdr = record.bufferReader(@constCast(buf));
+        var rdr = record.bufferReader(buf);
         self.inner.rec_rdr = &rdr;
 
         switch (self.state) {
@@ -1166,10 +1165,10 @@ test "nonblock handshake" {
     // parsing partial server flight message returns error.EndOfStream
     for (1..data13.server_flight_1.len - 1) |i| {
         const buf = data13.server_flight_1[0..i];
-        try testing.expectError(error.EndOfStream, ah.recv(@constCast(buf)));
+        try testing.expectError(error.EndOfStream, ah.recv(buf));
     }
 
-    const n = try ah.recv(@constCast(&(data13.server_flight_1 ++ "dummy footer".*)));
+    const n = try ah.recv(&(data13.server_flight_1 ++ "dummy footer".*));
     { // inspect
         try testing.expectEqual(data13.server_flight_1.len, n); // footer is not touched
         try testing.expectEqual(.tls_1_3, h.tls_version);
@@ -1184,7 +1183,7 @@ test "nonblock handshake" {
     try testing.expectEqualSlices(u8, &data13.client_flight_2, client_flight_2.?);
     try testing.expect(ah.done());
 
-    try testing.expectEqual(0, try ah.recv(@constCast("dummy footer")));
+    try testing.expectEqual(0, try ah.recv("dummy footer"));
     try testing.expect(ah.done());
 }
 

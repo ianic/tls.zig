@@ -36,7 +36,7 @@ pub fn reader(inner_reader: anytype) Reader(@TypeOf(inner_reader)) {
     return .{ .inner_reader = inner_reader };
 }
 
-pub fn bufferReader(buf: []u8) Reader([]u8) {
+pub fn bufferReader(buf: []const u8) Reader([]const u8) {
     return .{
         .inner_reader = undefined,
         .buffer = buf,
@@ -124,7 +124,7 @@ pub fn Reader(comptime InnerReader: type) type {
                 // block, cleartext has less length then ciphertext,
                 // cleartext starts from the beginning of the buffer, so
                 // ciphertext is always ahead of cleartext.
-                r.buffer[0..r.start],
+                @constCast(r.buffer[0..r.start]),
                 rec,
             );
         }
@@ -155,7 +155,7 @@ pub const Record = struct {
     }
 
     pub fn decoder(r: @This()) Decoder {
-        return Decoder.init(r.content_type, @constCast(r.payload));
+        return Decoder.init(r.content_type, r.payload);
     }
 };
 
@@ -164,7 +164,7 @@ pub const Decoder = struct {
     payload: []const u8,
     idx: usize = 0,
 
-    pub fn init(content_type: proto.ContentType, payload: []u8) Decoder {
+    pub fn init(content_type: proto.ContentType, payload: []const u8) Decoder {
         return .{
             .content_type = content_type,
             .payload = payload,
@@ -269,7 +269,7 @@ test Reader {
     }
 
     {
-        var fr = bufferReader(@constCast(&data12.server_responses));
+        var fr = bufferReader(&data12.server_responses);
         var n: usize = 0;
         for (expected) |e| {
             const rec = (try fr.next()).?;

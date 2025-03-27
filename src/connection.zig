@@ -492,8 +492,7 @@ pub const NonBlock = struct {
     } {
         // Part of the ciphertext buffer filled with cleartext
         var cleartext_len: usize = 0;
-        // TODO: rethink this const cast, no needed here to be mutable
-        var rdr = record.bufferReader(@constCast(ciphertext));
+        var rdr = record.bufferReader(ciphertext);
         while (true) {
             // Find full tls record
             const rec = (try rdr.next()) orelse break;

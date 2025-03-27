@@ -539,7 +539,7 @@ test "make certificate request" {
 
 pub const NonBlock = struct {
     const Self = @This();
-    pub const Inner = Handshake([]u8);
+    pub const Inner = Handshake([]const u8);
 
     // inner sync handshake
     inner: Inner = undefined,
@@ -587,7 +587,7 @@ pub const NonBlock = struct {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
 
-        var rdr = record.bufferReader(@constCast(buf));
+        var rdr = record.bufferReader(buf);
         self.inner.rec_rdr = &rdr;
 
         switch (self.state) {
