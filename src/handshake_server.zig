@@ -134,12 +134,15 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         fn clientFlight2(h: *HandshakeT, opt: Options) !void {
-            const app_cipher = brk: {
-                const application_secret = h.transcript.applicationSecret();
-                break :brk try Cipher.initTls13(h.cipher_suite, application_secret, .server);
+            // calculate application cipher before updating transcript in readClientFlight2
+            const application_secret = h.transcript.applicationSecret();
+            const app_cipher = try Cipher.initTls13(h.cipher_suite, application_secret, .server);
+            // set application cipher instead of EndOfStream error
+            h.readClientFlight2(opt) catch |err| {
+                if (err != error.EndOfStream) h.cipher = app_cipher;
+                return err;
             };
-            defer h.cipher = app_cipher;
-            try h.readClientFlight2(opt);
+            h.cipher = app_cipher;
         }
 
         fn serverFlight(h: *HandshakeT, opt: Options) ![]const u8 {
