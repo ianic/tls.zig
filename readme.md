@@ -61,7 +61,7 @@ If server requires client authentication set `auth` attribute in options. You ne
 
 ```zig
     // Prepare client authentication key pair
-    var auth = try tls.config.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, cert_dir, "cert.pem", "key.pem");
     defer auth.deinit(allocator);
 
     var conn = try tls.client(tcp, .{
@@ -95,7 +95,7 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
 
 ```zig
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
     
     // Tcp listener
