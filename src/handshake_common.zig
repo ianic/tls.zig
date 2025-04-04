@@ -47,7 +47,7 @@ pub const CertKeyPair = struct {
     /// bundle.
     key: PrivateKey,
 
-    pub fn load(
+    pub fn fromFilePath(
         allocator: std.mem.Allocator,
         dir: std.fs.Dir,
         cert_path: []const u8,
@@ -57,6 +57,21 @@ pub const CertKeyPair = struct {
         try bundle.addCertsFromFilePath(allocator, dir, cert_path);
 
         const key_file = try dir.openFile(key_path, .{});
+        defer key_file.close();
+        const key = try PrivateKey.fromFile(allocator, key_file);
+
+        return .{ .bundle = bundle, .key = key };
+    }
+
+    pub fn fromFilePathAbsolute(
+        allocator: std.mem.Allocator,
+        cert_path: []const u8,
+        key_path: []const u8,
+    ) !CertKeyPair {
+        var bundle: cert.Bundle = .{};
+        try bundle.addCertsFromFilePathAbsolute(allocator, cert_path);
+
+        const key_file = try std.fs.openFileAbsolute(key_path, .{});
         defer key_file.close();
         const key = try PrivateKey.fromFile(allocator, key_file);
 
@@ -78,6 +93,12 @@ pub const cert = struct {
     pub fn fromFilePath(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !Bundle {
         var bundle: Bundle = .{};
         try bundle.addCertsFromFilePath(allocator, dir, path);
+        return bundle;
+    }
+
+    pub fn fromFilePathAbsolute(allocator: std.mem.Allocator, path: []const u8) !Bundle {
+        var bundle: Bundle = .{};
+        try bundle.addCertsFromFilePathAbsolute(allocator, path);
         return bundle;
     }
 

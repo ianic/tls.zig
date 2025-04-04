@@ -11,7 +11,7 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
     // try auth.bundle.addCertsFromFilePath(allocator, dir, "minica.pem");
 

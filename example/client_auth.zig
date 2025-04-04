@@ -50,7 +50,7 @@ pub fn main() !void {
 
             // Prepare client authentication key pair
             const cert_dir = try dir.openDir(sub_path, .{});
-            var auth = try tls.config.CertKeyPair.load(allocator, cert_dir, "cert.pem", "key.pem");
+            var auth = try tls.config.CertKeyPair.fromFilePath(allocator, cert_dir, "cert.pem", "key.pem");
             defer auth.deinit(allocator);
 
             // Upgrade tcp connection to tls client

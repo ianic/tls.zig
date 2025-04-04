@@ -8,10 +8,10 @@ pub fn main() !void {
 
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var rsa_auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer rsa_auth.deinit(allocator);
 
-    var ec_auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var ec_auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer ec_auth.deinit(allocator);
 
     // ca to check client certificate
