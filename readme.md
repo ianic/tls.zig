@@ -27,7 +27,7 @@ To upgrade existing tcp connection to the tls connection call `tls.client`:
     defer tcp.close();
 
     // Load system root certificates
-    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls

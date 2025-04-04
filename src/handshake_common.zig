@@ -53,7 +53,7 @@ pub const CertKeyPair = struct {
         cert_path: []const u8,
         key_path: []const u8,
     ) !CertKeyPair {
-        var bundle: Certificate.Bundle = .{};
+        var bundle: cert.Bundle = .{};
         try bundle.addCertsFromFilePath(allocator, dir, cert_path);
 
         const key_file = try dir.openFile(key_path, .{});
@@ -68,27 +68,23 @@ pub const CertKeyPair = struct {
     }
 };
 
-pub const CertBundle = struct {
+pub const cert = struct {
     // A chain of one or more certificates.
     //
     // They are used to verify that certificate chain sent by the other side
     // forms valid trust chain.
-    bundle: Certificate.Bundle = .{},
+    pub const Bundle = std.crypto.Certificate.Bundle;
 
-    pub fn fromFile(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !CertBundle {
-        var bundle: Certificate.Bundle = .{};
+    pub fn fromFilePath(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !Bundle {
+        var bundle: Bundle = .{};
         try bundle.addCertsFromFilePath(allocator, dir, path);
-        return .{ .bundle = bundle };
+        return bundle;
     }
 
-    pub fn fromSystem(allocator: std.mem.Allocator) !CertBundle {
-        var bundle: Certificate.Bundle = .{};
+    pub fn fromSystem(allocator: std.mem.Allocator) !Bundle {
+        var bundle: Bundle = .{};
         try bundle.rescan(allocator);
-        return .{ .bundle = bundle };
-    }
-
-    pub fn deinit(cb: *CertBundle, allocator: std.mem.Allocator) void {
-        cb.bundle.deinit(allocator);
+        return bundle;
     }
 };
 
@@ -123,9 +119,9 @@ pub const CertificateBuilder = struct {
         var index: u32 = 0;
         while (index < certs.len) {
             const e = try Certificate.der.Element.parse(certs, index);
-            const cert = certs[index..e.slice.end];
-            try w.writeInt(@as(u24, @intCast(cert.len))); // certificate length
-            try w.write(cert); // certificate
+            const crt = certs[index..e.slice.end];
+            try w.writeInt(@as(u24, @intCast(crt.len))); // certificate length
+            try w.write(crt); // certificate
             try w.write(extensions); // certificate extensions
             index = e.slice.end;
         }
@@ -231,8 +227,8 @@ pub const CertificateParser = struct {
         const certs_len = try d.decode(u24);
         const start_idx = d.idx;
         while (d.idx - start_idx < certs_len) {
-            const cert_len = try d.decode(u24);
-            const cert = try d.slice(cert_len);
+            const crt_len = try d.decode(u24);
+            const crt = try d.slice(crt_len);
             if (tls_version == .tls_1_3) {
                 // certificate extensions present in tls 1.3
                 try d.skip(try d.decode(u16));
@@ -240,7 +236,7 @@ pub const CertificateParser = struct {
             if (trust_chain_established)
                 continue;
 
-            const subject = try (Certificate{ .buffer = cert, .index = 0 }).parse();
+            const subject = try (Certificate{ .buffer = crt, .index = 0 }).parse();
             if (last_cert) |pc| {
                 if (pc.verify(subject, h.now_sec)) {
                     last_cert = subject;

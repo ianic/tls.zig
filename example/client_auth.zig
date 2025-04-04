@@ -22,7 +22,7 @@ pub fn main() !void {
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const host = "localhost";

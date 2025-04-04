@@ -34,7 +34,7 @@ pub const config = struct {
     pub const PrivateKey = @import("PrivateKey.zig");
     pub const NamedGroup = proto.NamedGroup;
     pub const Version = proto.Version;
-    pub const CertBundle = common.CertBundle;
+    pub const cert = common.cert;
     pub const CertKeyPair = common.CertKeyPair;
 
     pub const cipher_suites = @import("cipher.zig").cipher_suites;
@@ -173,8 +173,6 @@ test {
     _ = @import("PrivateKey.zig");
 }
 
-pub const CertBundle = @compileError("deprecated: use config.CertBundle, see:https://github.com/ianic/tls.zig/commit/c028a2845d546298fdac3a1d3e3849090c8fc1ff");
-
 /// Callback based non-blocking tls connection. Does not depend on inner network
 /// stream reader. For use in io_uring or similar completion based io.
 ///
@@ -230,6 +228,7 @@ pub fn Callback(comptime Handler: type, comptime HandshakeType: type, comptime O
         pub fn deinit(self: *Self) void {
             if (self.handshake) |handshake|
                 self.allocator.destroy(handshake);
+            self.* = undefined;
         }
 
         fn handshakeRun(self: *Self, recv_buf: []const u8) !usize {

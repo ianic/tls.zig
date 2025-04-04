@@ -10,7 +10,7 @@ pub fn main() !void {
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = allocator, .n_jobs = 128 });
 
-    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     var counter: cmn.Counter = .{};
@@ -37,7 +37,7 @@ pub fn main() !void {
     if (counter.failRate() > 0.01) std.posix.exit(1);
 }
 
-pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config.CertBundle, counter: *cmn.Counter) void {
+pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) void {
     var diagnostic: tls.config.Client.Diagnostic = .{};
     var opt: tls.config.Client = .{
         .host = "",

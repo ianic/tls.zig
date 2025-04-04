@@ -10,7 +10,7 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     const domain = if (args.len > 1) args[1] else "cloudflare.com";
@@ -18,7 +18,7 @@ pub fn main() !void {
     if (fail_count > 0) std.posix.exit(1);
 }
 
-fn run(allocator: std.mem.Allocator, root_ca: tls.config.CertBundle, domain: []const u8) usize {
+fn run(allocator: std.mem.Allocator, root_ca: tls.config.cert.Bundle, domain: []const u8) usize {
     var fail_count: usize = 0;
     for (tls.config.cipher_suites.all) |cs| {
         cmn.get(allocator, domain, null, false, false, .{

@@ -81,7 +81,7 @@ test "server with ec key key pair" {
     var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth };
@@ -106,7 +106,7 @@ test "server with rsa key key pair" {
     var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth };
@@ -131,7 +131,7 @@ test "server request client authentication" {
     var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{
@@ -175,7 +175,7 @@ test "server require client authentication" {
     var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{
@@ -217,7 +217,7 @@ test "server send key update" {
     var auth = try tls.config.CertKeyPair.load(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth };

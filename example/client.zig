@@ -11,7 +11,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const dir = try std.fs.cwd().openDir("example/cert", .{});
-    var root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const opt = try parseArgs(allocator);
@@ -26,7 +26,7 @@ pub fn main() !void {
     }
 }
 
-fn thisLib(allocator: std.mem.Allocator, root_ca: tls.config.CertBundle, verbose: bool) !void {
+fn thisLib(allocator: std.mem.Allocator, root_ca: tls.config.cert.Bundle, verbose: bool) !void {
     // Make tcp connection
     var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
@@ -54,11 +54,11 @@ fn thisLib(allocator: std.mem.Allocator, root_ca: tls.config.CertBundle, verbose
     }
 }
 
-fn stdLib(allocator: std.mem.Allocator, root_ca: tls.config.CertBundle, verbose: bool) !void {
+fn stdLib(allocator: std.mem.Allocator, root_ca: tls.config.cert.Bundle, verbose: bool) !void {
     var tcp = try std.net.tcpConnectToHost(allocator, host, port);
     defer tcp.close();
 
-    var cli = try std.crypto.tls.Client.init(tcp, .{ .ca = .{ .bundle = root_ca.bundle }, .host = .{ .explicit = host } });
+    var cli = try std.crypto.tls.Client.init(tcp, .{ .ca = .{ .bundle = root_ca }, .host = .{ .explicit = host } });
 
     var buf: [16 * 1024]u8 = undefined;
     while (true) {

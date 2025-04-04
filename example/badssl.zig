@@ -9,7 +9,7 @@ pub fn main() !void {
     const sets = try readBadssl(allocator);
     defer sets.deinit();
 
-    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     for (sets.value) |set| {

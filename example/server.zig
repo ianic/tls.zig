@@ -16,7 +16,7 @@ pub fn main() !void {
     // try auth.bundle.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     // // Load ca to check client certificate
-    // var client_root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    // var client_root_ca = try tls.config.cert.fromFile(allocator, dir, "minica.pem");
     // defer client_root_ca.deinit(allocator);
 
     // Tcp listener

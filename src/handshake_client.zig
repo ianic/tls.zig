@@ -21,8 +21,8 @@ const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
 const DhKeyPair = common.DhKeyPair;
-const CertBundle = common.CertBundle;
 const CertKeyPair = common.CertKeyPair;
+const cert = common.cert;
 
 const log = std.log.scoped(.tls);
 
@@ -30,7 +30,7 @@ pub const Options = struct {
     host: []const u8,
     /// Set of root certificate authorities that clients use when verifying
     /// server certificates.
-    root_ca: CertBundle,
+    root_ca: cert.Bundle,
 
     /// Controls whether a client verifies the server's certificate chain and
     /// host name.
@@ -137,7 +137,7 @@ pub fn Handshake(comptime Stream: type) type {
 
             h.cert = .{
                 .host = opt.host,
-                .root_ca = opt.root_ca.bundle,
+                .root_ca = opt.root_ca,
                 .skip_verify = opt.insecure_skip_verify,
             };
         }
@@ -1197,6 +1197,6 @@ test "note about sizes" {
     try testing.expectEqual(128, @sizeOf(Options));
     try testing.expectEqual(2792, @sizeOf(CertKeyPair));
     try testing.expectEqual(1736, @sizeOf(CertificateParser));
-    try testing.expectEqual(48, @sizeOf(CertBundle));
+    try testing.expectEqual(48, @sizeOf(cert.Bundle));
     try testing.expectEqual(208, @sizeOf(Cipher));
 }

@@ -2,8 +2,9 @@ const std = @import("std");
 const tls = @import("tls");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    var dbga = std.heap.DebugAllocator(.{}){};
+    defer _ = dbga.deinit();
+    const allocator = dbga.allocator();
 
     const url = "https://ziglang.org";
     const uri = try std.Uri.parse(url);
@@ -15,7 +16,7 @@ pub fn main() !void {
     defer tcp.close();
 
     // Load system root certificates
-    var root_ca = try tls.config.CertBundle.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls

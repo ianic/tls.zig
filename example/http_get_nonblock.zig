@@ -24,7 +24,7 @@ pub fn main() !void {
 
     // Do the handshake, cipher is handshake result.
     const cipher = brk: {
-        var ca_bundle = try tls.config.CertBundle.fromSystem(allocator);
+        var ca_bundle = try tls.config.cert.fromSystem(allocator);
         defer ca_bundle.deinit(allocator);
         const config: tls.config.Client = .{
             .host = domain,

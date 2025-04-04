@@ -51,8 +51,8 @@ fn run(allocator: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) 
 }
 
 pub fn get(allocator: std.mem.Allocator, domain: []const u8) !void {
-    const root_ca = try tls.config.CertBundle.fromSystem(allocator);
-    var client: http.Client = .{ .allocator = allocator, .ca_bundle = root_ca.bundle };
+    const root_ca = try tls.config.cert.fromSystem(allocator);
+    var client: http.Client = .{ .allocator = allocator, .ca_bundle = root_ca };
     defer client.deinit();
 
     var url_buffer: [128]u8 = undefined;

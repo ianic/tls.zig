@@ -15,7 +15,7 @@ pub fn main() !void {
     defer ec_auth.deinit(allocator);
 
     // ca to check client certificate
-    var client_root_ca = try tls.config.CertBundle.fromFile(allocator, dir, "minica.pem");
+    var client_root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
     defer client_root_ca.deinit(allocator);
 
     const opt1: tls.config.Server = .{ .auth = &rsa_auth };

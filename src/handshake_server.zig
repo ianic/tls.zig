@@ -18,8 +18,8 @@ const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
 const DhKeyPair = common.DhKeyPair;
-const CertBundle = common.CertBundle;
 const CertKeyPair = common.CertKeyPair;
+const cert = common.cert;
 
 const log = std.log.scoped(.tls);
 
@@ -37,7 +37,7 @@ pub const Options = struct {
 pub const ClientAuth = struct {
     /// Set of root certificate authorities that server use when verifying
     /// client certificates.
-    root_ca: CertBundle,
+    root_ca: cert.Bundle,
 
     auth_type: Type = .require,
 
@@ -208,9 +208,9 @@ pub fn Handshake(comptime Stream: type) type {
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
             var handshake_state: proto.Handshake = .finished;
-            var cert: CertificateParser = undefined;
+            var crt_parser: CertificateParser = undefined;
             if (opt.client_auth) |client_auth| {
-                cert = .{ .root_ca = client_auth.root_ca.bundle, .host = "" };
+                crt_parser = .{ .root_ca = client_auth.root_ca, .host = "" };
                 handshake_state = .certificate;
             }
 
@@ -261,13 +261,13 @@ pub fn Handshake(comptime Stream: type) type {
                                         try d.skip(length);
                                         handshake_state = .finished;
                                     } else {
-                                        try cert.parseCertificate(&d, .tls_1_3);
+                                        try crt_parser.parseCertificate(&d, .tls_1_3);
                                         handshake_state = .certificate_verify;
                                     }
                                 },
                                 .certificate_verify => {
-                                    try cert.parseCertificateVerify(&d);
-                                    cert.verifySignature(h.transcript.clientCertificateVerify()) catch |err| return switch (err) {
+                                    try crt_parser.parseCertificateVerify(&d);
+                                    crt_parser.verifySignature(h.transcript.clientCertificateVerify()) catch |err| return switch (err) {
                                         error.TlsUnknownSignatureScheme => error.TlsIllegalParameter,
                                         else => error.TlsDecryptError,
                                     };
