@@ -132,7 +132,13 @@ pub fn Connection(comptime Stream: type) type {
 
         // read, write interface
 
-        pub const ReadError = Stream.ReadError || proto.Alert.Error ||
+        const _Stream = blk: {
+            const StreamInfo = @typeInfo(Stream);
+            if (StreamInfo == .pointer) break :blk StreamInfo.pointer.child;
+            break :blk Stream;
+        };
+
+        pub const ReadError = _Stream.ReadError || proto.Alert.Error ||
             error{
                 TlsBadVersion,
                 TlsUnexpectedMessage,
@@ -143,7 +149,7 @@ pub fn Connection(comptime Stream: type) type {
                 TlsIllegalParameter,
                 TlsCipherNoSpaceLeft,
             };
-        pub const WriteError = Stream.WriteError ||
+        pub const WriteError = _Stream.WriteError ||
             error{
                 TlsCipherNoSpaceLeft,
                 TlsUnexpectedMessage,
