@@ -1095,7 +1095,7 @@ pub const NonBlock = struct {
         if (self.done()) return .{
             .recv_pos = 0,
             .send_pos = 0,
-            .unused_recv = &.{},
+            .unused_recv = recv_buf,
             .send = &.{},
         };
         self.inner.buffer = send_buf;
