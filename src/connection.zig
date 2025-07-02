@@ -65,7 +65,7 @@ pub fn Connection(comptime Stream: type) type {
         /// Returns next record of cleartext data.
         /// Can be used in iterator like loop without memcpy to another buffer:
         ///   while (try client.next()) |buf| { ... }
-        pub fn next(c: *Self) ReadError!?[]const u8 {
+        pub fn next(c: *Self) !?[]const u8 {
             const content_type, const data = c.nextRecord() catch |err| {
                 // Write alert on tls errors.
                 // Stream errors return to the caller.
@@ -77,7 +77,7 @@ pub fn Connection(comptime Stream: type) type {
             return data;
         }
 
-        fn nextRecord(c: *Self) ReadError!?struct { proto.ContentType, []const u8 } {
+        fn nextRecord(c: *Self) !?struct { proto.ContentType, []const u8 } {
             if (c.eof()) return null;
             while (true) {
                 const content_type, const cleartext = try c.rec_rdr.nextDecrypt(&c.cipher) orelse return null;
@@ -132,38 +132,28 @@ pub fn Connection(comptime Stream: type) type {
 
         // read, write interface
 
-        pub const ReadError = Stream.ReadError || proto.Alert.Error ||
-            error{
-                TlsBadVersion,
-                TlsUnexpectedMessage,
-                TlsRecordOverflow,
-                TlsDecryptError,
-                TlsDecodeError,
-                TlsBadRecordMac,
-                TlsIllegalParameter,
-                TlsCipherNoSpaceLeft,
-            };
-        pub const WriteError = Stream.WriteError ||
-            error{
-                TlsCipherNoSpaceLeft,
-                TlsUnexpectedMessage,
-            };
-
-        pub const Reader = std.io.Reader(*Self, ReadError, read);
-        pub const Writer = std.io.Writer(*Self, WriteError, write);
-
-        pub fn reader(c: *Self) Reader {
-            return .{ .context = c };
+        pub fn reader(c: *Self) std.io.AnyReader {
+            return .{ .context = c, .readFn = readFn };
         }
 
-        pub fn writer(c: *Self) Writer {
-            return .{ .context = c };
+        pub fn writer(c: *Self) std.io.AnyWriter {
+            return .{ .context = c, .writeFn = writeFn };
+        }
+
+        fn readFn(context: *const anyopaque, bytes: []u8) !usize {
+            const c: *Self = @constCast(@ptrCast(@alignCast(context)));
+            return c.read(bytes);
+        }
+
+        fn writeFn(context: *const anyopaque, bytes: []const u8) !usize {
+            const c: *Self = @constCast(@ptrCast(@alignCast(context)));
+            return c.write(bytes);
         }
 
         /// Encrypts cleartext and writes it to the underlying stream as single
         /// tls record. Max single tls record payload length is 1<<14 (16K)
         /// bytes.
-        pub fn write(c: *Self, bytes: []const u8) WriteError!usize {
+        pub fn write(c: *Self, bytes: []const u8) !usize {
             const n = @min(bytes.len, cipher.max_cleartext_len);
             try c.writeRecord(.application_data, bytes[0..n]);
             return n;
@@ -171,14 +161,14 @@ pub fn Connection(comptime Stream: type) type {
 
         /// Encrypts cleartext and writes it to the underlying stream. If needed
         /// splits cleartext into multiple tls record.
-        pub fn writeAll(c: *Self, bytes: []const u8) WriteError!void {
+        pub fn writeAll(c: *Self, bytes: []const u8) !void {
             var index: usize = 0;
             while (index < bytes.len) {
                 index += try c.write(bytes[index..]);
             }
         }
 
-        pub fn read(c: *Self, buffer: []u8) ReadError!usize {
+        pub fn read(c: *Self, buffer: []u8) !usize {
             if (c.read_buf.len == 0) {
                 c.read_buf = try c.next() orelse return 0;
             }
@@ -190,7 +180,7 @@ pub fn Connection(comptime Stream: type) type {
 
         /// Returns the number of bytes read. If the number read is smaller than
         /// `buffer.len`, it means the stream reached the end.
-        pub fn readAll(c: *Self, buffer: []u8) ReadError!usize {
+        pub fn readAll(c: *Self, buffer: []u8) !usize {
             return c.readAtLeast(buffer, buffer.len);
         }
 
@@ -198,7 +188,7 @@ pub fn Connection(comptime Stream: type) type {
         /// the minimal number of times until the buffer has at least `len` bytes
         /// filled. If the number read is less than `len` it means the stream
         /// reached the end.
-        pub fn readAtLeast(c: *Self, buffer: []u8, len: usize) ReadError!usize {
+        pub fn readAtLeast(c: *Self, buffer: []u8, len: usize) !usize {
             assert(len <= buffer.len);
             var index: usize = 0;
             while (index < len) {
@@ -357,8 +347,6 @@ test "client/server connection" {
     const TestStream = struct {
         inner_stream: *BufReaderWriter,
         const Self = @This();
-        pub const ReadError = error{};
-        pub const WriteError = error{NoSpaceLeft};
         pub fn read(self: *Self, bytes: []u8) !usize {
             return try self.inner_stream.read(bytes);
         }
@@ -556,4 +544,19 @@ test "nonblock encrypt" {
     try testing.expectEqual(cleartext.len, res.cleartext_pos);
     try testing.expectEqual(26, res.ciphertext.len);
     try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, res.ciphertext);
+}
+
+test "issue_14 allow pointer stream type" {
+    {
+        const stream: std.net.Stream = undefined;
+        var conn = connection(stream);
+        _ = conn.reader();
+        _ = conn.writer();
+    }
+    {
+        const stream: *std.net.Stream = undefined;
+        var conn = connection(stream);
+        _ = conn.reader();
+        _ = conn.writer();
+    }
 }
