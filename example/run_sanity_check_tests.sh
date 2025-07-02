@@ -1,5 +1,6 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
 
+set -e
 cwd=$(git rev-parse --show-toplevel)
 cd $cwd
 

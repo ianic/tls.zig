@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/usr/bin/env bash
 
 declare -a single=(
     "test-tls13-zero-length-data.py
