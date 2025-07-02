@@ -11,7 +11,7 @@ jobs:
     name: Build and Test
     steps:
       - uses: actions/checkout@v3
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@v2
         with:
           version: master
 
