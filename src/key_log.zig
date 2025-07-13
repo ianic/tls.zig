@@ -55,11 +55,11 @@ pub fn formatLine(buf: []u8, label_: []const u8, client_random: []const u8, secr
     const w = fbs.writer();
     try w.print("{s} ", .{label_});
     for (client_random) |b| {
-        try std.fmt.formatInt(b, 16, .lower, .{ .width = 2, .fill = '0' }, w);
+        try w.print("{x:0>2}", .{b});
     }
     try w.writeByte(' ');
     for (secret) |b| {
-        try std.fmt.formatInt(b, 16, .lower, .{ .width = 2, .fill = '0' }, w);
+        try w.print("{x:0>2}", .{b});
     }
     try w.writeByte('\n');
     return fbs.getWritten();

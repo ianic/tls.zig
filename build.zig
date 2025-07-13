@@ -25,29 +25,38 @@ pub fn build(b: *std.Build) void {
     inline for (examples) |path| {
         const source_file = "example/" ++ path ++ ".zig";
         const name = comptime if (std.mem.indexOfScalar(u8, path, '/')) |pos| path[0..pos] else path;
-        const exe = b.addExecutable(.{
-            .name = name,
+        const exe_mod = b.createModule(.{
             .root_source_file = b.path(source_file),
             .target = target,
             .optimize = optimize,
+        });
+        const exe = b.addExecutable(.{
+            .name = name,
+            .root_module = exe_mod,
         });
         exe.root_module.addImport("tls", tls_module);
         setupExample(b, exe, name);
     }
 
-    const unit_tests = b.addTest(.{
+    const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const unit_tests = b.addTest(.{
+        .root_module = lib_mod,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
-    const integration_tests = b.addTest(.{
+    const integration_mod = b.createModule(.{
         .root_source_file = b.path("example/integration_test.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    const integration_tests = b.addTest(.{
+        .root_module = integration_mod,
     });
     integration_tests.root_module.addImport("tls", tls_module);
     const run_integration_tests = b.addRunArtifact(integration_tests);
