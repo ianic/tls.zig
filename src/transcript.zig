@@ -106,6 +106,12 @@ pub const Transcript = struct {
         }
     }
 
+    pub fn clearPreSharedSecret(t: *Transcript) void {
+        switch (t.tag) {
+            inline else => |h| @field(t, @tagName(h)).clearPreSharedSecret(),
+        }
+    }
+
     pub inline fn serverCertificateVerify(t: *Transcript) []const u8 {
         return switch (t.tag) {
             inline else => |h| &@field(t, @tagName(h)).serverCertificateVerify(),
@@ -292,6 +298,10 @@ fn TranscriptT(comptime Hash: type) type {
                 Hash.digest_length,
             );
             self.handshake_secret = Hkdf.extract(&[1]u8{0}, &ikm);
+        }
+
+        fn clearPreSharedSecret(self: *Self) void {
+            self.handshake_secret = null;
         }
 
         inline fn handshakeSecret(self: *Self, shared_key: []const u8) Transcript.Secret {

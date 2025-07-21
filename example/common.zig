@@ -4,13 +4,14 @@ const Certificate = std.crypto.Certificate;
 
 pub fn showDiagnostic(stats: *tls.config.Client.Diagnostic, domain: []const u8) void {
     std.debug.print(
-        "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n",
+        "\n{s}\n\t tls version: {s}\n\t cipher: {s}\n\t named group: {s}\n\t signature scheme: {s}\n\t session resumption: {}\n",
         .{
             domain,
             if (@intFromEnum(stats.tls_version) == 0) "none" else @tagName(stats.tls_version),
             if (@intFromEnum(stats.cipher_suite_tag) == 0) "none" else @tagName(stats.cipher_suite_tag),
             if (@intFromEnum(stats.named_group) == 0) "none" else @tagName(stats.named_group),
             if (@intFromEnum(stats.signature_scheme) == 0) "none" else @tagName(stats.signature_scheme),
+            stats.is_session_resumption,
         },
     );
     if (@intFromEnum(stats.client_signature_scheme) != 0) {

@@ -72,6 +72,7 @@ pub const Options = struct {
         named_group: proto.NamedGroup = @enumFromInt(0),
         signature_scheme: proto.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: proto.SignatureScheme = @enumFromInt(0),
+        is_session_resumption: bool = false,
     };
 
     /// Collects and stores session resumption tickets.
@@ -167,7 +168,10 @@ pub const Options = struct {
         }
 
         pub fn print(self: Self) !void {
-            std.debug.print("resumption tag: {}, used_tickets: {}\n", .{ self.hash_tag, self.used_tickets });
+            std.debug.print(
+                "resumption tag: {}, tickets: {} used_tickets: {}\n",
+                .{ self.hash_tag, self.tickets.items.len, self.used_tickets },
+            );
             for (self.tickets.items) |ticket| {
                 std.debug.print(
                     "  lifetime: {}, ticket age add: {}, nonce: {x}\n  ticket: {x}\n  secret: {x}\n\n",
@@ -210,6 +214,7 @@ pub fn Handshake(comptime Stream: type) type {
         // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_ml_kem768 = 64, x25519_kyber768d00 = 1120
         server_pub_key_buf: [2048]u8 = undefined,
         server_pub_key: []const u8 = undefined,
+        pre_shared_selected_identity: ?u16 = null,
 
         rec_rdr: *RecordReaderT, // tls record reader
         buffer: []u8, // scratch buffer used in all messages creation
@@ -295,14 +300,15 @@ pub fn Handshake(comptime Stream: type) type {
         /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
         ///
         pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !struct { Cipher, ?usize } {
-            defer h.updateDiagnostic(opt);
-            try h.initKeys(opt);
-
-            const resumption_ticket: ?Options.SessionResumption.Ticket =
+            var resumption_ticket: ?Options.SessionResumption.Ticket =
                 if (opt.session_resumption) |r|
                     r.popTicket()
                 else
                     null;
+
+            defer h.updateDiagnostic(opt, resumption_ticket != null);
+            try h.initKeys(opt);
+
             if (resumption_ticket) |ticket| {
                 h.transcript.use(opt.session_resumption.?.hash_tag);
                 h.transcript.setPreSharedSecret(ticket.secret, ticket.nonce);
@@ -310,6 +316,12 @@ pub fn Handshake(comptime Stream: type) type {
 
             try w.writeAll(try h.makeClientHello(opt, resumption_ticket)); // client flight 1
             try h.readServerFlight1(); // server flight 1
+
+            if (resumption_ticket != null and h.pre_shared_selected_identity == null) {
+                // server didn't accept resuption
+                resumption_ticket = null;
+                h.transcript.clearPreSharedSecret();
+            }
 
             if (resumption_ticket != null and h.cipher_suite.hash() != h.transcript.tag)
                 return error.TlsAlertIllegalParameter; // session resumption must use same hash as previous session
@@ -593,6 +605,9 @@ pub fn Handshake(comptime Stream: type) type {
                             h.server_pub_key = dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
                             if (len != h.server_pub_key.len + 4) return error.TlsIllegalParameter;
                         },
+                        .pre_shared_key => {
+                            h.pre_shared_selected_identity = try d.decode(u16);
+                        },
                         else => {
                             try d.skip(len);
                         },
@@ -669,7 +684,7 @@ pub fn Handshake(comptime Stream: type) type {
                                 .encrypted_extensions => {
                                     try d.skip(length);
                                     handshake_states = if (is_session_resumption)
-                                        &.{.finished}
+                                        &.{ .certificate_request, .certificate, .finished }
                                     else if (h.cert.skip_verify)
                                         &.{ .certificate_request, .certificate, .finished }
                                     else
@@ -881,12 +896,13 @@ pub fn Handshake(comptime Stream: type) type {
         }
 
         // Copy handshake parameters to opt.diagnostic
-        fn updateDiagnostic(h: *HandshakeT, opt: Options) void {
+        fn updateDiagnostic(h: *HandshakeT, opt: Options, is_session_resumption: bool) void {
             if (opt.diagnostic) |d| {
                 d.tls_version = h.tls_version;
                 d.cipher_suite_tag = h.cipher_suite;
                 d.named_group = h.named_group orelse @as(proto.NamedGroup, @enumFromInt(0x0000));
                 d.signature_scheme = h.cert.signature_scheme;
+                d.is_session_resumption = is_session_resumption;
                 if (opt.auth) |a|
                     d.client_signature_scheme = a.key.signature_scheme;
             }
@@ -1187,7 +1203,7 @@ pub const NonBlock = struct {
             .server_flight_1 => {
                 const buf = try self.inner.clientFlight2(self.opt);
                 self.state.next();
-                if (self.done()) self.inner.updateDiagnostic(self.opt);
+                if (self.done()) self.inner.updateDiagnostic(self.opt, false);
                 return buf;
             },
             else => return null,
@@ -1211,7 +1227,7 @@ pub const NonBlock = struct {
             .client_flight_2 => {
                 try self.inner.serverFlight2(self.opt);
                 self.state.next();
-                if (self.done()) self.inner.updateDiagnostic(self.opt);
+                if (self.done()) self.inner.updateDiagnostic(self.opt, false);
             },
             else => return 0,
         }
