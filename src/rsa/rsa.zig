@@ -402,10 +402,9 @@ pub fn PKCS1v1_5(comptime Hash: type) type {
                 var hash: [Hash.digest_length]u8 = undefined;
                 self.h.final(&hash);
 
-                // TODO: compare hash values instead of emsa values
-                const expected = try emsaEncode(hash, em);
-
-                if (!std.mem.eql(u8, expected, em)) return error.Inconsistent;
+                var em_buf2: [max_modulus_len]u8 = undefined;
+                const expected_em = try emsaEncode(hash, em_buf2[0..byteLen(pk.modulus.bits())]);
+                if (!std.mem.eql(u8, expected_em, em)) return error.Inconsistent;
             }
         };
 
