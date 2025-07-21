@@ -6,6 +6,7 @@ const proto = @import("protocol.zig");
 const record = @import("record.zig");
 const cipher = @import("cipher.zig");
 const Cipher = cipher.Cipher;
+const SessionResumption = @import("handshake_client.zig").Options.SessionResumption;
 
 pub fn connection(stream: anytype) Connection(@TypeOf(stream)) {
     return .{
@@ -25,6 +26,9 @@ pub fn Connection(comptime Stream: type) type {
 
         read_buf: []const u8 = "",
         received_close_notify: bool = false,
+
+        session_resumption: ?*SessionResumption = null,
+        session_resumption_secret_idx: ?usize = null,
 
         const Self = @This();
 
@@ -88,7 +92,12 @@ pub fn Connection(comptime Stream: type) type {
                         const handshake_type: proto.Handshake = @enumFromInt(cleartext[0]);
                         switch (handshake_type) {
                             // skip new session ticket and read next record
-                            .new_session_ticket => continue,
+                            .new_session_ticket => {
+                                if (c.session_resumption) |r| {
+                                    r.pushTicket(cleartext, c.session_resumption_secret_idx.?) catch {};
+                                }
+                                continue;
+                            },
                             .key_update => {
                                 if (cleartext.len != 5) return error.TlsDecodeError;
                                 // rfc: Upon receiving a KeyUpdate, the receiver MUST

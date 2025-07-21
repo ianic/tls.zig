@@ -64,12 +64,117 @@ pub const Options = struct {
     /// Wireshark and analyze decrypted traffic there.
     key_log_callback: ?key_log.Callback = null,
 
+    session_resumption: ?*SessionResumption = null,
+
     pub const Diagnostic = struct {
         tls_version: proto.Version = @enumFromInt(0),
         cipher_suite_tag: CipherSuite = @enumFromInt(0),
         named_group: proto.NamedGroup = @enumFromInt(0),
         signature_scheme: proto.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: proto.SignatureScheme = @enumFromInt(0),
+    };
+
+    /// Collects and stores session resumption tickets.
+    pub const SessionResumption = struct {
+        const Self = @This();
+
+        pub const Ticket = struct {
+            // in seconds
+            lifetime: u32,
+            // in milliseconds
+            created_at: i64,
+            // value to add to the milliseconds age
+            age_add: u32,
+            // nonce and identity are pointes to the part of the payload
+            nonce: []const u8, // <0..255>
+            identity: []const u8, // <1..2^16-1>
+            // payload is allocated and should be freed
+            payload: []const u8,
+            // pointer to the externaly allocated secret
+            secret: []const u8,
+
+            pub fn init(payload: []const u8, secret: []const u8) !Ticket {
+                var d = record.Decoder.init(.handshake, payload);
+                const handshake_type: proto.Handshake = @enumFromInt(try d.decode(u8));
+                if (handshake_type != proto.Handshake.new_session_ticket) return error.InvalidType;
+                const length = try d.decode(u24);
+                if (d.rest().len != length) return error.InvalidLength;
+
+                return .{
+                    .lifetime = try d.decode(u32),
+                    .age_add = try d.decode(u32),
+                    .nonce = try d.slice(try d.decode(u8)),
+                    .identity = try d.slice(try d.decode(u16)),
+                    .payload = payload,
+                    .secret = secret,
+                    .created_at = std.time.milliTimestamp(),
+                };
+            }
+
+            /// Obfuscated age for pre shared extension in client hello message when
+            /// using this ticket.
+            pub fn obfuscatedAge(t: Ticket) u32 {
+                const age: u32 = @intCast(std.time.milliTimestamp() - t.created_at);
+                return t.age_add +% age;
+            }
+        };
+
+        allocator: std.mem.Allocator,
+        hash_tag: CipherSuite.HashTag = .sha256,
+        tickets: std.ArrayListUnmanaged(Ticket) = .empty,
+        secrets: std.ArrayListUnmanaged([]const u8) = .empty,
+        used_tickets: usize = 0,
+
+        pub fn init(allocator: mem.Allocator) Self {
+            return .{ .allocator = allocator };
+        }
+
+        /// Set resumption master secret (known at then end of the handshake) to
+        /// be used by new session ticket's sent on that connection. Returns
+        /// index of the appended secret in the secrets list. Connection should
+        /// use that index in pushTicket to connect ticket and the secret.
+        pub fn appendSecret(self: *Self, tag: CipherSuite.HashTag, secret: []const u8) !usize {
+            if (self.secrets.items.len == 0) self.hash_tag = tag;
+            if (tag != self.hash_tag) return error.InvalidHash;
+            try self.secrets.ensureUnusedCapacity(self.allocator, 1);
+            self.secrets.appendAssumeCapacity(try self.allocator.dupe(u8, secret));
+            return self.secrets.items.len - 1;
+        }
+
+        /// When new session ticket message is recived connection should push ticket.
+        pub fn pushTicket(self: *Self, data: []const u8, secret_idx: usize) !void {
+            assert(self.secrets.items.len > secret_idx);
+            try self.tickets.ensureUnusedCapacity(self.allocator, 1);
+            const payload = try self.allocator.dupe(u8, data);
+            errdefer self.allocator.free(payload);
+            const ticket = try Ticket.init(payload, self.secrets.items[secret_idx]);
+            self.tickets.appendAssumeCapacity(ticket);
+        }
+
+        pub fn popTicket(self: *Self) ?Ticket {
+            if (self.used_tickets >= self.tickets.items.len) return null;
+            defer self.used_tickets += 1;
+            return self.tickets.items[self.used_tickets];
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (self.tickets.items) |ticket|
+                self.allocator.free(ticket.payload);
+            self.tickets.deinit(self.allocator);
+            for (self.secrets.items) |secret|
+                self.allocator.free(secret);
+            self.secrets.deinit(self.allocator);
+        }
+
+        pub fn print(self: Self) !void {
+            std.debug.print("resumption tag: {}, used_tickets: {}\n", .{ self.hash_tag, self.used_tickets });
+            for (self.tickets.items) |ticket| {
+                std.debug.print(
+                    "  lifetime: {}, ticket age add: {}, nonce: {x}\n  ticket: {x}\n  secret: {x}\n\n",
+                    .{ ticket.lifetime, ticket.age_add, ticket.nonce, ticket.identity, ticket.secret },
+                );
+            }
+        }
     };
 };
 
@@ -189,32 +294,51 @@ pub fn Handshake(comptime Stream: type) type {
         /// https://datatracker.ietf.org/doc/html/rfc5246#section-7.3
         /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
         ///
-        pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !Cipher {
+        pub fn handshake(h: *HandshakeT, w: Stream, opt: Options) !struct { Cipher, ?usize } {
             defer h.updateDiagnostic(opt);
             try h.initKeys(opt);
 
-            try w.writeAll(try h.makeClientHello(opt)); // client flight 1
+            const resumption_ticket: ?Options.SessionResumption.Ticket =
+                if (opt.session_resumption) |r|
+                    r.popTicket()
+                else
+                    null;
+            if (resumption_ticket) |ticket| {
+                h.transcript.use(opt.session_resumption.?.hash_tag);
+                h.transcript.setPreSharedSecret(ticket.secret, ticket.nonce);
+            }
+
+            try w.writeAll(try h.makeClientHello(opt, resumption_ticket)); // client flight 1
             try h.readServerFlight1(); // server flight 1
+
+            if (resumption_ticket != null and h.cipher_suite.hash() != h.transcript.tag)
+                return error.TlsAlertIllegalParameter; // session resumption must use same hash as previous session
             h.transcript.use(h.cipher_suite.hash());
 
             // tls 1.3 specific handshake part
             if (h.tls_version == .tls_1_3) {
                 try h.generateHandshakeCipher(opt.key_log_callback);
-                try h.readEncryptedServerFlight1(); // server flight 1
+                try h.readEncryptedServerFlight1(resumption_ticket != null); // server flight 1
                 const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
                 try w.writeAll(try h.makeClientFlight2Tls13(opt.auth)); // client flight 2
-                return app_cipher;
+
+                const secret_idx: ?usize = if (opt.session_resumption) |r|
+                    try r.appendSecret(h.transcript.tag, h.transcript.resumptionSecret())
+                else
+                    null;
+
+                return .{ app_cipher, secret_idx };
             }
 
             // tls 1.2 specific handshake part
             try h.generateCipher(opt.key_log_callback);
             try w.writeAll(try h.makeClientFlight2Tls12(opt.auth)); // client flight 2
             try h.readServerFlight2(); // server flight 2
-            return h.cipher;
+            return .{ h.cipher, null };
         }
 
         fn clientFlight1(h: *HandshakeT, opt: Options) ![]const u8 {
-            return try h.makeClientHello(opt);
+            return try h.makeClientHello(opt, null);
         }
 
         fn serverFlight1(h: *HandshakeT, opt: Options) !void {
@@ -222,7 +346,7 @@ pub fn Handshake(comptime Stream: type) type {
             h.transcript.use(h.cipher_suite.hash());
             if (h.tls_version == .tls_1_3) {
                 try h.generateHandshakeCipher(opt.key_log_callback);
-                try h.readEncryptedServerFlight1();
+                try h.readEncryptedServerFlight1(false);
             }
         }
 
@@ -291,7 +415,11 @@ pub fn Handshake(comptime Stream: type) type {
             return try Cipher.initTls13(h.cipher_suite, application_secret, .client);
         }
 
-        fn makeClientHello(h: *HandshakeT, opt: Options) ![]const u8 {
+        fn makeClientHello(
+            h: *HandshakeT,
+            opt: Options,
+            resumption_ticket: ?Options.SessionResumption.Ticket,
+        ) ![]const u8 {
             // Buffer will have this parts:
             // | header | payload | extensions |
             //
@@ -330,16 +458,36 @@ pub fn Handshake(comptime Stream: type) type {
             }
             try ext.writeServerName(opt.host);
 
-            // Extensions length at the end of the payload.
-            try payload.writeInt(@as(u16, @intCast(ext.pos)));
+            // Add pre shared key extension if this is session resumption.
+            // Must be last extension.
+            const psk_binder_len = if (resumption_ticket == null) 0 else h.transcript.hashLength() + 3;
+            if (resumption_ticket) |ticket| {
+                try ext.writeExtension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
+                try ext.writePreSharedKeyHead(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
+            }
 
+            // Extensions length at the end of the payload. If there is binder
+            // it not yet written but must be calculated in header lengths.
+            const ext_len = ext.pos + psk_binder_len;
+            try payload.writeInt(@as(u16, @intCast(ext_len)));
             // Header at the start of the buffer.
-            const body_len = payload.pos + ext.pos;
-            buffer[0..header_len].* = record.header(.handshake, 4 + body_len) ++
-                record.handshakeHeader(.client_hello, body_len);
-
+            const body_len = payload.pos + ext_len;
+            buffer[0..header_len].* = record.header(.handshake, 4 + body_len) ++ record.handshakeHeader(.client_hello, body_len);
             const msg = buffer[0 .. header_len + body_len];
-            h.transcript.update(msg[record.header_len..]);
+            const hash_data = msg[record.header_len..];
+
+            // Finish pre shared key extension, add binder.
+            if (resumption_ticket) |_| {
+                // psk binder, ref: https://datatracker.ietf.org/doc/html/rfc8446#autoid-39
+                // Binder is calculated with transcript of the partial hello up to the binder.
+                const binder_head = hash_data.len - psk_binder_len;
+                h.transcript.update(hash_data[0..binder_head]);
+                try ext.writePreSharedKeyBinder(h.transcript.pskBinder());
+                // now when binder is written update transcript with it
+                h.transcript.update(hash_data[binder_head..]);
+            } else {
+                h.transcript.update(hash_data);
+            }
             return msg;
         }
 
@@ -474,7 +622,7 @@ pub fn Handshake(comptime Stream: type) type {
         /// Read encrypted part (after server hello) of the server first flight
         /// for TLS 1.3: change cipher spec, eventual certificate request,
         /// certificate, certificate verify and handshake finished messages.
-        fn readEncryptedServerFlight1(h: *HandshakeT) !void {
+        fn readEncryptedServerFlight1(h: *HandshakeT, is_session_resumption: bool) !void {
             var cleartext_buf = h.buffer;
             var cleartext_buf_head: usize = 0;
             var cleartext_buf_tail: usize = 0;
@@ -520,7 +668,9 @@ pub fn Handshake(comptime Stream: type) type {
                             switch (handshake_type) {
                                 .encrypted_extensions => {
                                     try d.skip(length);
-                                    handshake_states = if (h.cert.skip_verify)
+                                    handshake_states = if (is_session_resumption)
+                                        &.{.finished}
+                                    else if (h.cert.skip_verify)
                                         &.{ .certificate_request, .certificate, .finished }
                                     else
                                         &.{ .certificate_request, .certificate };
@@ -911,7 +1061,7 @@ test "tls 1.3 process server flight" {
 
     try initExampleHandshake(&h);
     h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{} };
-    try h.readEncryptedServerFlight1();
+    try h.readEncryptedServerFlight1(false);
 
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
@@ -950,7 +1100,7 @@ test "create client hello" {
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
         .named_groups = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1 },
-    });
+    }, null);
 
     const expected = testu.hexToBytes(
         "16 03 03 00 6d " ++ // record header
@@ -1191,10 +1341,10 @@ test "note about sizes" {
     // values valid only for 64 bit platform, so skip in ci
     if (true) return error.SkipZigTest;
 
-    try testing.expectEqual(33920, @sizeOf(NonBlock));
-    try testing.expectEqual(33776, @sizeOf(Handshake([]u8)));
+    try testing.expectEqual(33968, @sizeOf(NonBlock));
+    try testing.expectEqual(33824, @sizeOf(Handshake([]u8)));
     try testing.expectEqual(28368, @sizeOf(DhKeyPair));
-    try testing.expectEqual(128, @sizeOf(Options));
+    try testing.expectEqual(136, @sizeOf(Options));
     try testing.expectEqual(2792, @sizeOf(CertKeyPair));
     try testing.expectEqual(1736, @sizeOf(CertificateParser));
     try testing.expectEqual(48, @sizeOf(cert.Bundle));

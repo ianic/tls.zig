@@ -15,7 +15,8 @@ pub fn client(stream: anytype, opt: config.Client) !Connection(@TypeOf(stream)) 
     var conn = connection(stream);
     var write_buf: [max_ciphertext_record_len]u8 = undefined;
     var cli = Client(Stream).init(&write_buf, &conn.rec_rdr);
-    conn.cipher = try cli.handshake(conn.stream, opt);
+    conn.cipher, conn.session_resumption_secret_idx = try cli.handshake(conn.stream, opt);
+    conn.session_resumption = opt.session_resumption;
     return conn;
 }
 

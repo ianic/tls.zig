@@ -191,6 +191,14 @@ pub const Decoder = struct {
                     const b2: u24 = d.payload[d.idx - 1];
                     return (b0 << 16) | (b1 << 8) | b2;
                 },
+                32 => {
+                    try skip(d, 4);
+                    const b0: u32 = d.payload[d.idx - 4];
+                    const b1: u32 = d.payload[d.idx - 3];
+                    const b2: u32 = d.payload[d.idx - 2];
+                    const b3: u32 = d.payload[d.idx - 1];
+                    return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+                },
                 else => @compileError("unsupported int type: " ++ @typeName(T)),
             },
             .@"enum" => |info| {
@@ -394,6 +402,9 @@ pub const Writer = struct {
         if (et == .supported_versions) {
             try self.writeInt(@as(u16, @intCast(tags.len * 2 + 1)));
             try self.writeInt(@as(u8, @intCast(tags.len * 2)));
+        } else if (et == .psk_key_exchange_modes) {
+            try self.writeInt(@as(u16, @intCast(tags.len + 1)));
+            try self.writeInt(@as(u8, @intCast(tags.len)));
         } else {
             try self.writeInt(@as(u16, @intCast(tags.len * 2 + 2)));
             try self.writeInt(@as(u16, @intCast(tags.len * 2)));
@@ -432,6 +443,36 @@ pub const Writer = struct {
         try self.writeByte(0); // name type
         try self.writeInt(host_len);
         try self.write(host);
+    }
+
+    /// Writes header of the pre shared key extension, without binders
+    pub fn writePreSharedKeyHead(
+        self: *Writer,
+        identity: []const u8,
+        obfuscated_age: u32,
+        binder_len: u8,
+    ) !void {
+        try self.writeEnum(proto.Extension.pre_shared_key);
+        try self.writeInt(@as(
+            u16,
+            @as(u16, @intCast(identity.len)) + 4 + 2 + 2 //
+            + @as(u16, @intCast(binder_len)), //
+        ));
+
+        try self.writeInt(@as(u16, @intCast(identity.len)) + 4 + 2);
+        try self.writeInt(@as(u16, @intCast(identity.len)));
+        try self.write(identity);
+        try self.writeInt(obfuscated_age);
+    }
+
+    /// Writes the rest of the pre shared keys extension
+    pub fn writePreSharedKeyBinder(
+        self: *Writer,
+        binder: []const u8,
+    ) !void {
+        try self.writeInt(@as(u16, @intCast(binder.len)) + 1);
+        try self.writeInt(@as(u8, @intCast(binder.len)));
+        try self.write(binder);
     }
 };
 

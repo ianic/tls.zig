@@ -36,6 +36,11 @@ pub const Curve = enum(u8) {
     _,
 };
 
+pub const KeyExchangeModes = enum(u8) {
+    psk_ke = 0,
+    psk_dhe_ke = 1,
+};
+
 pub const Extension = enum(u16) {
     /// RFC 6066
     server_name = 0,
