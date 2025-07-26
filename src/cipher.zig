@@ -50,6 +50,15 @@ pub const max_cleartext_len = 1 << 14;
 // content type, plus any expansion added by the AEAD algorithm.
 pub const max_ciphertext_len = max_cleartext_len + 256;
 pub const max_ciphertext_record_len = record.header_len + max_ciphertext_len;
+// max ciphertext produced with this implementation ()
+pub const max_encrypted_record_len = max_cleartext_len + @max(encrypt_overhead_tls_13, encrypt_overhead_tls_12);
+
+test {
+    try testing.expectEqual(16645, max_ciphertext_record_len);
+    try testing.expectEqual(85, encrypt_overhead_tls_12);
+    try testing.expectEqual(22, encrypt_overhead_tls_13);
+    try testing.expectEqual(16469, max_encrypted_record_len);
+}
 
 /// Returns type for cipher suite tag.
 fn CipherType(comptime tag: CipherSuite) type {

@@ -5,19 +5,19 @@ const mem = std.mem;
 const io = std.io;
 const Certificate = crypto.Certificate;
 
-const cipher = @import("cipher.zig");
-const Cipher = cipher.Cipher;
-const CipherSuite = cipher.CipherSuite;
-const cipher_suites = cipher.cipher_suites;
+const Cipher = @import("cipher.zig").Cipher;
+const CipherSuite = @import("cipher.zig").CipherSuite;
+const cipher_suites = @import("cipher.zig").cipher_suites;
+const max_cleartext_len = @import("cipher.zig").max_cleartext_len;
 const Transcript = @import("transcript.zig").Transcript;
 const record = @import("record.zig");
+const Record = record.Record;
 const rsa = @import("rsa/rsa.zig");
 const key_log = @import("key_log.zig");
 const PrivateKey = @import("PrivateKey.zig");
 const proto = @import("protocol.zig");
 
 const common = @import("handshake_common.zig");
-const dupe = common.dupe;
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
 const DhKeyPair = common.DhKeyPair;
@@ -195,7 +195,11 @@ const supported_named_groups = &[_]proto.NamedGroup{
 /// created using provided buffer. Provided record reader is used to get tls
 /// record when needed.
 pub const Handshake = struct {
-    client_random: [32]u8,
+    /// Underlying network connection stream reader/writer pair.
+    stream_reader: *io.Reader,
+    stream_writer: *io.Writer,
+
+    client_random: [32]u8 = undefined,
     server_random: [32]u8 = undefined,
     master_secret: [48]u8 = undefined,
     key_material: [48 * 4]u8 = undefined, // for sha256 32 * 4 is filled, for sha384 48 * 4
@@ -203,8 +207,8 @@ pub const Handshake = struct {
     transcript: Transcript = .{},
     cipher_suite: CipherSuite = @enumFromInt(0),
     named_group: ?proto.NamedGroup = null,
-    dh_kp: DhKeyPair,
-    rsa_secret: RsaSecret,
+    dh_kp: DhKeyPair = undefined,
+    rsa_secret: RsaSecret = undefined,
     tls_version: proto.Version = .tls_1_2,
     cipher: Cipher = undefined,
     cert: CertificateParser = undefined,
@@ -214,27 +218,9 @@ pub const Handshake = struct {
     server_pub_key: []const u8 = undefined,
     pre_shared_selected_identity: ?u16 = null,
 
-    rec_rdr: record.Reader, // tls record reader
-    buffer: []u8, // scratch buffer used in all messages creation
-
     const Self = @This();
 
-    // `buf` is used for creating client messages and for decrypting server
-    // ciphertext messages.
-    pub fn init(buf: []u8, reader: *std.io.Reader) Self {
-        return .{
-            .client_random = undefined,
-            .dh_kp = undefined,
-            .rsa_secret = undefined,
-            .buffer = buf,
-            .rec_rdr = .init(reader),
-        };
-    }
-
-    fn initKeys(
-        h: *Self,
-        opt: Options,
-    ) !void {
+    fn initKeys(h: *Self, opt: Options) !void {
         const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
         var buf: [init_keys_buf_len]u8 = undefined;
         crypto.random.bytes(&buf);
@@ -297,7 +283,7 @@ pub const Handshake = struct {
     /// https://datatracker.ietf.org/doc/html/rfc5246#section-7.3
     /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
     ///
-    pub fn handshake(h: *Self, w: *io.Writer, opt: Options) !struct { Cipher, ?usize } {
+    pub fn handshake(h: *Self, opt: Options) !struct { Cipher, ?usize } {
         var resumption_ticket: ?Options.SessionResumption.Ticket =
             if (opt.session_resumption) |r|
                 r.popTicket()
@@ -312,7 +298,8 @@ pub const Handshake = struct {
             h.transcript.setPreSharedSecret(ticket.secret, ticket.nonce);
         }
 
-        try w.writeAll(try h.makeClientHello(opt, resumption_ticket)); // client flight 1
+        try h.makeClientHello(opt, resumption_ticket); // client flight 1
+        try h.stream_writer.flush();
         try h.readServerFlight1(); // server flight 1
 
         if (resumption_ticket != null and h.pre_shared_selected_identity == null) {
@@ -330,7 +317,8 @@ pub const Handshake = struct {
             try h.generateHandshakeCipher(opt.key_log_callback);
             try h.readEncryptedServerFlight1(resumption_ticket != null); // server flight 1
             const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
-            try w.writeAll(try h.makeClientFlight2Tls13(opt.auth)); // client flight 2
+            try h.makeClientFlight2Tls13(opt.auth); // client flight 2
+            try h.stream_writer.flush();
 
             const secret_idx: ?usize = if (opt.session_resumption) |r|
                 try r.appendSecret(h.transcript.tag, h.transcript.resumptionSecret())
@@ -342,13 +330,14 @@ pub const Handshake = struct {
 
         // tls 1.2 specific handshake part
         try h.generateCipher(opt.key_log_callback);
-        try w.writeAll(try h.makeClientFlight2Tls12(opt.auth)); // client flight 2
+        try h.makeClientFlight2Tls12(opt.auth); // client flight 2
+        try h.stream_writer.flush();
         try h.readServerFlight2(); // server flight 2
         return .{ h.cipher, null };
     }
 
-    fn clientFlight1(h: *Self, opt: Options) ![]const u8 {
-        return try h.makeClientHello(opt, null);
+    fn clientFlight1(h: *Self, opt: Options) !void {
+        try h.makeClientHello(opt, null);
     }
 
     fn serverFlight1(h: *Self, opt: Options) !void {
@@ -360,16 +349,16 @@ pub const Handshake = struct {
         }
     }
 
-    fn clientFlight2(h: *Self, opt: Options) ![]const u8 {
+    fn clientFlight2(h: *Self, opt: Options) !void {
         if (h.tls_version == .tls_1_3) {
             const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
-            const buf = try h.makeClientFlight2Tls13(opt.auth);
+            try h.makeClientFlight2Tls13(opt.auth);
             h.cipher = app_cipher;
-            return buf;
+        } else {
+            // tls 1.2 specific handshake part
+            try h.generateCipher(opt.key_log_callback);
+            try h.makeClientFlight2Tls12(opt.auth);
         }
-        // tls 1.2 specific handshake part
-        try h.generateCipher(opt.key_log_callback);
-        return try h.makeClientFlight2Tls12(opt.auth);
     }
 
     fn serverFlight2(h: *Self, _: Options) !void {
@@ -391,11 +380,11 @@ pub const Handshake = struct {
         else
             &h.rsa_secret.secret;
 
-        _ = dupe(
+        _ = common.dupe(
             &h.master_secret,
             h.transcript.masterSecret(pre_master_secret, h.client_random, h.server_random),
         );
-        _ = dupe(
+        _ = common.dupe(
             &h.key_material,
             h.transcript.keyMaterial(&h.master_secret, h.client_random, h.server_random),
         );
@@ -429,7 +418,7 @@ pub const Handshake = struct {
         h: *Self,
         opt: Options,
         resumption_ticket: ?Options.SessionResumption.Ticket,
-    ) ![]const u8 {
+    ) !void {
         // Buffer will have this parts:
         // | header | payload | extensions |
         //
@@ -437,7 +426,7 @@ pub const Handshake = struct {
         // payload and extensions when creating it. Payload has
         // extensions length (u16) as last element.
         //
-        var buffer = h.buffer;
+        var buffer = h.stream_writer.unusedCapacitySlice();
         const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
         const tls_versions = try CipherSuite.versions(opt.cipher_suites);
         // Payload writer, preserve header_len bytes for handshake header.
@@ -498,7 +487,7 @@ pub const Handshake = struct {
         } else {
             h.transcript.update(hash_data);
         }
-        return msg;
+        h.stream_writer.advance(msg.len);
     }
 
     /// Process first flight of the messages from the server.
@@ -509,7 +498,7 @@ pub const Handshake = struct {
         var handshake_states: []const proto.Handshake = &.{.server_hello};
 
         while (true) {
-            var d = try h.rec_rdr.nextDecoder();
+            var d = try Record.decoder(h.stream_reader);
             try d.expectContentType(.handshake);
 
             h.transcript.update(d.payload);
@@ -519,7 +508,7 @@ pub const Handshake = struct {
                 const handshake_type = try d.decode(proto.Handshake);
 
                 const length = try d.decode(u24);
-                if (length > cipher.max_cleartext_len)
+                if (length > max_cleartext_len)
                     return error.TlsUnsupportedFragmentedHandshakeMessage;
 
                 brk: {
@@ -600,7 +589,7 @@ pub const Handshake = struct {
                     },
                     .key_share => {
                         h.named_group = try d.decode(proto.NamedGroup);
-                        h.server_pub_key = dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
+                        h.server_pub_key = common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
                         if (len != h.server_pub_key.len + 4) return error.TlsIllegalParameter;
                     },
                     .pre_shared_key => {
@@ -626,9 +615,9 @@ pub const Handshake = struct {
     fn parseServerKeyExchange(h: *Self, d: *record.Decoder) !void {
         const curve_type = try d.decode(proto.Curve);
         h.named_group = try d.decode(proto.NamedGroup);
-        h.server_pub_key = dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
+        h.server_pub_key = common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
         h.cert.signature_scheme = try d.decode(proto.SignatureScheme);
-        h.cert.signature = dupe(&h.cert.signature_buf, try d.slice(try d.decode(u16)));
+        h.cert.signature = common.dupe(&h.cert.signature_buf, try d.slice(try d.decode(u16)));
         if (curve_type != .named_curve) return error.TlsIllegalParameter;
     }
 
@@ -636,14 +625,14 @@ pub const Handshake = struct {
     /// for TLS 1.3: change cipher spec, eventual certificate request,
     /// certificate, certificate verify and handshake finished messages.
     fn readEncryptedServerFlight1(h: *Self, is_session_resumption: bool) !void {
-        var cleartext_buf = h.buffer;
+        var cleartext_buf = h.stream_writer.unusedCapacitySlice(); // use as scratch buffer
         var cleartext_buf_head: usize = 0;
         var cleartext_buf_tail: usize = 0;
         var handshake_states: []const proto.Handshake = &.{.encrypted_extensions};
 
         outer: while (true) {
             // wrapped record decoder
-            const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
+            const rec = (try Record.read(h.stream_reader) orelse return error.EndOfStream);
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
             switch (rec.content_type) {
                 .change_cipher_spec => {},
@@ -662,7 +651,7 @@ pub const Handshake = struct {
                         const handshake_type = try d.decode(proto.Handshake);
                         const length = try d.decode(u24);
 
-                        if (length > cipher.max_cleartext_len)
+                        if (length > max_cleartext_len)
                             return error.TlsUnsupportedFragmentedHandshakeMessage;
                         if (length > d.rest().len)
                             continue :outer; // fragmented handshake into multiple records
@@ -727,7 +716,8 @@ pub const Handshake = struct {
     fn verifyCertificateSignatureTls12(h: *Self) !void {
         if (h.cipher_suite.keyExchange() != .ecdhe) return;
         const verify_bytes = brk: {
-            var w = record.Writer{ .buf = h.buffer };
+            // use stream_writer buffer as scratch, don't advance
+            var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
             try w.write(&h.client_random);
             try w.write(&h.server_random);
             try w.writeEnum(proto.Curve.named_curve);
@@ -743,8 +733,8 @@ pub const Handshake = struct {
     /// finished messages for tls 1.2.
     /// If client certificate is requested also adds client certificate and
     /// certificate verify messages.
-    fn makeClientFlight2Tls12(h: *Self, auth: ?*CertKeyPair) ![]const u8 {
-        var w = record.Writer{ .buf = h.buffer };
+    fn makeClientFlight2Tls12(h: *Self, auth: ?*CertKeyPair) !void {
+        var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
         var cert_builder: ?CertificateBuilder = null;
 
         // Client certificate message
@@ -787,7 +777,7 @@ pub const Handshake = struct {
             try h.writeEncrypted(&w, client_finished);
         }
 
-        return w.getWritten();
+        h.stream_writer.advance(w.getWritten().len);
     }
 
     /// Create client change cipher spec and handshake finished messages for
@@ -797,8 +787,8 @@ pub const Handshake = struct {
     /// and client certificate verify messages are also created. If the
     /// server has requested certificate but the client is not configured
     /// empty certificate message is sent, as is required by rfc.
-    fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair) ![]const u8 {
-        var w = record.Writer{ .buf = h.buffer };
+    fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair) !void {
+        var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
 
         // Client change cipher spec message
         try w.writeRecord(.change_cipher_spec, &[_]u8{1});
@@ -831,7 +821,7 @@ pub const Handshake = struct {
             try h.writeEncrypted(&w, client_finished);
         }
 
-        return w.getWritten();
+        h.stream_writer.advance(w.getWritten().len);
     }
 
     fn certificateBuilder(h: *Self, auth: *CertKeyPair) CertificateBuilder {
@@ -870,15 +860,15 @@ pub const Handshake = struct {
     fn readServerFlight2(h: *Self) !void {
         // Read server change cipher spec message.
         {
-            var d = try h.rec_rdr.nextDecoder();
+            var d = try Record.decoder(h.stream_reader);
             try d.expectContentType(.change_cipher_spec);
         }
         // Read encrypted server handshake finished message. Verify that
         // content of the server finished message is based on transcript
         // hash and master secret.
         {
-            const rec = (try h.rec_rdr.next() orelse return error.EndOfStream);
-            const content_type, const server_finished = try h.cipher.decrypt(h.buffer, rec);
+            const rec = (try Record.read(h.stream_reader) orelse return error.EndOfStream);
+            const content_type, const server_finished = try h.cipher.decrypt(@constCast(rec.buffer), rec);
             if (content_type != .handshake)
                 return error.TlsUnexpectedMessage;
             const expected = record.handshakeHeader(.finished, 12) ++ h.transcript.serverFinishedTls12(&h.master_secret);
@@ -934,11 +924,14 @@ const testu = @import("testu.zig");
 
 test "parse tls 1.2 server hello" {
     var buffer: [1024]u8 = undefined;
+    var writer: io.Writer = .fixed(&buffer);
     var reader: io.Reader = .fixed(&data12.server_hello_responses);
-    var h = Handshake.init(&buffer, &reader);
-
+    var h: Handshake = .{
+        .stream_writer = &writer,
+        .stream_reader = &reader,
+        .client_random = data12.client_random,
+    };
     // Set to known instead of random
-    h.client_random = data12.client_random;
     h.dh_kp.x25519_kp.secret_key = data12.client_secret;
 
     // Parse server hello, certificate and key exchange messages.
@@ -963,10 +956,13 @@ test "parse tls 1.2 server hello" {
 
 test "verify google.com certificate" {
     var buffer: [1024]u8 = undefined;
+    var writer: io.Writer = .fixed(&buffer);
     var reader: io.Reader = .fixed(@embedFile("testdata/google.com/server_hello"));
-    var h = Handshake.init(&buffer, &reader);
-
-    h.client_random = @embedFile("testdata/google.com/client_random").*;
+    var h: Handshake = .{
+        .stream_writer = &writer,
+        .stream_reader = &reader,
+        .client_random = @embedFile("testdata/google.com/client_random").*,
+    };
 
     var ca_bundle: Certificate.Bundle = .{};
     try ca_bundle.rescan(testing.allocator);
@@ -979,15 +975,14 @@ test "verify google.com certificate" {
 
 test "parse tls 1.3 server hello" {
     var reader: io.Reader = .fixed(&data13.server_hello);
-    var rec_rdr = record.Reader.init(&reader);
-    var d = (try rec_rdr.nextDecoder());
+    var d = try Record.decoder(&reader);
 
     const handshake_type = try d.decode(proto.Handshake);
     const length = try d.decode(u24);
     try testing.expectEqual(0x000076, length);
     try testing.expectEqual(.server_hello, handshake_type);
 
-    var h = Handshake.init(undefined, undefined);
+    var h: Handshake = undefined;
     try h.parseServerHello(&d, length);
 
     try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite);
@@ -1014,9 +1009,9 @@ test "init tls 1.3 handshake cipher" {
     const shared_key = try dh_kp.sharedKey(.x25519, &data13.server_pub_key);
     try testing.expectEqualSlices(u8, &data13.shared_key, shared_key);
 
-    const cph = try Cipher.initTls13(cipher_suite_tag, transcript.handshakeSecret(shared_key), .client);
+    const cipher = try Cipher.initTls13(cipher_suite_tag, transcript.handshakeSecret(shared_key), .client);
 
-    const c = &cph.AES_256_GCM_SHA384;
+    const c = &cipher.AES_256_GCM_SHA384;
     try testing.expectEqualSlices(u8, &data13.server_handshake_key, &c.decrypt_key);
     try testing.expectEqualSlices(u8, &data13.client_handshake_key, &c.encrypt_key);
     try testing.expectEqualSlices(u8, &data13.server_handshake_iv, &c.decrypt_iv);
@@ -1035,8 +1030,8 @@ fn initExampleHandshake(h: *Handshake) !void {
 }
 
 test "tls 1.3 decrypt wrapped record" {
-    var cph = brk: {
-        var h = Handshake.init(undefined, undefined);
+    var cipher = brk: {
+        var h: Handshake = .{ .stream_reader = undefined, .stream_writer = undefined };
         try initExampleHandshake(&h);
         break :brk h.cipher;
     };
@@ -1045,23 +1040,28 @@ test "tls 1.3 decrypt wrapped record" {
     {
         const rec = record.Record.init(&data13.server_encrypted_extensions_wrapped);
 
-        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, rec);
+        const content_type, const cleartext = try cipher.decrypt(&cleartext_buf, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_encrypted_extensions, cleartext);
     }
     {
         const rec = record.Record.init(&data13.server_certificate_wrapped);
 
-        const content_type, const cleartext = try cph.decrypt(&cleartext_buf, rec);
+        const content_type, const cleartext = try cipher.decrypt(&cleartext_buf, rec);
         try testing.expectEqual(.handshake, content_type);
         try testing.expectEqualSlices(u8, &data13.server_certificate, cleartext);
     }
 }
 
-test "tls 1.3 process server flight" {
+inline fn testHandshake(reader_buffer: []const u8) Handshake {
     var buffer: [1024]u8 = undefined;
-    var reader: io.Reader = .fixed(&data13.server_flight);
-    var h = Handshake.init(&buffer, &reader);
+    var writer: io.Writer = .fixed(&buffer);
+    var reader: io.Reader = .fixed(reader_buffer);
+    return .{ .stream_reader = &reader, .stream_writer = &writer };
+}
+
+test "tls 1.3 process server flight" {
+    var h = testHandshake(&data13.server_flight);
     try initExampleHandshake(&h);
 
     h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{} };
@@ -1070,20 +1070,22 @@ test "tls 1.3 process server flight" {
     { // application cipher keys calculation
         try testing.expectEqualSlices(u8, &data13.handshake_hash, &h.transcript.sha384.hash.peek());
 
-        var cph = try Cipher.initTls13(h.cipher_suite, h.transcript.applicationSecret(), .client);
-        const c = &cph.AES_256_GCM_SHA384;
+        var cipher = try Cipher.initTls13(h.cipher_suite, h.transcript.applicationSecret(), .client);
+        const c = &cipher.AES_256_GCM_SHA384;
         try testing.expectEqualSlices(u8, &data13.server_application_key, &c.decrypt_key);
         try testing.expectEqualSlices(u8, &data13.client_application_key, &c.encrypt_key);
         try testing.expectEqualSlices(u8, &data13.server_application_iv, &c.decrypt_iv);
         try testing.expectEqualSlices(u8, &data13.client_application_iv, &c.encrypt_iv);
 
-        const encrypted = try cph.encrypt(&buffer, .application_data, "ping");
+        var buffer: [128]u8 = undefined;
+        const encrypted = try cipher.encrypt(&buffer, .application_data, "ping");
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
         var buf: [4 + Transcript.max_mac_length]u8 = undefined;
         const client_finished = try h.makeClientFinishedTls13(&buf);
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
+        var buffer: [128]u8 = undefined;
         const encrypted = try h.cipher.encrypt(&buffer, .handshake, client_finished);
         try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, encrypted);
     }
@@ -1106,29 +1108,31 @@ test "create client hello" {
     );
 
     var h = brk: {
-        var buffer: [expected.len]u8 = undefined;
-        var h = Handshake.init(&buffer, undefined);
-        h.client_random = testu.hexToBytes(
-            \\ 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
-        );
-        break :brk h;
+        var buffer: [expected.len + 1]u8 = undefined;
+        var stream_writer: io.Writer = .fixed(&buffer);
+        break :brk Handshake{
+            .stream_writer = &stream_writer,
+            .stream_reader = undefined,
+            .client_random = testu.hexToBytes(
+                \\ 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+            ),
+        };
     };
 
-    const actual = try h.makeClientHello(.{
+    try h.makeClientHello(.{
         .host = "google.com",
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
         .named_groups = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1 },
     }, null);
 
+    const actual = h.stream_writer.buffered();
     try testing.expectEqualSlices(u8, &expected, actual);
+    try testing.expectEqual(1, h.stream_writer.unusedCapacityLen());
 }
 
 test "handshake verify server finished message" {
-    var buffer: [1024]u8 = undefined;
-    var reader: io.Reader = .fixed(&data12.server_handshake_finished_msgs);
-    var h = Handshake.init(&buffer, &reader);
-
+    var h = testHandshake(&data12.server_handshake_finished_msgs);
     h.cipher_suite = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
     h.master_secret = data12.master_secret;
 
@@ -1171,7 +1175,10 @@ pub const NonBlock = struct {
     };
 
     pub fn init(opt: Options) Self {
-        var inner = Handshake.init(undefined, undefined);
+        var inner = Handshake{
+            .stream_reader = undefined,
+            .stream_writer = undefined,
+        };
         inner.initKeys(opt) catch unreachable;
         return .{
             .inner = inner,
@@ -1181,31 +1188,25 @@ pub const NonBlock = struct {
     }
 
     /// Returns null if there is nothing to send at this state
-    fn send(self: *Self) !?[]const u8 {
+    fn send(self: *Self) !void {
         switch (self.state) {
             .init => {
-                const buf = try self.inner.clientFlight1(self.opt);
+                try self.inner.clientFlight1(self.opt);
                 self.state.next();
-                return buf;
             },
             .server_flight_1 => {
-                const buf = try self.inner.clientFlight2(self.opt);
+                try self.inner.clientFlight2(self.opt);
                 self.state.next();
                 if (self.done()) self.inner.updateDiagnostic(self.opt, false);
-                return buf;
             },
-            else => return null,
+            else => return,
         }
     }
 
     /// Returns number of bytes consumed from buf
-    fn recv(self: *Self, buf: []const u8) !usize {
-        if (buf.len == 0) return 0;
+    fn recv(self: *Self) !void {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
-
-        var io_rdr: io.Reader = .fixed(buf);
-        self.inner.rec_rdr = record.Reader.init(&io_rdr);
 
         switch (self.state) {
             .client_flight_1 => {
@@ -1217,10 +1218,8 @@ pub const NonBlock = struct {
                 self.state.next();
                 if (self.done()) self.inner.updateDiagnostic(self.opt, false);
             },
-            else => return 0,
+            else => return,
         }
-
-        return io_rdr.seek;
     }
 
     /// True when handshake is successfully finished
@@ -1252,19 +1251,27 @@ pub const NonBlock = struct {
             .unused_recv = recv_buf,
             .send = &.{},
         };
-        self.inner.buffer = send_buf;
 
-        const recv_pos = self.recv(recv_buf) catch |err| switch (err) {
-            error.EndOfStream => 0,
-            else => return err,
-        };
+        var reader: io.Reader = .fixed(recv_buf);
+        var writer: io.Writer = .fixed(send_buf);
+        self.inner.stream_reader = &reader;
+        self.inner.stream_writer = &writer;
 
-        const send_pos: usize = if (try self.send()) |buf| buf.len else 0;
+        const recv_pos: usize = if (recv_buf.len > 0) brk: {
+            self.recv() catch |err| switch (err) {
+                error.EndOfStream => break :brk 0,
+                else => return err,
+            };
+            break :brk reader.seek;
+        } else 0;
+
+        try self.send();
+
         return .{
             .recv_pos = recv_pos,
-            .send_pos = send_pos,
+            .send_pos = writer.end,
             .unused_recv = recv_buf[recv_pos..],
-            .send = send_buf[0..send_pos],
+            .send = writer.buffered(),
         };
     }
 
@@ -1275,7 +1282,7 @@ pub const NonBlock = struct {
 };
 
 test "nonblock handshake" {
-    var buffer: [cipher.max_ciphertext_record_len]u8 = undefined;
+    var buffer: [1024]u8 = undefined;
     var ah = NonBlock.init(.{
         .host = "example.ulfheim.net",
         .insecure_skip_verify = true,
@@ -1285,7 +1292,6 @@ test "nonblock handshake" {
     });
     var h = &ah.inner;
     { // update secrets to well known from example
-        h.buffer = &buffer;
         h.client_random = data13.client_random;
         h.dh_kp.x25519_kp = .{
             .public_key = data13.client_public_key,
@@ -1308,8 +1314,11 @@ test "nonblock handshake" {
         \\ 35 80 72 d6 36 58 80 d1 ae ea 32 9a df 91 21 38 38 51 ed 21 a2 8e 3b 75 e9 65 d0 d2 cd 16 62 54
         \\ 00 00 00 18 00 16 00 00 13 65 78 61 6d 70 6c 65 2e 75 6c 66 68 65 69 6d 2e 6e 65 74
     );
-    const client_flight_1 = try ah.send();
-    try testing.expectEqualSlices(u8, &expected_client_flight_1, client_flight_1.?);
+    var writer: io.Writer = .fixed(&buffer);
+    h.stream_writer = &writer;
+    try ah.send();
+    const client_flight_1 = h.stream_writer.buffered();
+    try testing.expectEqualSlices(u8, &expected_client_flight_1, client_flight_1);
 
     { // update transcript to well known from example
         h.transcript = .{};
@@ -1318,11 +1327,15 @@ test "nonblock handshake" {
 
     // parsing partial server flight message returns error.EndOfStream
     for (1..data13.server_flight_1.len - 1) |i| {
-        const buf = data13.server_flight_1[0..i];
-        try testing.expectError(error.EndOfStream, ah.recv(buf));
+        var reader: io.Reader = .fixed(data13.server_flight_1[0..i]);
+        h.stream_reader = &reader;
+        try testing.expectError(error.EndOfStream, ah.recv());
     }
 
-    const n = try ah.recv(&(data13.server_flight_1 ++ "dummy footer".*));
+    var reader: io.Reader = .fixed(&(data13.server_flight_1 ++ "dummy footer".*));
+    h.stream_reader = &reader;
+    try ah.recv();
+    const n = h.stream_reader.seek;
     { // inspect
         try testing.expectEqual(data13.server_flight_1.len, n); // footer is not touched
         try testing.expectEqual(.tls_1_3, h.tls_version);
@@ -1333,11 +1346,16 @@ test "nonblock handshake" {
         try testing.expect(!ah.done());
     }
 
-    const client_flight_2 = try ah.send();
-    try testing.expectEqualSlices(u8, &data13.client_flight_2, client_flight_2.?);
+    h.stream_writer.end = 0;
+    try ah.send();
+    const client_flight_2 = h.stream_writer.buffered();
+    try testing.expectEqualSlices(u8, &data13.client_flight_2, client_flight_2);
     try testing.expect(ah.done());
 
-    try testing.expectEqual(0, try ah.recv("dummy footer"));
+    var reader2: io.Reader = .fixed("dummy footer");
+    h.stream_reader = &reader2;
+    try ah.recv();
+    try testing.expectEqual(0, reader2.seek);
     try testing.expect(ah.done());
 }
 

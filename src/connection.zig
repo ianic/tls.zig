@@ -10,11 +10,8 @@ const Cipher = cipher.Cipher;
 const SessionResumption = @import("handshake_client.zig").Options.SessionResumption;
 
 pub const Connection = struct {
-    /// Underlying network connection stream reader/writer pair. Reader should
-    /// be buffered at least with max_ciphertext_record_len! Safe value for
-    /// writer buffer is aslo max_ciphertext_record_len, smaller values can be
-    /// used if cilent will not send more than cleartext + cipher.overhead data.
-    stream_reader: *io.Reader, // source of the encrypted (ciphertext) data
+    /// Underlying network connection stream reader/writer pair.
+    stream_reader: *io.Reader, // source of the encrypted (ciphebroortext) data
     stream_writer: *io.Writer, // sink to send encrypted (ciphertext) data
 
     cipher: Cipher = undefined,
@@ -57,6 +54,7 @@ pub const Connection = struct {
         const writable = try c.stream_writer.writableSliceGreedy(c.cipher.recordLen(bytes.len));
         const rec = try c.cipher.encrypt(writable, content_type, bytes);
         c.stream_writer.advance(rec.len);
+        try c.stream_writer.flush();
     }
 
     fn writeAlert(c: *Self, err: anyerror) !void {
@@ -66,7 +64,7 @@ pub const Connection = struct {
     /// Returns next record of cleartext data.
     /// Can be used in iterator like loop without memcpy to another buffer:
     ///   while (try client.next()) |buf| { ... }
-    pub fn next(c: *Self) !?[]const u8 {
+    pub fn next(c: *Self) anyerror!?[]const u8 {
         const content_type, const data = c.nextRecord() catch |err| {
             // Write alert on tls errors.
             // Stream errors return to the caller.
@@ -81,7 +79,18 @@ pub const Connection = struct {
     fn nextRecord(c: *Self) !?struct { proto.ContentType, []const u8 } {
         if (c.eof()) return null;
         while (true) {
-            const content_type, const cleartext = try record.readDecrypt(c.stream_reader, &c.cipher) orelse return null;
+            const rec = (try record.Record.read(c.stream_reader)) orelse return null;
+            if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+            const content_type, const cleartext = try c.cipher.decrypt(
+                // Reuse record buffer for cleartext. `rec.header` and
+                // `rec.payload`(ciphertext) are also pointing somewhere in
+                // this buffer. Decrypter is first reading then writing a
+                // block, cleartext has less length then ciphertext,
+                // cleartext starts from the beginning of the buffer, so
+                // ciphertext is always ahead of cleartext.
+                @constCast(rec.buffer),
+                rec,
+            );
 
             switch (content_type) {
                 .application_data => {},
@@ -131,7 +140,7 @@ pub const Connection = struct {
         return c.received_close_notify and c.read_buf.len == 0;
     }
 
-    pub fn close(c: *Self) !void {
+    pub fn close(c: *Self) anyerror!void {
         if (c.received_close_notify) return;
         try c.writeRecord(.alert, &proto.Alert.closeNotify());
     }

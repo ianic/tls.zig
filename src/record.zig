@@ -2,11 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
 const io = std.io;
-
 const proto = @import("protocol.zig");
-const cipher = @import("cipher.zig");
-const Cipher = cipher.Cipher;
-const record = @import("record.zig");
 
 pub const header_len = 5;
 
@@ -32,85 +28,6 @@ pub fn handshakeHeader(handshake_type: proto.Handshake, payload_len: usize) [4]u
     return [1]u8{@intFromEnum(handshake_type)} ++ int3(@intCast(payload_len));
 }
 
-pub const Reader = struct {
-    inner_reader: *io.Reader,
-
-    const Self = @This();
-
-    pub fn init(reader: *io.Reader) Self {
-        return .{ .inner_reader = reader };
-    }
-
-    pub fn nextDecoder(r: *Self) !Decoder {
-        const rec = (try r.next()) orelse return error.EndOfStream;
-        if (@intFromEnum(rec.protocol_version) != 0x0300 and
-            @intFromEnum(rec.protocol_version) != 0x0301 and
-            rec.protocol_version != .tls_1_2)
-            return error.TlsBadVersion;
-        return .{
-            .content_type = rec.content_type,
-            .payload = rec.payload,
-        };
-    }
-
-    pub fn contentType(buf: []const u8) proto.ContentType {
-        return @enumFromInt(buf[0]);
-    }
-
-    pub fn protocolVersion(buf: []const u8) proto.Version {
-        return @enumFromInt(mem.readInt(u16, buf[1..3], .big));
-    }
-
-    pub fn next(r: *Self) !?Record {
-        const hdr = r.inner_reader.peek(record.header_len) catch |err| switch (err) {
-            error.EndOfStream => return null,
-            else => return err,
-        };
-        const payload_len = mem.readInt(u16, hdr[3..5], .big);
-        return Record.init(try r.inner_reader.take(record.header_len + payload_len));
-    }
-
-    pub fn nextDecrypt(r: *Self, cph: *Cipher) !?struct { proto.ContentType, []const u8 } {
-        const rec = (try r.next()) orelse return null;
-        if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-
-        return try cph.decrypt(
-            // Reuse record buffer for cleartext. `rec.header` and
-            // `rec.payload`(ciphertext) are also pointing somewhere in
-            // this buffer. Decrypter is first reading then writing a
-            // block, cleartext has less length then ciphertext,
-            // cleartext starts from the beginning of the buffer, so
-            // ciphertext is always ahead of cleartext.
-            @constCast(rec.buffer),
-            rec,
-        );
-    }
-};
-
-pub fn read(rdr: *io.Reader) !?Record {
-    const hdr = rdr.peek(record.header_len) catch |err| switch (err) {
-        error.EndOfStream => return null,
-        else => return err,
-    };
-    const payload_len = mem.readInt(u16, hdr[3..5], .big);
-    return Record.init(try rdr.take(record.header_len + payload_len));
-}
-
-pub fn readDecrypt(rdr: *io.Reader, cph: *Cipher) !?struct { proto.ContentType, []const u8 } {
-    const rec = (try read(rdr)) orelse return null;
-    if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-    return try cph.decrypt(
-        // Reuse record buffer for cleartext. `rec.header` and
-        // `rec.payload`(ciphertext) are also pointing somewhere in
-        // this buffer. Decrypter is first reading then writing a
-        // block, cleartext has less length then ciphertext,
-        // cleartext starts from the beginning of the buffer, so
-        // ciphertext is always ahead of cleartext.
-        @constCast(rec.buffer),
-        rec,
-    );
-}
-
 pub const Record = struct {
     content_type: proto.ContentType,
     protocol_version: proto.Version = .tls_1_2,
@@ -123,13 +40,31 @@ pub const Record = struct {
             .content_type = @enumFromInt(buffer[0]),
             .protocol_version = @enumFromInt(mem.readInt(u16, buffer[1..3], .big)),
             .buffer = buffer,
-            .header = buffer[0..record.header_len],
-            .payload = buffer[record.header_len..],
+            .header = buffer[0..header_len],
+            .payload = buffer[header_len..],
         };
     }
 
-    pub fn decoder(r: @This()) Decoder {
-        return Decoder.init(r.content_type, r.payload);
+    pub fn read(rdr: *io.Reader) !?Record {
+        const hdr = rdr.peek(header_len) catch |err| switch (err) {
+            error.EndOfStream => return null,
+            error.ReadFailed => return null,
+            else => return err,
+        };
+        const payload_len = mem.readInt(u16, hdr[3..5], .big);
+        return .init(try rdr.take(header_len + payload_len));
+    }
+
+    pub fn decoder(rdr: *io.Reader) !Decoder {
+        const rec = (try Record.read(rdr)) orelse return error.EndOfStream;
+        if (@intFromEnum(rec.protocol_version) != 0x0300 and
+            @intFromEnum(rec.protocol_version) != 0x0301 and
+            rec.protocol_version != .tls_1_2)
+            return error.TlsBadVersion;
+        return .{
+            .content_type = rec.content_type,
+            .payload = rec.payload,
+        };
     }
 };
 
@@ -228,7 +163,7 @@ const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
 const CipherSuite = @import("cipher.zig").CipherSuite;
 
-test Reader {
+test "record.read" {
     // expected records in the data12.server_responses
     const expected = [_]struct {
         content_type: proto.ContentType,
@@ -241,45 +176,41 @@ test Reader {
         .{ .content_type = .change_cipher_spec, .payload_len = 1 },
         .{ .content_type = .handshake, .payload_len = 64 },
     };
-    var inner: io.Reader = .fixed(&data12.server_responses);
+    var reader: io.Reader = .fixed(&data12.server_responses);
 
     {
-        var rdr: Reader = .init(&inner);
         var n: usize = 0;
         for (expected) |e| {
-            const rec = (try rdr.next()).?;
+            const rec = (try Record.read(&reader)).?;
             try testing.expectEqual(e.content_type, rec.content_type);
             try testing.expectEqual(e.payload_len, rec.payload.len);
             try testing.expectEqual(.tls_1_2, rec.protocol_version);
-            try testing.expectEqual(e.payload_len + record.header_len, rec.buffer.len);
+            try testing.expectEqual(e.payload_len + header_len, rec.buffer.len);
 
-            n += rec.payload.len + record.header_len;
-            try testing.expectEqual(n, rdr.inner_reader.seek);
+            n += rec.payload.len + header_len;
+            try testing.expectEqual(n, reader.seek);
         }
-        try testing.expectEqual(data12.server_responses.len, rdr.inner_reader.seek);
-        try testing.expect(try rdr.next() == null);
+        try testing.expectEqual(data12.server_responses.len, reader.seek);
+        try testing.expect(try Record.read(&reader) == null);
     }
 
-    inner.seek = 0; // rewind
+    reader.seek = 0; // rewind
     { // use smaller buffer to force fill, buffer must fit largest record 815 + 5 (header)
         var buffer: [820]u8 = undefined;
-        var limited = inner.limited(.unlimited, &buffer);
-        var rdr: Reader = .init(&limited.interface);
+        var limited = reader.limited(.unlimited, &buffer);
         for (expected) |e| {
-            const rec = (try rdr.next()).?;
+            const rec = (try Record.read(&limited.interface)).?;
             try testing.expectEqual(e.content_type, rec.content_type);
             try testing.expectEqual(e.payload_len, rec.payload.len);
             try testing.expectEqual(.tls_1_2, rec.protocol_version);
         }
-        try testing.expect(try rdr.next() == null);
+        try testing.expect(try Record.read(&limited.interface) == null);
     }
 }
 
 test Decoder {
-    var inner: io.Reader = .fixed(&data12.server_responses);
-    var rdr: Reader = .{ .inner_reader = &inner };
-
-    var d = (try rdr.nextDecoder());
+    var reader: io.Reader = .fixed(&data12.server_responses);
+    var d = (try Record.decoder(&reader));
     try testing.expectEqual(.handshake, d.content_type);
 
     try testing.expectEqual(.server_hello, try d.decode(proto.Handshake));
@@ -328,30 +259,30 @@ pub const Writer = struct {
     }
 
     pub fn writeHandshakeHeader(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
-        try self.write(&record.handshakeHeader(handshake_type, payload_len));
+        try self.write(&handshakeHeader(handshake_type, payload_len));
     }
 
     /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
     pub fn advanceHandshake(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
-        try self.write(&record.handshakeHeader(handshake_type, payload_len));
+        try self.write(&handshakeHeader(handshake_type, payload_len));
         self.pos += payload_len;
     }
 
     /// Record payload is already written by using buffer space from `getPayload`.
     /// Now when we know payload len we can write record header and advance over payload.
     pub fn advanceRecord(self: *Writer, content_type: proto.ContentType, payload_len: usize) !void {
-        try self.write(&record.header(content_type, payload_len));
+        try self.write(&header(content_type, payload_len));
         self.pos += payload_len;
     }
 
     pub fn writeRecord(self: *Writer, content_type: proto.ContentType, payload: []const u8) !void {
-        try self.write(&record.header(content_type, payload.len));
+        try self.write(&header(content_type, payload.len));
         try self.write(payload);
     }
 
     /// Preserves space for record header and returns buffer free space.
     pub fn getPayload(self: *Writer) []u8 {
-        return self.buf[self.pos + record.header_len ..];
+        return self.buf[self.pos + header_len ..];
     }
 
     /// Preserves space for handshake header and returns buffer free space.
@@ -467,20 +398,4 @@ test "Writer" {
     try w.writeEnum(proto.NamedGroup.x25519);
     try w.writeInt(@as(u16, 0x1234));
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
-}
-
-test isSlice {
-    try comptime testing.expect(isSlice([]const u8));
-    try comptime testing.expect(isSlice([]u8));
-    try comptime testing.expect(!isSlice(io.FixedBufferStream([]u8)));
-}
-
-fn isSlice(comptime T: type) bool {
-    return switch (@typeInfo(T)) {
-        .pointer => |ptr_info| switch (ptr_info.size) {
-            .slice => true,
-            else => false,
-        },
-        else => false,
-    };
 }

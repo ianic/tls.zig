@@ -98,6 +98,7 @@ pub const domainsToSkip = [_][]const u8{
     "revopush.com", //              error.ConnectionTimedOut
     "tagcommander.com", //          error.ConnectionTimedOut
     "lastline.come", //
+    "list-manage.com", //           error.ConnectionTimedOut
 };
 
 pub const domainsWithErrors = [_][]const u8{
@@ -270,6 +271,7 @@ pub fn get(
 
     cli.close() catch |err| switch (err) {
         error.BrokenPipe => return,
+        error.WriteFailed => return,
         else => return err,
     };
 }

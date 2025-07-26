@@ -57,7 +57,7 @@ pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config
             },
             else => {
                 curl(allocator, domain) catch |curl_err| {
-                    std.debug.print("➖ {s:<25} {} curl error: {}\n", .{ domain, err, curl_err });
+                    std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
                     counter.add(.err);
                     return;
                 };
@@ -94,8 +94,9 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     switch (result.term) {
         .Exited => |error_code| switch (error_code) {
             0 => return,
-            6 => return error.CouldntResolveHost,
+            2 => return error.FailedToInitialize,
             3 => return error.UrlMalformed,
+            6 => return error.CouldntResolveHost,
             7 => return error.FailedToConnectToHost,
             18, 28 => return error.OperationTimeout,
             35 => return error.SslHandshake,
