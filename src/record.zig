@@ -87,6 +87,30 @@ pub const Reader = struct {
     }
 };
 
+pub fn read(rdr: *io.Reader) !?Record {
+    const hdr = rdr.peek(record.header_len) catch |err| switch (err) {
+        error.EndOfStream => return null,
+        else => return err,
+    };
+    const payload_len = mem.readInt(u16, hdr[3..5], .big);
+    return Record.init(try rdr.take(record.header_len + payload_len));
+}
+
+pub fn readDecrypt(rdr: *io.Reader, cph: *Cipher) !?struct { proto.ContentType, []const u8 } {
+    const rec = (try read(rdr)) orelse return null;
+    if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+    return try cph.decrypt(
+        // Reuse record buffer for cleartext. `rec.header` and
+        // `rec.payload`(ciphertext) are also pointing somewhere in
+        // this buffer. Decrypter is first reading then writing a
+        // block, cleartext has less length then ciphertext,
+        // cleartext starts from the beginning of the buffer, so
+        // ciphertext is always ahead of cleartext.
+        @constCast(rec.buffer),
+        rec,
+    );
+}
+
 pub const Record = struct {
     content_type: proto.ContentType,
     protocol_version: proto.Version = .tls_1_2,
