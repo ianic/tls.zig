@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 const mem = std.mem;
 const io = std.io;
 const proto = @import("protocol.zig");
+const max_ciphertext_len = @import("cipher.zig").max_ciphertext_len;
 
 pub const header_len = 5;
 
@@ -52,7 +53,12 @@ pub const Record = struct {
             else => return err,
         };
         const payload_len = mem.readInt(u16, hdr[3..5], .big);
-        return .init(try rdr.take(header_len + payload_len));
+        if (payload_len > max_ciphertext_len) return error.TlsRecordOverflow;
+        return .init(rdr.take(header_len + payload_len) catch |err| switch (err) {
+            error.EndOfStream => return null,
+            error.ReadFailed => return null,
+            else => return err,
+        });
     }
 
     pub fn decoder(rdr: *io.Reader) !Decoder {

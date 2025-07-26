@@ -5,6 +5,7 @@ const assert = std.debug.assert;
 
 const proto = @import("protocol.zig");
 const record = @import("record.zig");
+const Record = record.Record;
 const cipher = @import("cipher.zig");
 const Cipher = cipher.Cipher;
 const SessionResumption = @import("handshake_client.zig").Options.SessionResumption;
@@ -461,7 +462,7 @@ pub const NonBlock = struct {
         var rdr: io.Reader = .fixed(ciphertext);
         while (true) {
             // Find full tls record
-            const rec = (try record.read(&rdr)) orelse break;
+            const rec = (try Record.read(&rdr)) orelse break;
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
             // Decrypt record
