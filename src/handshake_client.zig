@@ -217,11 +217,11 @@ pub const Handshake = struct {
     rec_rdr: record.Reader, // tls record reader
     buffer: []u8, // scratch buffer used in all messages creation
 
-    const HandshakeT = @This();
+    const Self = @This();
 
     // `buf` is used for creating client messages and for decrypting server
     // ciphertext messages.
-    pub fn init(buf: []u8, reader: *std.io.Reader) HandshakeT {
+    pub fn init(buf: []u8, reader: *std.io.Reader) Self {
         return .{
             .client_random = undefined,
             .dh_kp = undefined,
@@ -232,7 +232,7 @@ pub const Handshake = struct {
     }
 
     fn initKeys(
-        h: *HandshakeT,
+        h: *Self,
         opt: Options,
     ) !void {
         const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
@@ -297,7 +297,7 @@ pub const Handshake = struct {
     /// https://datatracker.ietf.org/doc/html/rfc5246#section-7.3
     /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
     ///
-    pub fn handshake(h: *HandshakeT, w: std.io.Writer, opt: Options) !struct { Cipher, ?usize } {
+    pub fn handshake(h: *Self, w: *io.Writer, opt: Options) !struct { Cipher, ?usize } {
         var resumption_ticket: ?Options.SessionResumption.Ticket =
             if (opt.session_resumption) |r|
                 r.popTicket()
@@ -347,11 +347,11 @@ pub const Handshake = struct {
         return .{ h.cipher, null };
     }
 
-    fn clientFlight1(h: *HandshakeT, opt: Options) ![]const u8 {
+    fn clientFlight1(h: *Self, opt: Options) ![]const u8 {
         return try h.makeClientHello(opt, null);
     }
 
-    fn serverFlight1(h: *HandshakeT, opt: Options) !void {
+    fn serverFlight1(h: *Self, opt: Options) !void {
         try h.readServerFlight1();
         h.transcript.use(h.cipher_suite.hash());
         if (h.tls_version == .tls_1_3) {
@@ -360,7 +360,7 @@ pub const Handshake = struct {
         }
     }
 
-    fn clientFlight2(h: *HandshakeT, opt: Options) ![]const u8 {
+    fn clientFlight2(h: *Self, opt: Options) ![]const u8 {
         if (h.tls_version == .tls_1_3) {
             const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
             const buf = try h.makeClientFlight2Tls13(opt.auth);
@@ -372,20 +372,20 @@ pub const Handshake = struct {
         return try h.makeClientFlight2Tls12(opt.auth);
     }
 
-    fn serverFlight2(h: *HandshakeT, _: Options) !void {
+    fn serverFlight2(h: *Self, _: Options) !void {
         if (h.tls_version == .tls_1_3) return;
         try h.readServerFlight2();
     }
 
     /// Prepare key material and generate cipher for TLS 1.2
-    fn generateCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
+    fn generateCipher(h: *Self, key_log_callback: ?key_log.Callback) !void {
         try h.verifyCertificateSignatureTls12();
         try h.generateKeyMaterial(key_log_callback);
         h.cipher = try Cipher.initTls12(h.cipher_suite, &h.key_material, .client);
     }
 
     /// Generate TLS 1.2 pre master secret, master secret and key material.
-    fn generateKeyMaterial(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
+    fn generateKeyMaterial(h: *Self, key_log_callback: ?key_log.Callback) !void {
         const pre_master_secret = if (h.named_group) |named_group|
             try h.dh_kp.sharedKey(named_group, h.server_pub_key)
         else
@@ -405,7 +405,7 @@ pub const Handshake = struct {
     }
 
     /// TLS 1.3 cipher used during handshake
-    fn generateHandshakeCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !void {
+    fn generateHandshakeCipher(h: *Self, key_log_callback: ?key_log.Callback) !void {
         const shared_key = try h.dh_kp.sharedKey(h.named_group.?, h.server_pub_key);
         const handshake_secret = h.transcript.handshakeSecret(shared_key);
         if (key_log_callback) |cb| {
@@ -416,7 +416,7 @@ pub const Handshake = struct {
     }
 
     /// TLS 1.3 application (client) cipher
-    fn generateApplicationCipher(h: *HandshakeT, key_log_callback: ?key_log.Callback) !Cipher {
+    fn generateApplicationCipher(h: *Self, key_log_callback: ?key_log.Callback) !Cipher {
         const application_secret = h.transcript.applicationSecret();
         if (key_log_callback) |cb| {
             cb(key_log.label.server_traffic_secret_0, &h.client_random, application_secret.server);
@@ -426,7 +426,7 @@ pub const Handshake = struct {
     }
 
     fn makeClientHello(
-        h: *HandshakeT,
+        h: *Self,
         opt: Options,
         resumption_ticket: ?Options.SessionResumption.Ticket,
     ) ![]const u8 {
@@ -505,7 +505,7 @@ pub const Handshake = struct {
     /// Read server hello message. If TLS 1.3 is chosen in server hello
     /// return. For TLS 1.2 continue and read certificate, key_exchange
     /// eventual certificate request and hello done messages.
-    fn readServerFlight1(h: *HandshakeT) !void {
+    fn readServerFlight1(h: *Self) !void {
         var handshake_states: []const proto.Handshake = &.{.server_hello};
 
         while (true) {
@@ -566,7 +566,7 @@ pub const Handshake = struct {
     }
 
     /// Parse server hello message.
-    fn parseServerHello(h: *HandshakeT, d: *record.Decoder, length: u24) !void {
+    fn parseServerHello(h: *Self, d: *record.Decoder, length: u24) !void {
         if (try d.decode(proto.Version) != proto.Version.tls_1_2)
             return error.TlsBadVersion;
         h.server_random = try d.array(32);
@@ -623,7 +623,7 @@ pub const Handshake = struct {
         return mem.eql(u8, server_random, &hello_retry_request_magic);
     }
 
-    fn parseServerKeyExchange(h: *HandshakeT, d: *record.Decoder) !void {
+    fn parseServerKeyExchange(h: *Self, d: *record.Decoder) !void {
         const curve_type = try d.decode(proto.Curve);
         h.named_group = try d.decode(proto.NamedGroup);
         h.server_pub_key = dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
@@ -635,7 +635,7 @@ pub const Handshake = struct {
     /// Read encrypted part (after server hello) of the server first flight
     /// for TLS 1.3: change cipher spec, eventual certificate request,
     /// certificate, certificate verify and handshake finished messages.
-    fn readEncryptedServerFlight1(h: *HandshakeT, is_session_resumption: bool) !void {
+    fn readEncryptedServerFlight1(h: *Self, is_session_resumption: bool) !void {
         var cleartext_buf = h.buffer;
         var cleartext_buf_head: usize = 0;
         var cleartext_buf_tail: usize = 0;
@@ -724,7 +724,7 @@ pub const Handshake = struct {
         }
     }
 
-    fn verifyCertificateSignatureTls12(h: *HandshakeT) !void {
+    fn verifyCertificateSignatureTls12(h: *Self) !void {
         if (h.cipher_suite.keyExchange() != .ecdhe) return;
         const verify_bytes = brk: {
             var w = record.Writer{ .buf = h.buffer };
@@ -743,7 +743,7 @@ pub const Handshake = struct {
     /// finished messages for tls 1.2.
     /// If client certificate is requested also adds client certificate and
     /// certificate verify messages.
-    fn makeClientFlight2Tls12(h: *HandshakeT, auth: ?*CertKeyPair) ![]const u8 {
+    fn makeClientFlight2Tls12(h: *Self, auth: ?*CertKeyPair) ![]const u8 {
         var w = record.Writer{ .buf = h.buffer };
         var cert_builder: ?CertificateBuilder = null;
 
@@ -797,7 +797,7 @@ pub const Handshake = struct {
     /// and client certificate verify messages are also created. If the
     /// server has requested certificate but the client is not configured
     /// empty certificate message is sent, as is required by rfc.
-    fn makeClientFlight2Tls13(h: *HandshakeT, auth: ?*CertKeyPair) ![]const u8 {
+    fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair) ![]const u8 {
         var w = record.Writer{ .buf = h.buffer };
 
         // Client change cipher spec message
@@ -834,7 +834,7 @@ pub const Handshake = struct {
         return w.getWritten();
     }
 
-    fn certificateBuilder(h: *HandshakeT, auth: *CertKeyPair) CertificateBuilder {
+    fn certificateBuilder(h: *Self, auth: *CertKeyPair) CertificateBuilder {
         return .{
             .bundle = auth.bundle,
             .key = auth.key,
@@ -844,14 +844,14 @@ pub const Handshake = struct {
         };
     }
 
-    fn makeClientFinishedTls13(h: *HandshakeT, buf: []u8) ![]const u8 {
+    fn makeClientFinishedTls13(h: *Self, buf: []u8) ![]const u8 {
         var w = record.Writer{ .buf = buf };
         const verify_data = h.transcript.clientFinishedTls13(w.getHandshakePayload());
         try w.advanceHandshake(.finished, verify_data.len);
         return w.getWritten();
     }
 
-    fn makeClientKeyExchange(h: *HandshakeT, buf: []u8) ![]const u8 {
+    fn makeClientKeyExchange(h: *Self, buf: []u8) ![]const u8 {
         var w = record.Writer{ .buf = buf };
         if (h.named_group) |named_group| {
             const key = try h.dh_kp.publicKey(named_group);
@@ -867,7 +867,7 @@ pub const Handshake = struct {
         return w.getWritten();
     }
 
-    fn readServerFlight2(h: *HandshakeT) !void {
+    fn readServerFlight2(h: *Self) !void {
         // Read server change cipher spec message.
         {
             var d = try h.rec_rdr.nextDecoder();
@@ -888,13 +888,13 @@ pub const Handshake = struct {
     }
 
     /// Write encrypted handshake message into `w`
-    fn writeEncrypted(h: *HandshakeT, w: *record.Writer, cleartext: []const u8) !void {
+    fn writeEncrypted(h: *Self, w: *record.Writer, cleartext: []const u8) !void {
         const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
         w.pos += ciphertext.len;
     }
 
     // Copy handshake parameters to opt.diagnostic
-    fn updateDiagnostic(h: *HandshakeT, opt: Options, is_session_resumption: bool) void {
+    fn updateDiagnostic(h: *Self, opt: Options, is_session_resumption: bool) void {
         if (opt.diagnostic) |d| {
             d.tls_version = h.tls_version;
             d.cipher_suite_tag = h.cipher_suite;
