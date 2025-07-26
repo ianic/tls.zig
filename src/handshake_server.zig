@@ -540,10 +540,9 @@ test "make certificate request" {
 
 pub const NonBlock = struct {
     const Self = @This();
-    pub const Inner = Handshake([]const u8);
 
     // inner sync handshake
-    inner: Inner = undefined,
+    inner: Handshake = undefined,
     opt: Options = undefined,
     state: State = .none,
 
@@ -560,7 +559,10 @@ pub const NonBlock = struct {
     };
 
     pub fn init(opt: Options) Self {
-        var inner = Inner.init(undefined, undefined);
+        var inner: Handshake = .{
+            .stream_reader = undefined,
+            .stream_writer = undefined,
+        };
         inner.initKeys(opt);
         return .{
             .opt = opt,
@@ -570,26 +572,20 @@ pub const NonBlock = struct {
     }
 
     /// Returns null if there is nothing to send at this state
-    fn send(self: *Self) !?[]const u8 {
+    fn send(self: *Self) !void {
         switch (self.state) {
             .client_flight_1 => {
-                const buf = try self.inner.serverFlight(self.opt);
+                try self.inner.serverFlight(self.opt);
                 self.state.next();
-                return buf;
             },
-            else => return null,
+            else => return,
         }
     }
 
     /// Returns number of bytes consumed from buf
-    fn recv(self: *Self, buf: []const u8) !usize {
-        if (buf.len == 0) return 0;
-
+    fn recv(self: *Self) !void {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
-
-        var rdr = record.bufferReader(buf);
-        self.inner.rec_rdr = &rdr;
 
         switch (self.state) {
             .init => {
@@ -600,10 +596,8 @@ pub const NonBlock = struct {
                 try self.inner.clientFlight2(self.opt);
                 self.state.next();
             },
-            else => return 0,
+            else => return,
         }
-
-        return rdr.bytesRead();
     }
 
     /// True when handshake is successfully finished
@@ -634,19 +628,27 @@ pub const NonBlock = struct {
             .unused_recv = &.{},
             .send = &.{},
         };
-        self.inner.buffer = send_buf;
 
-        const recv_pos = self.recv(recv_buf) catch |err| switch (err) {
-            error.EndOfStream => 0,
-            else => return err,
-        };
+        var reader: io.Reader = .fixed(recv_buf);
+        var writer: io.Writer = .fixed(send_buf);
+        self.inner.stream_reader = &reader;
+        self.inner.stream_writer = &writer;
 
-        const send_pos: usize = if (try self.send()) |buf| buf.len else 0;
+        const recv_pos: usize = if (recv_buf.len > 0) brk: {
+            self.recv() catch |err| switch (err) {
+                error.EndOfStream => break :brk 0,
+                else => return err,
+            };
+            break :brk reader.seek;
+        } else 0;
+
+        try self.send();
+
         return .{
             .recv_pos = recv_pos,
-            .send_pos = send_pos,
+            .send_pos = writer.end,
             .unused_recv = recv_buf[recv_pos..],
-            .send = send_buf[0..send_pos],
+            .send = writer.buffered(),
         };
     }
 
