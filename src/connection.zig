@@ -19,7 +19,8 @@ pub const Connection = struct {
     max_encrypt_seq: u64 = std.math.maxInt(u64) - 1,
     key_update_requested: bool = false,
     received_close_notify: bool = false,
-    read_buf: []const u8 = &.{},
+    /// Part of the cleartext record returned from next but not yet read by client.
+    cleartext_buf: []const u8 = &.{},
 
     session_resumption: ?*SessionResumption = null,
     session_resumption_secret_idx: ?usize = null,
@@ -132,7 +133,7 @@ pub const Connection = struct {
     }
 
     pub fn eof(c: *Self) bool {
-        return c.received_close_notify and c.read_buf.len == 0;
+        return c.received_close_notify and c.cleartext_buf.len == 0;
     }
 
     pub fn close(c: *Self) anyerror!void {
@@ -140,25 +141,7 @@ pub const Connection = struct {
         try c.writeRecord(.alert, &proto.Alert.closeNotify());
     }
 
-    // read, write interface
-
-    pub fn reader(c: *Self) std.io.AnyReader {
-        return .{ .context = c, .readFn = readFn };
-    }
-
-    pub fn writer(c: *Self) std.io.AnyWriter {
-        return .{ .context = c, .writeFn = writeFn };
-    }
-
-    fn readFn(context: *const anyopaque, bytes: []u8) !usize {
-        const c: *Self = @constCast(@ptrCast(@alignCast(context)));
-        return c.read(bytes);
-    }
-
-    fn writeFn(context: *const anyopaque, bytes: []const u8) !usize {
-        const c: *Self = @constCast(@ptrCast(@alignCast(context)));
-        return c.write(bytes);
-    }
+    // write/read
 
     /// Encrypts cleartext and writes it to the underlying stream as single
     /// tls record. Max single tls record payload length is 1<<14 (16K)
@@ -179,12 +162,12 @@ pub const Connection = struct {
     }
 
     pub fn read(c: *Self, buffer: []u8) !usize {
-        if (c.read_buf.len == 0) {
-            c.read_buf = try c.next() orelse return 0;
+        if (c.cleartext_buf.len == 0) {
+            c.cleartext_buf = try c.next() orelse return 0;
         }
-        const n = @min(c.read_buf.len, buffer.len);
-        @memcpy(buffer[0..n], c.read_buf[0..n]);
-        c.read_buf = c.read_buf[n..];
+        const n = @min(c.cleartext_buf.len, buffer.len);
+        @memcpy(buffer[0..n], c.cleartext_buf[0..n]);
+        c.cleartext_buf = c.cleartext_buf[n..];
         return n;
     }
 
@@ -214,15 +197,98 @@ pub const Connection = struct {
     pub fn readv(c: *Self, iovecs: []std.posix.iovec) !usize {
         var vp: VecPut = .{ .iovecs = iovecs };
         while (true) {
-            if (c.read_buf.len == 0) {
-                c.read_buf = try c.next() orelse break;
+            if (c.cleartext_buf.len == 0) {
+                c.cleartext_buf = try c.next() orelse break;
             }
-            const n = vp.put(c.read_buf);
-            const read_buf_len = c.read_buf.len;
-            c.read_buf = c.read_buf[n..];
+            const n = vp.put(c.cleartext_buf);
+            const read_buf_len = c.cleartext_buf.len;
+            c.cleartext_buf = c.cleartext_buf[n..];
             if (n < read_buf_len) break;
         }
         return vp.total;
+    }
+
+    // io.Reader interface
+
+    pub const Reader = struct {
+        conn: *Connection,
+        interface: io.Reader,
+        err: ?anyerror = null,
+
+        pub fn init(c: *Connection, buffer: []u8) Reader {
+            return .{
+                .conn = c,
+                .interface = .{
+                    .vtable = &.{
+                        .stream = stream,
+                        .discard = io.Reader.defaultDiscard,
+                    },
+                    .buffer = buffer,
+                    .seek = 0,
+                    .end = 0,
+                },
+            };
+        }
+
+        fn stream(r: *io.Reader, w: *io.Writer, limit: io.Limit) io.Reader.StreamError!usize {
+            const self: *Reader = @fieldParentPtr("interface", r);
+            return self.conn.read(limit.slice(w.unusedCapacitySlice())) catch |err| {
+                self.err = err;
+                if (err == error.EndOfStream) return error.EndOfStream;
+                return error.ReadFailed;
+            };
+        }
+    };
+
+    pub fn reader(c: *Self, buffer: []u8) Reader {
+        return .init(c, buffer);
+    }
+
+    // io.Writer interface
+
+    pub const Writer = struct {
+        conn: *Connection,
+        interface: io.Writer,
+        err: ?anyerror = null,
+
+        pub fn init(c: *Connection, buffer: []u8) Writer {
+            return .{
+                .conn = c,
+                .interface = .{
+                    .vtable = &.{
+                        .drain = drain,
+                    },
+                    .buffer = buffer,
+                    .end = 0,
+                },
+            };
+        }
+
+        fn drain(w: *io.Writer, data: []const []const u8, splat: usize) io.Writer.Error!usize {
+            if (data.len == 0) return 0;
+            const self: *Writer = @fieldParentPtr("interface", w);
+            var n: usize = 0;
+            for (data[0 .. data.len - 1]) |bytes| {
+                self.conn.writeAll(bytes) catch |err| {
+                    self.err = err;
+                    return error.WriteFailed;
+                };
+                n += bytes.len;
+            }
+            const pattern = data[data.len - 1];
+            for (0..splat) |_| {
+                self.conn.writeAll(pattern) catch |err| {
+                    self.err = err;
+                    return error.WriteFailed;
+                };
+                n += pattern.len;
+            }
+            return n;
+        }
+    };
+
+    pub fn writer(c: *Self, buffer: []u8) Writer {
+        return .init(c, buffer);
     }
 };
 
@@ -232,7 +298,7 @@ const testu = @import("testu.zig");
 
 test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
-    var stream_reader: io.Reader = .fixed(&data12.server_pong ** 3);
+    var stream_reader: io.Reader = .fixed(&data12.server_pong ** 4);
     var stream_writer: io.Writer = .fixed(&output_buf);
     var conn: Connection = .{
         .stream_reader = &stream_reader,
@@ -246,14 +312,23 @@ test "encrypt decrypt" {
         try conn.writeRecord(.handshake, &data12.client_finished);
         try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, conn.stream_writer.buffered());
     }
-
     _ = conn.stream_writer.consumeAll(); // reset writer buffer
     { // encrypt ping
         const cleartext = "ping";
         _ = testu.random(0); // sets iv to 00, 01, ... 0f
-        //conn.encrypt_seq = 1;
 
         try conn.writeAll(cleartext);
+        try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.stream_writer.buffered());
+    }
+    _ = conn.stream_writer.consumeAll();
+    { // writer interface
+        const cleartext = "ping";
+        _ = testu.random(0); // sets iv to 00, 01, ... 0f
+        conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.encrypt_seq = 1; // reset sequence
+
+        var writer = conn.writer(&.{});
+        var w = &writer.interface;
+        try w.writeAll(cleartext);
         try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.stream_writer.buffered());
     }
     { // decrypt server pong message
@@ -262,10 +337,25 @@ test "encrypt decrypt" {
     }
     { // test reader interface
         conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
-        var rdr = conn.reader();
-        var buffer: [4]u8 = undefined;
-        const n = try rdr.readAll(&buffer);
-        try testing.expectEqualStrings("pong", buffer[0..n]);
+        var buffer: [2]u8 = undefined;
+        var reader = conn.reader(&buffer);
+        var rdr = &reader.interface;
+        try testing.expectEqualStrings("", conn.cleartext_buf);
+        try testing.expectEqualStrings("po", try rdr.take(rdr.buffer.len));
+        // cleartext record part which didn't fit into reader buffer
+        try testing.expectEqualStrings("ng", conn.cleartext_buf);
+        try testing.expectEqualStrings("n", try rdr.take(1));
+        try testing.expectEqualStrings("", conn.cleartext_buf);
+        try testing.expectEqualStrings("g", try rdr.take(1));
+    }
+    { // reader discard
+        conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
+        var buffer: [5]u8 = undefined;
+        var reader = conn.reader(&buffer);
+        var rdr = &reader.interface;
+        try testing.expectEqual(1, try rdr.discard(.limited(1)));
+        try testing.expectEqualStrings("ong", conn.cleartext_buf);
+        try testing.expectEqual(3, try rdr.discard(.limited(3)));
     }
     { // test readv interface
         conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
