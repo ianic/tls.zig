@@ -48,7 +48,7 @@ pub const CertKeyPair = struct {
     key: PrivateKey,
 
     pub fn fromFilePath(
-        allocator: std.mem.Allocator,
+        allocator: mem.Allocator,
         dir: std.fs.Dir,
         cert_path: []const u8,
         key_path: []const u8,
@@ -64,7 +64,7 @@ pub const CertKeyPair = struct {
     }
 
     pub fn fromFilePathAbsolute(
-        allocator: std.mem.Allocator,
+        allocator: mem.Allocator,
         cert_path: []const u8,
         key_path: []const u8,
     ) !CertKeyPair {
@@ -78,7 +78,7 @@ pub const CertKeyPair = struct {
         return .{ .bundle = bundle, .key = key };
     }
 
-    pub fn deinit(c: *CertKeyPair, allocator: std.mem.Allocator) void {
+    pub fn deinit(c: *CertKeyPair, allocator: mem.Allocator) void {
         c.bundle.deinit(allocator);
     }
 };
@@ -88,21 +88,21 @@ pub const cert = struct {
     //
     // They are used to verify that certificate chain sent by the other side
     // forms valid trust chain.
-    pub const Bundle = std.crypto.Certificate.Bundle;
+    pub const Bundle = crypto.Certificate.Bundle;
 
-    pub fn fromFilePath(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !Bundle {
+    pub fn fromFilePath(allocator: mem.Allocator, dir: std.fs.Dir, path: []const u8) !Bundle {
         var bundle: Bundle = .{};
         try bundle.addCertsFromFilePath(allocator, dir, path);
         return bundle;
     }
 
-    pub fn fromFilePathAbsolute(allocator: std.mem.Allocator, path: []const u8) !Bundle {
+    pub fn fromFilePathAbsolute(allocator: mem.Allocator, path: []const u8) !Bundle {
         var bundle: Bundle = .{};
         try bundle.addCertsFromFilePathAbsolute(allocator, path);
         return bundle;
     }
 
-    pub fn fromSystem(allocator: std.mem.Allocator) !Bundle {
+    pub fn fromSystem(allocator: mem.Allocator) !Bundle {
         var bundle: Bundle = .{};
         try bundle.rescan(allocator);
         return bundle;

@@ -17,7 +17,6 @@ const PrivateKey = @import("PrivateKey.zig");
 const proto = @import("protocol.zig");
 
 const common = @import("handshake_common.zig");
-const dupe = common.dupe; // TODO: remove like in client
 const CertificateBuilder = common.CertificateBuilder;
 const CertificateParser = common.CertificateParser;
 const DhKeyPair = common.DhKeyPair;
@@ -197,7 +196,7 @@ pub const Handshake = struct {
         var seed: [DhKeyPair.seed_len]u8 = undefined;
         crypto.random.bytes(&seed);
         var kp = try DhKeyPair.init(seed, supported_named_groups);
-        h.server_pub_key = dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
+        h.server_pub_key = common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
         return try kp.sharedKey(h.named_group, h.client_pub_key);
     }
 
@@ -378,7 +377,7 @@ pub const Handshake = struct {
         h.client_random = try d.array(32);
         { // legacy session id
             const len = try d.decode(u8);
-            h.legacy_session_id = dupe(&h.legacy_session_id_buf, try d.slice(len));
+            h.legacy_session_id = common.dupe(&h.legacy_session_id_buf, try d.slice(len));
         }
         { // cipher suites
             const end_idx = try d.decode(u16) + d.idx;
@@ -432,7 +431,7 @@ pub const Handshake = struct {
                         for (supported_named_groups, 0..) |supported, idx| {
                             if (named_group == supported and idx < selected_named_group_idx) {
                                 h.named_group = named_group;
-                                h.client_pub_key = dupe(&h.client_pub_key_buf, client_pub_key);
+                                h.client_pub_key = common.dupe(&h.client_pub_key_buf, client_pub_key);
                                 selected_named_group_idx = idx;
                             }
                         }

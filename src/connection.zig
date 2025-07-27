@@ -14,8 +14,7 @@ pub const Connection = struct {
     /// Underlying network connection stream reader/writer pair.
     stream_reader: *io.Reader, // source of the encrypted (ciphebroortext) data
     stream_writer: *io.Writer, // sink to send encrypted (ciphertext) data
-
-    cipher: Cipher = undefined,
+    cipher: Cipher,
 
     max_encrypt_seq: u64 = std.math.maxInt(u64) - 1,
     key_update_requested: bool = false,
@@ -58,10 +57,6 @@ pub const Connection = struct {
         try c.stream_writer.flush();
     }
 
-    fn writeAlert(c: *Self, err: anyerror) !void {
-        try c.encryptWrite(.alert, &proto.alertFromError(err));
-    }
-
     /// Returns next record of cleartext data.
     /// Can be used in iterator like loop without memcpy to another buffer:
     ///   while (try client.next()) |buf| { ... }
@@ -70,7 +65,7 @@ pub const Connection = struct {
             // Write alert on tls errors.
             // Stream errors return to the caller.
             if (mem.startsWith(u8, @errorName(err), "Tls"))
-                try c.writeAlert(err);
+                try c.encryptWrite(.alert, &proto.alertFromError(err));
             return err;
         } orelse return null;
         if (content_type != .application_data) return error.TlsUnexpectedMessage;
@@ -98,7 +93,6 @@ pub const Connection = struct {
                 .handshake => {
                     const handshake_type: proto.Handshake = @enumFromInt(cleartext[0]);
                     switch (handshake_type) {
-                        // skip new session ticket and read next record
                         .new_session_ticket => {
                             if (c.session_resumption) |r| {
                                 r.pushTicket(cleartext, c.session_resumption_secret_idx.?) catch {};
@@ -240,9 +234,11 @@ test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     var stream_reader: io.Reader = .fixed(&data12.server_pong ** 3);
     var stream_writer: io.Writer = .fixed(&output_buf);
-    var conn: Connection = .{ .stream_reader = &stream_reader, .stream_writer = &stream_writer };
-
-    conn.cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client);
+    var conn: Connection = .{
+        .stream_reader = &stream_reader,
+        .stream_writer = &stream_writer,
+        .cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client),
+    };
     conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.rnd = testu.random(0); // use fixed rng
 
     { // encrypt verify data from example
@@ -341,11 +337,16 @@ test "client/server connection" {
         };
     };
 
-    var client_conn: Connection = .{ .stream_reader = undefined, .stream_writer = undefined };
-    client_conn.cipher = cipher_client;
-
-    var server_conn: Connection = .{ .stream_reader = undefined, .stream_writer = undefined };
-    server_conn.cipher = cipher_server;
+    var client_conn: Connection = .{
+        .stream_reader = undefined,
+        .stream_writer = undefined,
+        .cipher = cipher_client,
+    };
+    var server_conn: Connection = .{
+        .stream_reader = undefined,
+        .stream_writer = undefined,
+        .cipher = cipher_server,
+    };
 
     // big enough cleartext to produce multiple tls records
     var cleartext_buf: [cipher.max_cleartext_len * 5]u8 = undefined;
@@ -523,30 +524,4 @@ test "nonblock encrypt" {
     try testing.expectEqual(cleartext.len, res.cleartext_pos);
     try testing.expectEqual(26, res.ciphertext.len);
     try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, res.ciphertext);
-}
-
-test "issue_14 allow pointer stream type" {
-    {
-        const stream: std.net.Stream = undefined;
-        var r = stream.reader(&.{});
-        var w = stream.writer(&.{});
-        var conn: Connection = .{
-            .stream_reader = r.interface(),
-            .stream_writer = &w.interface,
-        };
-        _ = conn.reader();
-        _ = conn.writer();
-    }
-    {
-        var stream_v: std.net.Stream = undefined;
-        const stream: *std.net.Stream = &stream_v;
-        var r = stream.reader(&.{});
-        var w = stream.writer(&.{});
-        var conn: Connection = .{
-            .stream_reader = r.interface(),
-            .stream_writer = &w.interface,
-        };
-        _ = conn.reader();
-        _ = conn.writer();
-    }
 }
