@@ -46,23 +46,34 @@ pub const Record = struct {
         };
     }
 
-    pub fn read(rdr: *io.Reader) !?Record {
-        const hdr = rdr.peek(header_len) catch |err| switch (err) {
-            error.EndOfStream => return null,
-            error.ReadFailed => return null,
-            else => return err,
-        };
+    const Error = error{
+        EndOfStream, // clean close of the stream
+        ReadFailed, // all other stream close
+        NoSpaceLeft, // read buffer is too small to fit entire tls record
+        TlsRecordOverflow, // incorrect tls record
+    };
+
+    pub fn read(rdr: *io.Reader) Error!Record {
+        if (header_len > rdr.buffer.len) {
+            @branchHint(.cold);
+            return error.NoSpaceLeft;
+        }
+        const hdr = try rdr.peek(header_len);
         const payload_len = mem.readInt(u16, hdr[3..5], .big);
-        if (payload_len > max_ciphertext_len) return error.TlsRecordOverflow;
-        return .init(rdr.take(header_len + payload_len) catch |err| switch (err) {
-            error.EndOfStream => return null,
-            error.ReadFailed => return null,
-            else => return err,
-        });
+        if (payload_len > max_ciphertext_len) {
+            @branchHint(.cold);
+            return error.TlsRecordOverflow;
+        }
+        const record_len = header_len + payload_len;
+        if (record_len > rdr.buffer.len) {
+            @branchHint(.cold);
+            return error.NoSpaceLeft;
+        }
+        return .init(try rdr.take(record_len));
     }
 
     pub fn decoder(rdr: *io.Reader) !Decoder {
-        const rec = (try Record.read(rdr)) orelse return error.EndOfStream;
+        const rec = try Record.read(rdr);
         if (@intFromEnum(rec.protocol_version) != 0x0300 and
             @intFromEnum(rec.protocol_version) != 0x0301 and
             rec.protocol_version != .tls_1_2)
@@ -187,7 +198,7 @@ test "record.read" {
     {
         var n: usize = 0;
         for (expected) |e| {
-            const rec = (try Record.read(&reader)).?;
+            const rec = try Record.read(&reader);
             try testing.expectEqual(e.content_type, rec.content_type);
             try testing.expectEqual(e.payload_len, rec.payload.len);
             try testing.expectEqual(.tls_1_2, rec.protocol_version);
@@ -197,7 +208,7 @@ test "record.read" {
             try testing.expectEqual(n, reader.seek);
         }
         try testing.expectEqual(data12.server_responses.len, reader.seek);
-        try testing.expect(try Record.read(&reader) == null);
+        try testing.expectError(error.EndOfStream, Record.read(&reader));
     }
 
     reader.seek = 0; // rewind
@@ -205,12 +216,12 @@ test "record.read" {
         var buffer: [820]u8 = undefined;
         var limited = reader.limited(.unlimited, &buffer);
         for (expected) |e| {
-            const rec = (try Record.read(&limited.interface)).?;
+            const rec = try Record.read(&limited.interface);
             try testing.expectEqual(e.content_type, rec.content_type);
             try testing.expectEqual(e.payload_len, rec.payload.len);
             try testing.expectEqual(.tls_1_2, rec.protocol_version);
         }
-        try testing.expect(try Record.read(&limited.interface) == null);
+        try testing.expectError(error.EndOfStream, Record.read(&limited.interface));
     }
 }
 
@@ -262,6 +273,18 @@ pub const Writer = struct {
         if (free.len < bytes) return error.NoSpaceLeft;
         mem.writeInt(IntT, free[0..bytes], value, .big);
         self.pos += bytes;
+    }
+
+    pub fn writableSlice(self: *Writer, len: usize) ![]u8 {
+        if (self.pos + len > self.buf.len) return error.NoSpaceLeft;
+        defer self.pos += len;
+        return self.buf[self.pos..][0..len];
+    }
+
+    pub fn writableArray(self: *Writer, comptime len: usize) !*[len]u8 {
+        if (self.pos + len > self.buf.len) return error.NoSpaceLeft;
+        defer self.pos += len;
+        return self.buf[self.pos..][0..len];
     }
 
     pub fn writeHandshakeHeader(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {

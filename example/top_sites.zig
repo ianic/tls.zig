@@ -17,6 +17,7 @@ pub fn main() !void {
 
     // Some other sources of domains list:
     // source: https://moz.com/top500
+    //var rdr = cmn.CsvReader.init(@embedFile("domains_with_big_tls_records_in_handshake"));
     var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     // source: https://dataforseo.com/free-seo-stats/top-1000-websites
     // var rdr = cmn.CsvReader.init(@embedFile("ranked_domains.csv"));
@@ -47,17 +48,21 @@ pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config
     if (cmn.inList(domain, &cmn.no_keyber)) {
         opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };
     }
-
+    const only_fail = false;
     cmn.get(allocator, domain, null, false, false, opt) catch |err| {
         switch (err) {
             error.UnknownHostName, error.ConnectionTimedOut, error.ConnectionRefused, error.NetworkUnreachable => {
                 counter.add(.err);
-                std.debug.print("➖ {s:<25} {}\n", .{ domain, err });
+                if (!only_fail) {
+                    std.debug.print("➖ {s:<25} {}\n", .{ domain, err });
+                }
                 return;
             },
             else => {
                 curl(allocator, domain) catch |curl_err| {
-                    std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
+                    if (!only_fail) {
+                        std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
+                    }
                     counter.add(.err);
                     return;
                 };
@@ -68,13 +73,21 @@ pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config
         return;
     };
     counter.addSuccess(diagnostic.tls_version);
-    std.debug.print("✔️ {s:<25} {s} {s:<40} {s:<20} {s}\n", .{
-        domain,
-        if (@intFromEnum(diagnostic.tls_version) == 0) "none" else @tagName(diagnostic.tls_version),
-        if (@intFromEnum(diagnostic.cipher_suite_tag) == 0) "none" else @tagName(diagnostic.cipher_suite_tag),
-        if (@intFromEnum(diagnostic.named_group) == 0) "none" else @tagName(diagnostic.named_group),
-        if (@intFromEnum(diagnostic.signature_scheme) == 0) "none" else @tagName(diagnostic.signature_scheme),
-    });
+    counter.max_server_record_len = @max(counter.max_server_record_len, diagnostic.max_server_record_len);
+    counter.max_server_cleartext_len = @max(counter.max_server_cleartext_len, diagnostic.max_server_cleartext_len);
+    counter.max_client_record_len = @max(counter.max_client_record_len, diagnostic.max_client_record_len);
+    if (!only_fail) {
+        std.debug.print("✔️ {s:<25} {s} {s:<40} {s:<20} {s:<25} {d:>5} {d:>5} {d:>5}\n", .{
+            domain,
+            if (@intFromEnum(diagnostic.tls_version) == 0) "none" else @tagName(diagnostic.tls_version),
+            if (@intFromEnum(diagnostic.cipher_suite_tag) == 0) "none" else @tagName(diagnostic.cipher_suite_tag),
+            if (@intFromEnum(diagnostic.named_group) == 0) "none" else @tagName(diagnostic.named_group),
+            if (@intFromEnum(diagnostic.signature_scheme) == 0) "none" else @tagName(diagnostic.signature_scheme),
+            diagnostic.max_client_record_len,
+            diagnostic.max_server_record_len,
+            diagnostic.max_server_cleartext_len,
+        });
+    }
 }
 
 fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
@@ -83,7 +96,7 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
 
     const result = try std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "curl", "-m 10", "-sS", "-w %{errormsg}", url },
+        .argv = &[_][]const u8{ "curl", "-m10", "-sS", "-w %{errormsg}", url },
     });
     defer {
         allocator.free(result.stdout);
@@ -94,7 +107,8 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     switch (result.term) {
         .Exited => |error_code| switch (error_code) {
             0 => return,
-            2 => return error.FailedToInitialize,
+            // curl command is not wroking
+            2 => unreachable, //return error.FailedToInitialize,
             3 => return error.UrlMalformed,
             6 => return error.CouldntResolveHost,
             7 => return error.FailedToConnectToHost,
@@ -115,4 +129,8 @@ fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     std.debug.print("{s}\n\n", .{result.stderr});
 
     return error.CurlFailed;
+}
+
+test "curl" {
+    try curl(std.testing.allocator, "youronlinechoices.com");
 }

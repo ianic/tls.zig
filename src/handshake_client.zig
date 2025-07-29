@@ -74,6 +74,9 @@ pub const Options = struct {
         signature_scheme: proto.SignatureScheme = @enumFromInt(0),
         client_signature_scheme: proto.SignatureScheme = @enumFromInt(0),
         is_session_resumption: bool = false,
+        max_server_record_len: usize = 0,
+        max_server_cleartext_len: usize = 0,
+        max_client_record_len: usize = 0,
     };
 
     /// Collects and stores session resumption tickets.
@@ -218,6 +221,10 @@ pub const Handshake = struct {
     server_pub_key_buf: [2048]u8 = undefined,
     server_pub_key: []const u8 = undefined,
     pre_shared_selected_identity: ?u16 = null,
+    // statistics
+    max_server_record_len: usize = 0,
+    max_server_cleartext_len: usize = 0,
+    max_client_record_len: usize = 0,
 
     const Self = @This();
 
@@ -300,7 +307,9 @@ pub const Handshake = struct {
         }
 
         try h.makeClientHello(opt, resumption_ticket); // client flight 1
+        h.max_client_record_len = h.stream_writer.end;
         try h.stream_writer.flush();
+
         try h.readServerFlight1(); // server flight 1
 
         if (resumption_ticket != null and h.pre_shared_selected_identity == null) {
@@ -319,6 +328,7 @@ pub const Handshake = struct {
             try h.readEncryptedServerFlight1(resumption_ticket != null); // server flight 1
             const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
             try h.makeClientFlight2Tls13(opt.auth); // client flight 2
+            h.max_client_record_len = @max(h.max_client_record_len, h.stream_writer.end);
             try h.stream_writer.flush();
 
             const secret_idx: ?usize = if (opt.session_resumption) |r|
@@ -332,6 +342,7 @@ pub const Handshake = struct {
         // tls 1.2 specific handshake part
         try h.generateCipher(opt.key_log_callback);
         try h.makeClientFlight2Tls12(opt.auth); // client flight 2
+        h.max_client_record_len = @max(h.max_client_record_len, h.stream_writer.end);
         try h.stream_writer.flush();
         try h.readServerFlight2(); // server flight 2
         return .{ h.cipher, null };
@@ -427,53 +438,55 @@ pub const Handshake = struct {
         // payload and extensions when creating it. Payload has
         // extensions length (u16) as last element.
         //
-        var buffer = h.stream_writer.unusedCapacitySlice();
-        const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
         const tls_versions = try CipherSuite.versions(opt.cipher_suites);
-        // Payload writer, preserve header_len bytes for handshake header.
-        var payload = record.Writer{ .buf = buffer[header_len..] };
-        try payload.writeEnum(proto.Version.tls_1_2);
-        try payload.write(&h.client_random);
-        try payload.writeByte(0); // no session id
-        try payload.writeEnumArray(CipherSuite, opt.cipher_suites);
-        try payload.write(&[_]u8{ 0x01, 0x00 }); // no compression
+
+        var buffer = h.stream_writer.unusedCapacitySlice();
+        var w = record.Writer{ .buf = buffer };
+        const header_buf = try w.writableArray(9); // tls record header (5 bytes) and handshake header (4 bytes)
+        try w.writeEnum(proto.Version.tls_1_2);
+        try w.write(&h.client_random);
+        try w.writeByte(0); // no session id
+        try w.writeEnumArray(CipherSuite, opt.cipher_suites);
+        try w.write(&[_]u8{ 0x01, 0x00 }); // no compression
+        const ext_len_buf = try w.writableArray(2); // placeholder for extensions length
 
         // Extensions writer starts after payload and preserves 2 more
         // bytes for extension len in payload.
-        var ext = record.Writer{ .buf = buffer[header_len + payload.pos + 2 ..] };
-        try ext.writeExtension(.supported_versions, switch (tls_versions) {
+        const ext_head = w.pos;
+        try w.writeExtension(.supported_versions, switch (tls_versions) {
             .both => &[_]proto.Version{ .tls_1_3, .tls_1_2 },
             .tls_1_3 => &[_]proto.Version{.tls_1_3},
             .tls_1_2 => &[_]proto.Version{.tls_1_2},
         });
-        try ext.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
+        try w.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
 
-        try ext.writeExtension(.supported_groups, opt.named_groups);
+        try w.writeExtension(.supported_groups, opt.named_groups);
         if (tls_versions != .tls_1_2) {
             var keys: [supported_named_groups.len][]const u8 = undefined;
             for (opt.named_groups, 0..) |ng, i| {
                 keys[i] = try h.dh_kp.publicKey(ng);
             }
-            try ext.writeKeyShare(opt.named_groups, keys[0..opt.named_groups.len]);
+            try w.writeKeyShare(opt.named_groups, keys[0..opt.named_groups.len]);
         }
-        try ext.writeServerName(opt.host);
+        try w.writeServerName(opt.host);
 
         // Add pre shared key extension if this is session resumption.
         // Must be last extension.
         const psk_binder_len = if (resumption_ticket == null) 0 else h.transcript.hashLength() + 3;
         if (resumption_ticket) |ticket| {
-            try ext.writeExtension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
-            try ext.writePreSharedKeyHead(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
+            try w.writeExtension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
+            try w.writePreSharedKeyHead(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
         }
 
-        // Extensions length at the end of the payload. If there is binder
-        // it not yet written but must be calculated in header lengths.
-        const ext_len = ext.pos + psk_binder_len;
-        try payload.writeInt(@as(u16, @intCast(ext_len)));
-        // Header at the start of the buffer.
-        const body_len = payload.pos + ext_len;
-        buffer[0..header_len].* = record.header(.handshake, 4 + body_len) ++ record.handshakeHeader(.client_hello, body_len);
-        const msg = buffer[0 .. header_len + body_len];
+        // If there is binder it not yet written but must be calculated in
+        // header lengths.
+        const msg_len = w.pos + psk_binder_len;
+        // Write extensions length to the placeholder
+        mem.writeInt(u16, ext_len_buf, @intCast(msg_len - ext_head), .big);
+        // Writer header to the placeholder
+        const body_len = msg_len - header_buf.len;
+        header_buf.* = record.header(.handshake, 4 + body_len) ++ record.handshakeHeader(.client_hello, body_len);
+        const msg = buffer[0..msg_len]; // hello message
         const hash_data = msg[record.header_len..];
 
         // Finish pre shared key extension, add binder.
@@ -482,7 +495,7 @@ pub const Handshake = struct {
             // Binder is calculated with transcript of the partial hello up to the binder.
             const binder_head = hash_data.len - psk_binder_len;
             h.transcript.update(hash_data[0..binder_head]);
-            try ext.writePreSharedKeyBinder(h.transcript.pskBinder());
+            try w.writePreSharedKeyBinder(h.transcript.pskBinder());
             // now when binder is written update transcript with it
             h.transcript.update(hash_data[binder_head..]);
         } else {
@@ -501,8 +514,8 @@ pub const Handshake = struct {
         while (true) {
             var d = try Record.decoder(h.stream_reader);
             try d.expectContentType(.handshake);
-
             h.transcript.update(d.payload);
+            h.max_server_record_len = @max(h.max_server_record_len, d.payload.len + record.header_len);
 
             // Multiple handshake messages can be packed in single tls record.
             while (!d.eof()) {
@@ -626,43 +639,45 @@ pub const Handshake = struct {
     /// for TLS 1.3: change cipher spec, eventual certificate request,
     /// certificate, certificate verify and handshake finished messages.
     fn readEncryptedServerFlight1(h: *Self, is_session_resumption: bool) !void {
-        var cleartext_buf = h.stream_writer.unusedCapacitySlice(); // use as scratch buffer
-        var cleartext_buf_head: usize = 0;
-        var cleartext_buf_tail: usize = 0;
+        // buffer for decrypted handshake records
+        var cleartext_buffer: [max_cleartext_len]u8 = undefined;
+        // cleartext writer
+        var cw = io.Writer.fixed(&cleartext_buffer);
+        // valid handshake types for the next record
         var handshake_states: []const proto.Handshake = &.{.encrypted_extensions};
 
         outer: while (true) {
             // wrapped record decoder
-            const rec = (try Record.read(h.stream_reader) orelse return error.EndOfStream);
+            const rec = try Record.read(h.stream_reader);
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
+            h.max_server_record_len = @max(h.max_server_record_len, rec.buffer.len);
             switch (rec.content_type) {
                 .change_cipher_spec => {},
                 .application_data => {
-                    const content_type, const cleartext = try h.cipher.decrypt(
-                        cleartext_buf[cleartext_buf_tail..],
-                        rec,
-                    );
-                    cleartext_buf_tail += cleartext.len;
-                    if (cleartext_buf_tail > cleartext_buf.len) return error.TlsRecordOverflow;
+                    // `decrypt` will return TlsCipherNoSpaceLeft
+                    // unusedCapacitySlice is too small to hold cleartext
+                    const content_type, const cleartext = try h.cipher.decrypt(cw.unusedCapacitySlice(), rec);
+                    cw.advance(cleartext.len);
+                    h.max_server_cleartext_len = @max(h.max_server_cleartext_len, cw.end);
 
-                    var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
+                    var d = record.Decoder.init(content_type, cw.buffered());
                     try d.expectContentType(.handshake);
                     while (!d.eof()) {
-                        const start_idx = d.idx;
                         const handshake_type = try d.decode(proto.Handshake);
                         const length = try d.decode(u24);
 
                         if (length > max_cleartext_len)
                             return error.TlsUnsupportedFragmentedHandshakeMessage;
                         if (length > d.rest().len)
-                            continue :outer; // fragmented handshake into multiple records
-
+                            continue :outer; // handshake fragmented into multiple records
+                        // jump to outer must be before this defer to presrve buffers
                         defer {
-                            const handshake_payload = d.payload[start_idx..d.idx];
-                            h.transcript.update(handshake_payload);
-                            cleartext_buf_head += handshake_payload.len;
+                            // 'd.idx' data is consumed
+                            h.transcript.update(d.payload[0..d.idx]);
+                            _ = cw.consume(d.idx);
+                            d = record.Decoder.init(content_type, cw.buffered());
                         }
-
+                        // check valid handshake types in this state
                         brk: {
                             for (handshake_states) |state|
                                 if (state == handshake_type) break :brk;
@@ -706,8 +721,6 @@ pub const Handshake = struct {
                             else => return error.TlsUnexpectedMessage,
                         }
                     }
-                    cleartext_buf_head = 0;
-                    cleartext_buf_tail = 0;
                 },
                 else => return error.TlsUnexpectedMessage,
             }
@@ -717,15 +730,15 @@ pub const Handshake = struct {
     fn verifyCertificateSignatureTls12(h: *Self) !void {
         if (h.cipher_suite.keyExchange() != .ecdhe) return;
         const verify_bytes = brk: {
-            // use stream_writer buffer as scratch, don't advance
-            var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
-            try w.write(&h.client_random);
-            try w.write(&h.server_random);
-            try w.writeEnum(proto.Curve.named_curve);
-            try w.writeEnum(h.named_group.?);
-            try w.writeInt(@as(u8, @intCast(h.server_pub_key.len)));
-            try w.write(h.server_pub_key);
-            break :brk w.getWritten();
+            var buffer: [h.server_pub_key_buf.len + 128]u8 = undefined;
+            var w = io.Writer.fixed(&buffer);
+            try w.writeAll(&h.client_random);
+            try w.writeAll(&h.server_random);
+            try w.writeByte(@intFromEnum(proto.Curve.named_curve));
+            try w.writeInt(u16, @intFromEnum(h.named_group.?), .big);
+            try w.writeByte(@intCast(h.server_pub_key.len));
+            try w.writeAll(h.server_pub_key);
+            break :brk w.buffered();
         };
         try h.cert.verifySignature(verify_bytes);
     }
@@ -863,12 +876,14 @@ pub const Handshake = struct {
         {
             var d = try Record.decoder(h.stream_reader);
             try d.expectContentType(.change_cipher_spec);
+            h.max_server_record_len = @max(h.max_server_record_len, d.payload.len + record.header_len);
         }
         // Read encrypted server handshake finished message. Verify that
         // content of the server finished message is based on transcript
         // hash and master secret.
         {
-            const rec = (try Record.read(h.stream_reader) orelse return error.EndOfStream);
+            const rec = try Record.read(h.stream_reader);
+            h.max_server_record_len = @max(h.max_server_record_len, rec.buffer.len);
             const content_type, const server_finished = try h.cipher.decrypt(@constCast(rec.buffer), rec);
             if (content_type != .handshake)
                 return error.TlsUnexpectedMessage;
@@ -892,6 +907,9 @@ pub const Handshake = struct {
             d.named_group = h.named_group orelse @as(proto.NamedGroup, @enumFromInt(0x0000));
             d.signature_scheme = h.cert.signature_scheme;
             d.is_session_resumption = is_session_resumption;
+            d.max_server_record_len = h.max_server_record_len;
+            d.max_server_cleartext_len = h.max_server_cleartext_len;
+            d.max_client_record_len = h.max_client_record_len;
             if (opt.auth) |a|
                 d.client_signature_scheme = a.key.signature_scheme;
         }
@@ -1260,7 +1278,7 @@ pub const NonBlock = struct {
 
         const recv_pos: usize = if (recv_buf.len > 0) brk: {
             self.recv() catch |err| switch (err) {
-                error.EndOfStream => break :brk 0,
+                error.EndOfStream, error.NoSpaceLeft => break :brk 0,
                 else => return err,
             };
             break :brk reader.seek;
@@ -1330,7 +1348,11 @@ test "nonblock handshake" {
     for (1..data13.server_flight_1.len - 1) |i| {
         var reader: io.Reader = .fixed(data13.server_flight_1[0..i]);
         h.stream_reader = &reader;
-        try testing.expectError(error.EndOfStream, ah.recv());
+        ah.recv() catch |err| switch (err) {
+            error.NoSpaceLeft, error.EndOfStream => continue,
+            else => {},
+        };
+        unreachable;
     }
 
     var reader: io.Reader = .fixed(&(data13.server_flight_1 ++ "dummy footer".*));

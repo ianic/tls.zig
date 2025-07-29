@@ -144,6 +144,9 @@ pub const Counter = struct {
     fail: usize = 0,
     skip: usize = 0,
     err: usize = 0,
+    max_server_record_len: usize = 0,
+    max_server_cleartext_len: usize = 0,
+    max_client_record_len: usize = 0,
 
     tls_1_2: usize = 0,
     tls_1_3: usize = 0,
@@ -178,9 +181,12 @@ pub const Counter = struct {
 
     pub fn show(self: @This()) void {
         std.debug.print(
-            "stats:\n\t total: {}\n\t success: {}\n\t\t tls 1.2: {}\n\t\t tls 1.3: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n",
+            "stats:\n\t total: {}\n\t success: {}\n\t\t tls 1.2: {}\n\t\t tls 1.3: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n\n",
             .{ self.total(), self.success, self.tls_1_2, self.tls_1_3, self.fail, self.err, self.skip },
         );
+        std.debug.print("\t max client record:    {d:>5}\n", .{self.max_client_record_len});
+        std.debug.print("\t max server record:    {d:>5}\n", .{self.max_server_record_len});
+        std.debug.print("\t max server cleartext: {d:>5}\n", .{self.max_server_cleartext_len});
     }
 
     pub fn failRate(self: @This()) f64 {
@@ -258,6 +264,7 @@ pub fn get(
     defer if (show_response) std.debug.print("{} bytes read\n", .{n});
     while (cli.next() catch |err| switch (err) {
         error.WouldBlock, error.ConnectionResetByPeer => null,
+        error.ReadFailed => null,
         else => return err,
     }) |data| {
         n += data.len;

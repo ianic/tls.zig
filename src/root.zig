@@ -19,7 +19,7 @@ pub inline fn client(stream: anytype, opt: config.Client) !Connection {
     var writer_buf: [stream_writer_buffer_len]u8 = undefined;
     var reader = stream.reader(&reader_buf);
     var writer = stream.writer(&writer_buf);
-    const stream_reader = reader.interface();
+    const stream_reader = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
     const stream_writer = &writer.interface;
 
     var hc: handshake.Client = .{
@@ -42,7 +42,7 @@ pub inline fn server(stream: anytype, opt: config.Server) !Connection {
     var writer_buf: [stream_writer_buffer_len]u8 = undefined;
     var reader = stream.reader(&reader_buf);
     var writer = stream.writer(&writer_buf);
-    const stream_reader = reader.interface();
+    const stream_reader = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
     const stream_writer = &writer.interface;
 
     var hs: handshake.Server = .{

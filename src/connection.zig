@@ -76,7 +76,10 @@ pub const Connection = struct {
     fn nextRecord(c: *Self) !?struct { proto.ContentType, []const u8 } {
         if (c.eof()) return null;
         while (true) {
-            const rec = (try record.Record.read(c.stream_reader)) orelse return null;
+            const rec = Record.read(c.stream_reader) catch |err| switch (err) {
+                error.EndOfStream => return null,
+                else => return err,
+            };
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
             const content_type, const cleartext = try c.cipher.decrypt(
                 // Reuse record buffer for cleartext. `rec.header` and
@@ -265,6 +268,8 @@ pub const Connection = struct {
         }
 
         fn drain(w: *io.Writer, data: []const []const u8, splat: usize) io.Writer.Error!usize {
+
+            // TODO drain w.buffer
             if (data.len == 0) return 0;
             const self: *Writer = @fieldParentPtr("interface", w);
             var n: usize = 0;
@@ -553,7 +558,10 @@ pub const NonBlock = struct {
         var rdr: io.Reader = .fixed(ciphertext);
         while (true) {
             // Find full tls record
-            const rec = (try Record.read(&rdr)) orelse break;
+            const rec = Record.read(&rdr) catch |err| switch (err) {
+                error.EndOfStream, error.NoSpaceLeft => break,
+                else => |e| return e,
+            };
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
             // Decrypt record
@@ -606,6 +614,7 @@ test "nonblock encrypt" {
     for (0..25) |i| {
         const res = try conn.encrypt(cleartext, ciphertext[0..i]);
         try testing.expectEqual(0, res.cleartext_pos);
+        try testing.expectEqual(cleartext.len, res.unused_cleartext.len);
         try testing.expectEqual(0, res.ciphertext.len);
     }
 
@@ -614,4 +623,23 @@ test "nonblock encrypt" {
     try testing.expectEqual(cleartext.len, res.cleartext_pos);
     try testing.expectEqual(26, res.ciphertext.len);
     try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, res.ciphertext);
+}
+
+test "nonblock decrypt" {
+    const data13 = @import("testdata/tls13.zig");
+    _, const server_cipher = cipher.testCiphers();
+    var conn = NonBlock.init(server_cipher);
+
+    const ciphertext = &data13.client_ping_wrapped;
+    var cleartext_buf: [32]u8 = undefined;
+
+    for (1..ciphertext.len - 1) |i| {
+        const res = try conn.decrypt(ciphertext[0..i], &cleartext_buf);
+        try testing.expectEqual(0, res.ciphertext_pos);
+        try testing.expectEqual(0, res.cleartext.len);
+        try testing.expectEqual(i, res.unused_ciphertext.len);
+    }
+
+    const res = try conn.decrypt(&data13.client_ping_wrapped, &cleartext_buf);
+    try testing.expectEqualSlices(u8, "ping", res.cleartext);
 }

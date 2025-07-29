@@ -201,9 +201,11 @@ pub const Handshake = struct {
     }
 
     fn readClientFlight2(h: *Self, opt: Options) !void {
-        var cleartext_buf = h.stream_writer.unusedCapacitySlice();
-        var cleartext_buf_head: usize = 0;
-        var cleartext_buf_tail: usize = 0;
+        // buffer for decrypted handshake records
+        var cleartext_buffer: [max_cleartext_len]u8 = undefined;
+        // cleartext writer
+        var cw = io.Writer.fixed(&cleartext_buffer);
+
         var handshake_state: proto.Handshake = .finished;
         var crt_parser: CertificateParser = undefined;
         if (opt.client_auth) |client_auth| {
@@ -212,7 +214,7 @@ pub const Handshake = struct {
         }
 
         outer: while (true) {
-            const rec = (try Record.read(h.stream_reader) orelse return error.EndOfStream);
+            const rec = try Record.read(h.stream_reader);
             if (rec.protocol_version != .tls_1_2 and rec.content_type != .alert)
                 return error.TlsProtocolVersion;
 
@@ -221,17 +223,12 @@ pub const Handshake = struct {
                     if (rec.payload.len != 1) return error.TlsUnexpectedMessage;
                 },
                 .application_data => {
-                    const content_type, const cleartext = try h.cipher.decrypt(
-                        cleartext_buf[cleartext_buf_tail..],
-                        rec,
-                    );
-                    cleartext_buf_tail += cleartext.len;
-                    if (cleartext_buf_tail > cleartext_buf.len) return error.TlsRecordOverflow;
+                    const content_type, const cleartext = try h.cipher.decrypt(cw.unusedCapacitySlice(), rec);
+                    cw.advance(cleartext.len);
 
-                    var d = record.Decoder.init(content_type, cleartext_buf[cleartext_buf_head..cleartext_buf_tail]);
+                    var d = record.Decoder.init(content_type, cw.buffered());
                     try d.expectContentType(.handshake);
                     while (!d.eof()) {
-                        const start_idx = d.idx;
                         const handshake_type = try d.decode(proto.Handshake);
                         const length = try d.decode(u24);
 
@@ -241,9 +238,9 @@ pub const Handshake = struct {
                             continue :outer; // fragmented handshake into multiple records
 
                         defer {
-                            const handshake_payload = d.payload[start_idx..d.idx];
-                            h.transcript.update(handshake_payload);
-                            cleartext_buf_head += handshake_payload.len;
+                            h.transcript.update(d.payload[0..d.idx]);
+                            _ = cw.consume(d.idx);
+                            d = record.Decoder.init(content_type, cw.buffered());
                         }
 
                         if (handshake_state != handshake_type)
@@ -284,8 +281,6 @@ pub const Handshake = struct {
                             else => return error.TlsUnexpectedMessage,
                         }
                     }
-                    cleartext_buf_head = 0;
-                    cleartext_buf_tail = 0;
                 },
                 .alert => {
                     var d = record.Decoder.init(rec.content_type, rec.payload);
@@ -635,7 +630,7 @@ pub const NonBlock = struct {
 
         const recv_pos: usize = if (recv_buf.len > 0) brk: {
             self.recv() catch |err| switch (err) {
-                error.EndOfStream => break :brk 0,
+                error.EndOfStream, error.NoSpaceLeft => break :brk 0,
                 else => return err,
             };
             break :brk reader.seek;
