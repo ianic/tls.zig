@@ -116,8 +116,7 @@ pub const CertificateBuilder = struct {
     tls_version: proto.Version = .tls_1_3,
     side: proto.Side = .client,
 
-    pub fn makeCertificate(h: CertificateBuilder, buf: []u8) ![]const u8 {
-        var w = record.Writer{ .buf = buf };
+    pub fn makeCertificate(h: CertificateBuilder, w: *record.Writer) !void {
         const certs = h.bundle.bytes.items;
         const certs_count = h.bundle.map.size;
 
@@ -132,31 +131,28 @@ pub const CertificateBuilder = struct {
         const certs_len = certs.len + (3 + extensions.len) * certs_count;
 
         // Write handshake header
-        try w.writeHandshakeHeader(.certificate, certs_len + request_context.len + 3);
-        try w.write(request_context);
-        try w.writeInt(@as(u24, @intCast(certs_len)));
+        try w.handshakeRecordHeader(.certificate, certs_len + request_context.len + 3);
+        try w.slice(request_context);
+        try w.int(u24, certs_len);
 
         // Write each certificate
         var index: u32 = 0;
         while (index < certs.len) {
             const e = try Certificate.der.Element.parse(certs, index);
             const crt = certs[index..e.slice.end];
-            try w.writeInt(@as(u24, @intCast(crt.len))); // certificate length
-            try w.write(crt); // certificate
-            try w.write(extensions); // certificate extensions
+            try w.int(u24, crt.len); // certificate length
+            try w.slice(crt); // certificate
+            try w.slice(extensions); // certificate extensions
             index = e.slice.end;
         }
-        return w.getWritten();
     }
 
-    pub fn makeCertificateVerify(h: CertificateBuilder, buf: []u8) ![]const u8 {
-        var w = record.Writer{ .buf = buf };
+    pub fn makeCertificateVerify(h: CertificateBuilder, w: *record.Writer) !void {
         const signature, const signature_scheme = try h.createSignature();
-        try w.writeHandshakeHeader(.certificate_verify, signature.len + 4);
-        try w.writeEnum(signature_scheme);
-        try w.writeInt(@as(u16, @intCast(signature.len)));
-        try w.write(signature);
-        return w.getWritten();
+        try w.handshakeRecordHeader(.certificate_verify, signature.len + 4);
+        try w.enumValue(signature_scheme);
+        try w.int(u16, signature.len);
+        try w.slice(signature);
     }
 
     /// Creates signature for client certificate signature message.

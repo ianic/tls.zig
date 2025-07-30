@@ -247,184 +247,185 @@ test Decoder {
 }
 
 pub const Writer = struct {
-    buf: []u8,
-    pos: usize = 0,
+    inner: io.Writer,
 
-    pub fn write(self: *Writer, data: []const u8) !void {
-        if (self.pos + data.len > self.buf.len) return error.NoSpaceLeft;
-        @memcpy(self.buf[self.pos..][0..data.len], data);
-        self.pos += data.len;
+    pub fn initFromIo(io_w: *io.Writer) Writer {
+        return .{ .inner = io.Writer.fixed(io_w.unusedCapacitySlice()) };
     }
 
-    pub fn writeByte(self: *Writer, b: u8) !void {
-        if (self.pos == self.buf.len) return error.NoSpaceLeft;
-        self.buf[self.pos] = b;
-        self.pos += 1;
+    pub fn init(buffer: []u8) Writer {
+        return .{ .inner = io.Writer.fixed(buffer) };
     }
 
-    pub fn writeEnum(self: *Writer, value: anytype) !void {
-        try self.writeInt(@intFromEnum(value));
+    inline fn ensureCapacity(w: Writer, n: usize) !void {
+        if (w.inner.unusedCapacityLen() < n) return error.NoSpaceLeft;
     }
 
-    pub fn writeInt(self: *Writer, value: anytype) !void {
-        const IntT = @TypeOf(value);
-        const bytes = @divExact(@typeInfo(IntT).int.bits, 8);
-        const free = self.buf[self.pos..];
-        if (free.len < bytes) return error.NoSpaceLeft;
-        mem.writeInt(IntT, free[0..bytes], value, .big);
-        self.pos += bytes;
+    pub fn buffered(w: Writer) []const u8 {
+        return w.inner.buffered();
     }
 
-    pub fn writableSlice(self: *Writer, len: usize) ![]u8 {
-        if (self.pos + len > self.buf.len) return error.NoSpaceLeft;
-        defer self.pos += len;
-        return self.buf[self.pos..][0..len];
+    pub fn bytesWritten(w: Writer) usize {
+        return w.inner.end;
     }
 
-    pub fn writableArray(self: *Writer, comptime len: usize) !*[len]u8 {
-        if (self.pos + len > self.buf.len) return error.NoSpaceLeft;
-        defer self.pos += len;
-        return self.buf[self.pos..][0..len];
+    pub inline fn byte(w: *Writer, b: u8) !void {
+        try w.ensureCapacity(1);
+        try w.inner.writeByte(b);
     }
 
-    pub fn writeHandshakeHeader(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
-        try self.write(&handshakeHeader(handshake_type, payload_len));
+    pub inline fn slice(w: *Writer, bytes: []const u8) !void {
+        try w.ensureCapacity(bytes.len);
+        try w.inner.writeAll(bytes);
     }
 
-    /// Should be used after writing handshake payload in buffer provided by `getHandshakePayload`.
-    pub fn advanceHandshake(self: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
-        try self.write(&handshakeHeader(handshake_type, payload_len));
-        self.pos += payload_len;
+    pub inline fn int(w: *Writer, comptime T: type, value: anytype) !void {
+        try w.ensureCapacity(@sizeOf(T));
+        try w.inner.writeInt(T, @intCast(value), .big);
     }
 
-    /// Record payload is already written by using buffer space from `getPayload`.
-    /// Now when we know payload len we can write record header and advance over payload.
-    pub fn advanceRecord(self: *Writer, content_type: proto.ContentType, payload_len: usize) !void {
-        try self.write(&header(content_type, payload_len));
-        self.pos += payload_len;
+    pub inline fn writableArray(w: *Writer, comptime len: usize) !*[len]u8 {
+        try w.ensureCapacity(len);
+        return try w.inner.writableArray(len);
     }
 
-    pub fn writeRecord(self: *Writer, content_type: proto.ContentType, payload: []const u8) !void {
-        try self.write(&header(content_type, payload.len));
-        try self.write(payload);
+    pub fn enumValue(w: *Writer, value: anytype) !void {
+        const i = @intFromEnum(value);
+        try w.int(@TypeOf(i), i);
     }
 
-    /// Preserves space for record header and returns buffer free space.
-    pub fn getPayload(self: *Writer) []u8 {
-        return self.buf[self.pos + header_len ..];
-    }
-
-    /// Preserves space for handshake header and returns buffer free space.
-    pub fn getHandshakePayload(self: *Writer) []u8 {
-        return self.buf[self.pos + 4 ..];
-    }
-
-    pub fn getWritten(self: *Writer) []const u8 {
-        return self.buf[0..self.pos];
-    }
-
-    pub fn getFree(self: *Writer) []u8 {
-        return self.buf[self.pos..];
-    }
-
-    pub fn writeEnumArray(self: *Writer, comptime E: type, tags: []const E) !void {
+    pub fn enumList(w: *Writer, comptime E: type, tags: []const E) !void {
         assert(@sizeOf(E) == 2);
-        try self.writeInt(@as(u16, @intCast(tags.len * 2)));
+        try w.int(u16, tags.len * 2);
         for (tags) |t| {
-            try self.writeEnum(t);
+            try w.enumValue(t);
         }
     }
 
-    pub fn writeExtension(
-        self: *Writer,
-        comptime et: proto.Extension,
-        tags: anytype,
-    ) !void {
-        try self.writeEnum(et);
-        if (et == .supported_versions) {
-            try self.writeInt(@as(u16, @intCast(tags.len * 2 + 1)));
-            try self.writeInt(@as(u8, @intCast(tags.len * 2)));
-        } else if (et == .psk_key_exchange_modes) {
-            try self.writeInt(@as(u16, @intCast(tags.len + 1)));
-            try self.writeInt(@as(u8, @intCast(tags.len)));
+    /// Default extension writer, writes extension type and list of tags
+    pub fn extension(w: *Writer, ex: proto.Extension, tags: anytype) !void {
+        try w.enumValue(ex);
+        if (ex == .supported_versions) {
+            try w.int(u16, tags.len * 2 + 1);
+            try w.int(u8, tags.len * 2);
+        } else if (ex == .psk_key_exchange_modes) {
+            try w.int(u16, tags.len + 1);
+            try w.int(u8, tags.len);
         } else {
-            try self.writeInt(@as(u16, @intCast(tags.len * 2 + 2)));
-            try self.writeInt(@as(u16, @intCast(tags.len * 2)));
+            try w.int(u16, tags.len * 2 + 2);
+            try w.int(u16, tags.len * 2);
         }
         for (tags) |t| {
-            try self.writeEnum(t);
+            try w.enumValue(t);
         }
     }
 
-    pub fn writeKeyShare(
-        self: *Writer,
-        named_groups: []const proto.NamedGroup,
-        keys: []const []const u8,
-    ) !void {
+    /// Key share extension
+    pub fn keyShare(w: *Writer, named_groups: []const proto.NamedGroup, keys: []const []const u8) !void {
+        if (keys.len == 0) return;
         assert(named_groups.len == keys.len);
-        try self.writeEnum(proto.Extension.key_share);
+        try w.enumValue(proto.Extension.key_share);
         var l: usize = 0;
         for (keys) |key| {
             l += key.len + 4;
         }
-        try self.writeInt(@as(u16, @intCast(l + 2)));
-        try self.writeInt(@as(u16, @intCast(l)));
+        try w.int(u16, l + 2);
+        try w.int(u16, l);
         for (named_groups, 0..) |ng, i| {
             const key = keys[i];
-            try self.writeEnum(ng);
-            try self.writeInt(@as(u16, @intCast(key.len)));
-            try self.write(key);
+            try w.enumValue(ng);
+            try w.int(u16, key.len);
+            try w.inner.writeAll(key);
         }
     }
 
-    pub fn writeServerName(self: *Writer, host: []const u8) !void {
+    /// Server name extension
+    pub fn serverName(w: *Writer, host: []const u8) !void {
         const host_len: u16 = @intCast(host.len);
-        try self.writeEnum(proto.Extension.server_name);
-        try self.writeInt(host_len + 5); // byte length of extension payload
-        try self.writeInt(host_len + 3); // server_name_list byte count
-        try self.writeByte(0); // name type
-        try self.writeInt(host_len);
-        try self.write(host);
+        try w.enumValue(proto.Extension.server_name);
+        try w.int(u16, host_len + 5); // byte length of extension payload
+        try w.int(u16, host_len + 3); // server_name_list byte count
+        try w.inner.writeByte(0); // name type
+        try w.int(u16, host_len);
+        try w.inner.writeAll(host);
     }
 
     /// Writes header of the pre shared key extension, without binders
-    pub fn writePreSharedKeyHead(
-        self: *Writer,
+    pub fn preSharedKey(
+        w: *Writer,
         identity: []const u8,
         obfuscated_age: u32,
         binder_len: u8,
     ) !void {
-        try self.writeEnum(proto.Extension.pre_shared_key);
-        try self.writeInt(@as(
-            u16,
-            @as(u16, @intCast(identity.len)) + 4 + 2 + 2 //
-            + @as(u16, @intCast(binder_len)), //
-        ));
-
-        try self.writeInt(@as(u16, @intCast(identity.len)) + 4 + 2);
-        try self.writeInt(@as(u16, @intCast(identity.len)));
-        try self.write(identity);
-        try self.writeInt(obfuscated_age);
+        try w.enumValue(proto.Extension.pre_shared_key);
+        try w.int(u16, identity.len + binder_len + 4 + 2 + 2);
+        try w.int(u16, identity.len + 4 + 2);
+        try w.int(u16, identity.len);
+        try w.inner.writeAll(identity);
+        try w.int(u32, obfuscated_age);
     }
 
     /// Writes the rest of the pre shared keys extension
-    pub fn writePreSharedKeyBinder(
-        self: *Writer,
-        binder: []const u8,
-    ) !void {
-        try self.writeInt(@as(u16, @intCast(binder.len)) + 1);
-        try self.writeInt(@as(u8, @intCast(binder.len)));
-        try self.write(binder);
+    pub fn preSharedKeyBinder(w: *Writer, binder: []const u8) !void {
+        try w.int(u16, binder.len + 1);
+        try w.int(u8, binder.len);
+        try w.inner.writeAll(binder);
+    }
+
+    /// tls record
+    pub fn record(w: *Writer, content_type: proto.ContentType, payload: []const u8) !void {
+        try w.enumValue(content_type);
+        try w.enumValue(proto.Version.tls_1_2);
+        try w.int(u16, payload.len);
+        if (w.unused().ptr == payload.ptr and w.unused().len == payload.len) {
+            w.advance(payload.len);
+        } else {
+            try w.slice(payload);
+        }
+    }
+
+    /// tls handshake record
+    pub fn handshakeRecord(w: *Writer, handshake_type: proto.Handshake, payload: []const u8) !void {
+        try w.enumValue(handshake_type);
+        try w.int(u24, payload.len);
+        try w.slice(payload);
+    }
+
+    pub fn handshakeRecordHeader(w: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {
+        try w.enumValue(handshake_type);
+        try w.int(u24, payload_len);
+    }
+
+    pub fn unused(w: *Writer) []u8 {
+        return w.inner.unusedCapacitySlice();
+    }
+
+    pub fn advance(w: *Writer, n: usize) void {
+        w.inner.advance(n);
+    }
+
+    /// Another writer which uses same underlying bytes buffer. Skip is how many
+    /// bytes to advance from current position. Writing to child buffer don't
+    /// advance parent.
+    ///
+    /// Used in situations where we have header and payload, in header is
+    /// payload len but we don't know that len in advance. Child reader is
+    /// created skipping header, payload is written in the right position and
+    /// then we write header with the parent writer and advance over already
+    /// written payload.
+    pub fn child(w: *Writer, skip: usize) !Writer {
+        try w.ensureCapacity(skip);
+        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[skip..]) };
     }
 };
 
 test "Writer" {
     var buf: [16]u8 = undefined;
-    var w = Writer{ .buf = &buf };
+    var w = Writer{ .inner = io.Writer.fixed(&buf) };
 
-    try w.write("ab");
-    try w.writeEnum(proto.Curve.named_curve);
-    try w.writeEnum(proto.NamedGroup.x25519);
-    try w.writeInt(@as(u16, 0x1234));
-    try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.getWritten());
+    try w.slice("ab");
+    try w.enumValue(proto.Curve.named_curve);
+    try w.enumValue(proto.NamedGroup.x25519);
+    try w.int(u16, 0x1234);
+    try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.buffered());
 }

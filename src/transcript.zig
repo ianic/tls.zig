@@ -124,15 +124,15 @@ pub const Transcript = struct {
         };
     }
 
-    pub fn serverFinishedTls13(t: *Transcript, buf: []u8) []const u8 {
+    pub inline fn serverFinishedTls13(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline else => |h| @field(t, @tagName(h)).serverFinishedTls13(buf),
+            inline else => |h| @field(t, @tagName(h)).serverFinishedTls13(),
         };
     }
 
-    pub fn clientFinishedTls13(t: *Transcript, buf: []u8) []const u8 {
+    pub inline fn clientFinishedTls13(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline else => |h| @field(t, @tagName(h)).clientFinishedTls13(buf),
+            inline else => |h| @field(t, @tagName(h)).clientFinishedTls13(),
         };
     }
 
@@ -358,15 +358,17 @@ fn TranscriptT(comptime Hash: type) type {
             return &out;
         }
 
-        fn serverFinishedTls13(self: *Self, buf: []u8) []const u8 {
-            Hmac.create(buf[0..mac_length], &self.hash.peek(), &self.server_finished_key);
-            return buf[0..mac_length];
+        inline fn serverFinishedTls13(self: *Self) []const u8 {
+            var buf: [mac_length]u8 = undefined;
+            Hmac.create(&buf, &self.hash.peek(), &self.server_finished_key);
+            return &buf;
         }
 
         // client finished message with header
-        fn clientFinishedTls13(self: *Self, buf: []u8) []const u8 {
-            Hmac.create(buf[0..mac_length], &self.hash.peek(), &self.client_finished_key);
-            return buf[0..mac_length];
+        inline fn clientFinishedTls13(self: *Self) []const u8 {
+            var buf: [mac_length]u8 = undefined;
+            Hmac.create(&buf, &self.hash.peek(), &self.client_finished_key);
+            return &buf;
         }
     };
 }

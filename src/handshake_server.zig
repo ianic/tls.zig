@@ -142,54 +142,69 @@ pub const Handshake = struct {
     }
 
     fn serverFlight(h: *Self, opt: Options) !void {
-        var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
+        var w: record.Writer = .initFromIo(h.stream_writer);
 
         const shared_key = try h.sharedKey();
         {
-            const hello = try h.makeServerHello(w.getFree());
+            const hello = try h.makeServerHello(&w);
             h.transcript.update(hello[record.header_len..]);
-            w.pos += hello.len;
         }
         {
             const handshake_secret = h.transcript.handshakeSecret(shared_key);
             h.cipher = try Cipher.initTls13(h.cipher_suite, handshake_secret, .server);
         }
-        try w.writeRecord(.change_cipher_spec, &[_]u8{1});
+        try w.record(.change_cipher_spec, &[_]u8{1});
         {
             const encrypted_extensions = &record.handshakeHeader(.encrypted_extensions, 2) ++ [_]u8{ 0, 0 };
             h.transcript.update(encrypted_extensions);
             try h.writeEncrypted(&w, encrypted_extensions);
         }
         if (opt.client_auth) |_| {
-            const certificate_request = try makeCertificateRequest(w.getPayload());
+            const certificate_request = brk: {
+                var hw = try w.child(record.header_len);
+                try makeCertificateRequest(&hw);
+                break :brk hw.buffered();
+            };
             h.transcript.update(certificate_request);
             try h.writeEncrypted(&w, certificate_request);
         }
         if (opt.auth) |a| {
-            const cm = CertificateBuilder{
+            const cb = CertificateBuilder{
                 .bundle = a.bundle,
                 .key = a.key,
                 .transcript = &h.transcript,
                 .side = .server,
             };
             {
-                const certificate = try cm.makeCertificate(w.getPayload());
+                const certificate = brk: {
+                    var hw = try w.child(record.header_len);
+                    try cb.makeCertificate(&hw);
+                    break :brk hw.buffered();
+                };
                 h.transcript.update(certificate);
                 try h.writeEncrypted(&w, certificate);
             }
             {
-                const certificate_verify = try cm.makeCertificateVerify(w.getPayload());
+                const certificate_verify = brk: {
+                    var hw = try w.child(record.header_len);
+                    try cb.makeCertificateVerify(&hw);
+                    break :brk hw.buffered();
+                };
                 h.transcript.update(certificate_verify);
                 try h.writeEncrypted(&w, certificate_verify);
             }
         }
         {
-            const finished = try h.makeFinished(w.getPayload());
+            const finished = brk: {
+                var hw = try w.child(record.header_len);
+                try hw.handshakeRecord(.finished, h.transcript.serverFinishedTls13());
+                break :brk hw.buffered();
+            };
             h.transcript.update(finished);
             try h.writeEncrypted(&w, finished);
         }
 
-        h.stream_writer.advance(w.getWritten().len);
+        h.stream_writer.advance(w.buffered().len);
     }
 
     inline fn sharedKey(h: *Self) ![]const u8 {
@@ -269,8 +284,7 @@ pub const Handshake = struct {
                             },
                             .finished => {
                                 const actual = try d.slice(length);
-                                var buf: [Transcript.max_mac_length]u8 = undefined;
-                                const expected = h.transcript.clientFinishedTls13(&buf);
+                                const expected = h.transcript.clientFinishedTls13();
                                 if (!mem.eql(u8, expected, actual))
                                     return if (expected.len == actual.len)
                                         error.TlsDecryptError
@@ -291,71 +305,60 @@ pub const Handshake = struct {
         }
     }
 
-    fn makeFinished(h: *Self, buf: []u8) ![]const u8 {
-        var w = record.Writer{ .buf = buf };
-        const verify_data = h.transcript.serverFinishedTls13(w.getHandshakePayload());
-        try w.advanceHandshake(.finished, verify_data.len);
-        return w.getWritten();
-    }
-
     /// Write encrypted handshake message into `w`
     fn writeEncrypted(h: *Self, w: *record.Writer, cleartext: []const u8) !void {
-        const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
-        w.pos += ciphertext.len;
+        const ciphertext = try h.cipher.encrypt(w.unused(), .handshake, cleartext);
+        w.advance(ciphertext.len);
     }
 
-    fn makeServerHello(h: *Self, buf: []u8) ![]const u8 {
-        const header_len = 9; // tls record header (5 bytes) and handshake header (4 bytes)
-        var w = record.Writer{ .buf = buf[header_len..] };
+    fn makeServerHello(h: *Self, w: *record.Writer) ![]const u8 {
+        const header_buf = try w.writableArray(9); // tls record header (5 bytes) and handshake header (4 bytes)
 
-        try w.writeEnum(proto.Version.tls_1_2);
-        try w.write(&h.server_random);
+        try w.enumValue(proto.Version.tls_1_2);
+        try w.slice(&h.server_random);
         {
-            try w.writeInt(@as(u8, @intCast(h.legacy_session_id.len)));
-            if (h.legacy_session_id.len > 0) try w.write(h.legacy_session_id);
+            try w.int(u8, h.legacy_session_id.len);
+            if (h.legacy_session_id.len > 0) try w.slice(h.legacy_session_id);
         }
-        try w.writeEnum(h.cipher_suite);
-        try w.write(&[_]u8{0}); // compression method
+        try w.enumValue(h.cipher_suite);
+        try w.slice(&[_]u8{0}); // compression method
 
-        var e = record.Writer{ .buf = buf[header_len + w.pos + 2 ..] };
+        const ext_len_buf = try w.writableArray(2); // placeholder for extensions length
+        const ext_head = w.bytesWritten(); // position where extensions start
         { // supported versions extension
-            try e.writeEnum(proto.Extension.supported_versions);
-            try e.writeInt(@as(u16, 2));
-            try e.writeEnum(proto.Version.tls_1_3);
+            try w.enumValue(proto.Extension.supported_versions);
+            try w.int(u16, 2);
+            try w.enumValue(proto.Version.tls_1_3);
         }
         { // key share extension
             const key_len: u16 = @intCast(h.server_pub_key.len);
-            try e.writeEnum(proto.Extension.key_share);
-            try e.writeInt(key_len + 4);
-            try e.writeEnum(h.named_group);
-            try e.writeInt(key_len);
-            try e.write(h.server_pub_key);
+            try w.enumValue(proto.Extension.key_share);
+            try w.int(u16, key_len + 4);
+            try w.enumValue(h.named_group);
+            try w.int(u16, key_len);
+            try w.slice(h.server_pub_key);
         }
-        try w.writeInt(@as(u16, @intCast(e.pos))); // extensions length
+        // extensions length
+        mem.writeInt(u16, ext_len_buf, @intCast(w.bytesWritten() - ext_head), .big);
 
-        const payload_len = w.pos + e.pos;
-        buf[0..header_len].* = record.header(.handshake, 4 + payload_len) ++
+        const payload_len = w.bytesWritten() - header_buf.len;
+        header_buf.* = record.header(.handshake, 4 + payload_len) ++
             record.handshakeHeader(.server_hello, payload_len);
 
-        return buf[0 .. header_len + payload_len];
+        return w.buffered();
     }
 
-    fn makeCertificateRequest(buf: []u8) ![]const u8 {
-        // handshake header + context length + extensions length
-        const header_len = 4 + 1 + 2;
+    fn makeCertificateRequest(w: *record.Writer) !void {
+        const ext = brk: {
+            var ew = try w.child(4 + 1 + 2);
+            try ew.extension(.signature_algorithms, common.supported_signature_algorithms);
+            break :brk ew.buffered();
+        };
 
-        // First write extensions, leave space for header.
-        var ext = record.Writer{ .buf = buf[header_len..] };
-        try ext.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
-
-        var w = record.Writer{ .buf = buf };
-        try w.writeHandshakeHeader(.certificate_request, ext.pos + 3);
-        try w.writeInt(@as(u8, 0)); // certificate request context length = 0
-        try w.writeInt(@as(u16, @intCast(ext.pos))); // extensions length
-        assert(w.pos == header_len);
-        w.pos += ext.pos;
-
-        return w.getWritten();
+        try w.handshakeRecordHeader(.certificate_request, ext.len + 3);
+        try w.int(u8, 0); // certificate request context length = 0
+        try w.int(u16, ext.len); // extensions length
+        w.advance(ext.len);
     }
 
     fn readClientHello(h: *Self) !void {
@@ -512,7 +515,8 @@ test "make server hello" {
     );
 
     var buffer: [128]u8 = undefined;
-    const actual = try h.makeServerHello(&buffer);
+    var w: record.Writer = .init(&buffer);
+    const actual = try h.makeServerHello(&w);
     try testing.expectEqual(95, actual.len);
     try testing.expectEqualSlices(u8, expected, actual);
 }
@@ -528,8 +532,9 @@ test "make certificate request" {
         "04 03 05 03 08 04 08 05 08 06 08 07 02 01 04 01 05 01" // signature schemes
     );
 
-    const actual = try Handshake.makeCertificateRequest(&buffer);
-    try testing.expectEqualSlices(u8, &expected, actual);
+    var w: record.Writer = .init(&buffer);
+    try Handshake.makeCertificateRequest(&w);
+    try testing.expectEqualSlices(u8, &expected, w.buffered());
 }
 
 pub const NonBlock = struct {

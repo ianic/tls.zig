@@ -186,6 +186,8 @@ pub const Options = struct {
     };
 };
 
+const ResumptionTicket = Options.SessionResumption.Ticket;
+
 const supported_named_groups = &[_]proto.NamedGroup{
     .x25519,
     .secp256r1,
@@ -292,7 +294,7 @@ pub const Handshake = struct {
     /// https://datatracker.ietf.org/doc/html/rfc8446#section-2
     ///
     pub fn handshake(h: *Self, opt: Options) !struct { Cipher, ?usize } {
-        var resumption_ticket: ?Options.SessionResumption.Ticket =
+        var resumption_ticket: ?ResumptionTicket =
             if (opt.session_resumption) |r|
                 r.popTicket()
             else
@@ -426,82 +428,81 @@ pub const Handshake = struct {
         return try Cipher.initTls13(h.cipher_suite, application_secret, .client);
     }
 
-    fn makeClientHello(
-        h: *Self,
-        opt: Options,
-        resumption_ticket: ?Options.SessionResumption.Ticket,
-    ) !void {
-        // Buffer will have this parts:
-        // | header | payload | extensions |
-        //
-        // Header will be written last because we need to know length of
-        // payload and extensions when creating it. Payload has
-        // extensions length (u16) as last element.
-        //
+    fn makeClientHello(h: *Self, opt: Options, resumption_ticket: ?ResumptionTicket) !void {
+        // Prepare data
         const tls_versions = try CipherSuite.versions(opt.cipher_suites);
-
-        var buffer = h.stream_writer.unusedCapacitySlice();
-        var w = record.Writer{ .buf = buffer };
-        const header_buf = try w.writableArray(9); // tls record header (5 bytes) and handshake header (4 bytes)
-        try w.writeEnum(proto.Version.tls_1_2);
-        try w.write(&h.client_random);
-        try w.writeByte(0); // no session id
-        try w.writeEnumArray(CipherSuite, opt.cipher_suites);
-        try w.write(&[_]u8{ 0x01, 0x00 }); // no compression
-        const ext_len_buf = try w.writableArray(2); // placeholder for extensions length
-
-        // Extensions writer starts after payload and preserves 2 more
-        // bytes for extension len in payload.
-        const ext_head = w.pos;
-        try w.writeExtension(.supported_versions, switch (tls_versions) {
+        const shared_keys: []const []const u8, const shared_keys_len: usize = if (tls_versions != .tls_1_2) brk: {
+            var keys: [supported_named_groups.len][]const u8 = undefined;
+            var n: usize = 0;
+            for (opt.named_groups, 0..) |ng, i| {
+                keys[i] = try h.dh_kp.publicKey(ng);
+                n += keys[i].len;
+            }
+            break :brk .{ keys[0..opt.named_groups.len], n };
+        } else .{ &.{}, 0 };
+        const supported_versions = switch (tls_versions) {
             .both => &[_]proto.Version{ .tls_1_3, .tls_1_2 },
             .tls_1_3 => &[_]proto.Version{.tls_1_3},
             .tls_1_2 => &[_]proto.Version{.tls_1_2},
-        });
-        try w.writeExtension(.signature_algorithms, common.supported_signature_algorithms);
-
-        try w.writeExtension(.supported_groups, opt.named_groups);
-        if (tls_versions != .tls_1_2) {
-            var keys: [supported_named_groups.len][]const u8 = undefined;
-            for (opt.named_groups, 0..) |ng, i| {
-                keys[i] = try h.dh_kp.publicKey(ng);
-            }
-            try w.writeKeyShare(opt.named_groups, keys[0..opt.named_groups.len]);
-        }
-        try w.writeServerName(opt.host);
-
-        // Add pre shared key extension if this is session resumption.
-        // Must be last extension.
+        };
         const psk_binder_len = if (resumption_ticket == null) 0 else h.transcript.hashLength() + 3;
+
+        // TODO: remove estimation
+        // Calculate required buffer length
+        // 256 bytes reserved for all non variable parts.
+        const estimated_buffer_len = 256 + shared_keys_len + opt.host.len +
+            psk_binder_len + if (resumption_ticket) |ticket| ticket.identity.len else 0;
+        _ = estimated_buffer_len;
+        var w: record.Writer = .initFromIo(h.stream_writer);
+
+        // Hello message parts:
+        // | header | payload | extensions |
+        // header
+        const header_buf = try w.writableArray(9); // tls record header (5 bytes) and handshake header (4 bytes)
+        // payload
+        try w.enumValue(proto.Version.tls_1_2);
+        try w.slice(&h.client_random);
+        try w.byte(0); // no session id
+        try w.enumList(CipherSuite, opt.cipher_suites);
+        try w.slice(&[_]u8{ 0x01, 0x00 }); // no compression
+        // extensions
+        const ext_len_buf = try w.writableArray(2); // placeholder for extensions length
+        const ext_head = w.bytesWritten(); // position where extensions start
+        try w.extension(.supported_versions, supported_versions);
+        try w.extension(.signature_algorithms, common.supported_signature_algorithms);
+        try w.extension(.supported_groups, opt.named_groups);
+        try w.keyShare(opt.named_groups, shared_keys);
+        try w.serverName(opt.host);
         if (resumption_ticket) |ticket| {
-            try w.writeExtension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
-            try w.writePreSharedKeyHead(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
+            // Add pre shared key extension if this is session resumption. Must be last extension.
+            try w.extension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
+            try w.preSharedKey(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
         }
 
-        // If there is binder it not yet written but must be calculated in
-        // header lengths.
-        const msg_len = w.pos + psk_binder_len;
-        // Write extensions length to the placeholder
-        mem.writeInt(u16, ext_len_buf, @intCast(msg_len - ext_head), .big);
-        // Writer header to the placeholder
-        const body_len = msg_len - header_buf.len;
-        header_buf.* = record.header(.handshake, 4 + body_len) ++ record.handshakeHeader(.client_hello, body_len);
-        const msg = buffer[0..msg_len]; // hello message
-        const hash_data = msg[record.header_len..];
-
-        // Finish pre shared key extension, add binder.
-        if (resumption_ticket) |_| {
-            // psk binder, ref: https://datatracker.ietf.org/doc/html/rfc8446#autoid-39
-            // Binder is calculated with transcript of the partial hello up to the binder.
-            const binder_head = hash_data.len - psk_binder_len;
-            h.transcript.update(hash_data[0..binder_head]);
-            try w.writePreSharedKeyBinder(h.transcript.pskBinder());
-            // now when binder is written update transcript with it
-            h.transcript.update(hash_data[binder_head..]);
-        } else {
+        // Write extensions length and record header (now when we know exact lengths)
+        {
+            // If there is binder it not yet written but must be calculated in
+            // header lengths.
+            const msg_len = w.bytesWritten() + psk_binder_len;
+            // Write extensions length to the placeholder
+            mem.writeInt(u16, ext_len_buf, @intCast(msg_len - ext_head), .big);
+            // Writer header to the placeholder
+            const body_len = msg_len - header_buf.len;
+            header_buf.* = record.header(.handshake, 4 + body_len) ++ record.handshakeHeader(.client_hello, body_len);
+            const hash_data = w.buffered()[record.header_len..];
             h.transcript.update(hash_data);
         }
-        h.stream_writer.advance(msg.len);
+
+        if (resumption_ticket) |_| {
+            // Finish pre shared key extension, add binder.
+            // psk binder, ref: https://datatracker.ietf.org/doc/html/rfc8446#autoid-39
+            // Binder is calculated with transcript of the partial hello up to the binder.
+            const binder = h.transcript.pskBinder();
+            try w.preSharedKeyBinder(binder);
+            // now when binder is written update transcript with it
+            h.transcript.update(w.buffered()[w.buffered().len - psk_binder_len ..]);
+        }
+        h.stream_writer.advance(w.buffered().len);
     }
 
     /// Process first flight of the messages from the server.
@@ -712,8 +713,7 @@ pub const Handshake = struct {
                             },
                             .finished => {
                                 const actual = try d.slice(length);
-                                var buf: [Transcript.max_mac_length]u8 = undefined;
-                                const expected = h.transcript.serverFinishedTls13(&buf);
+                                const expected = h.transcript.serverFinishedTls13();
                                 if (!mem.eql(u8, expected, actual))
                                     return error.TlsDecryptError;
                                 return;
@@ -748,7 +748,7 @@ pub const Handshake = struct {
     /// If client certificate is requested also adds client certificate and
     /// certificate verify messages.
     fn makeClientFlight2Tls12(h: *Self, auth: ?*CertKeyPair) !void {
-        var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
+        var w: record.Writer = .initFromIo(h.stream_writer);
         var cert_builder: ?CertificateBuilder = null;
 
         // Client certificate message
@@ -756,32 +756,54 @@ pub const Handshake = struct {
             if (auth) |a| {
                 const cb = h.certificateBuilder(a);
                 cert_builder = cb;
-                const client_certificate = try cb.makeCertificate(w.getPayload());
+                const client_certificate = brk: {
+                    var hw = try w.child(record.header_len);
+                    try cb.makeCertificate(&hw);
+                    break :brk hw.buffered();
+                };
                 h.transcript.update(client_certificate);
-                try w.advanceRecord(.handshake, client_certificate.len);
+                try w.record(.handshake, client_certificate);
             } else {
                 const empty_certificate = &record.handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
                 h.transcript.update(empty_certificate);
-                try w.writeRecord(.handshake, empty_certificate);
+                try w.record(.handshake, empty_certificate);
             }
         }
 
         // Client key exchange message
         {
-            const key_exchange = try h.makeClientKeyExchange(w.getPayload());
+            const key_exchange = brk: {
+                var hw = try w.child(record.header_len);
+                if (h.named_group) |named_group| {
+                    const key = try h.dh_kp.publicKey(named_group);
+                    try hw.handshakeRecordHeader(.client_key_exchange, 1 + key.len);
+                    try hw.int(u8, key.len);
+                    try hw.slice(key);
+                } else {
+                    const key = try h.rsa_secret.encrypted(h.cert.pub_key_algo, h.cert.pub_key);
+                    try hw.handshakeRecordHeader(.client_key_exchange, 2 + key.len);
+                    try hw.int(u16, key.len);
+                    try hw.slice(key);
+                }
+                break :brk hw.buffered();
+            };
             h.transcript.update(key_exchange);
-            try w.advanceRecord(.handshake, key_exchange.len);
+            try w.record(.handshake, key_exchange);
         }
 
         // Client certificate verify message
         if (cert_builder) |cb| {
-            const certificate_verify = try cb.makeCertificateVerify(w.getPayload());
+            const certificate_verify = brk: {
+                var hw = try w.child(record.header_len);
+                try cb.makeCertificateVerify(&hw);
+                break :brk hw.buffered();
+            };
             h.transcript.update(certificate_verify);
-            try w.advanceRecord(.handshake, certificate_verify.len);
+            try w.record(.handshake, certificate_verify);
         }
 
         // Client change cipher spec message
-        try w.writeRecord(.change_cipher_spec, &[_]u8{1});
+        try w.record(.change_cipher_spec, &[_]u8{1});
 
         // Client handshake finished message
         {
@@ -791,7 +813,7 @@ pub const Handshake = struct {
             try h.writeEncrypted(&w, client_finished);
         }
 
-        h.stream_writer.advance(w.getWritten().len);
+        h.stream_writer.advance(w.buffered().len);
     }
 
     /// Create client change cipher spec and handshake finished messages for
@@ -802,21 +824,29 @@ pub const Handshake = struct {
     /// server has requested certificate but the client is not configured
     /// empty certificate message is sent, as is required by rfc.
     fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair) !void {
-        var w = record.Writer{ .buf = h.stream_writer.unusedCapacitySlice() };
+        var w: record.Writer = .initFromIo(h.stream_writer);
 
         // Client change cipher spec message
-        try w.writeRecord(.change_cipher_spec, &[_]u8{1});
+        try w.record(.change_cipher_spec, &[_]u8{1});
 
         if (h.client_certificate_requested) {
             if (auth) |a| {
                 const cb = h.certificateBuilder(a);
                 {
-                    const certificate = try cb.makeCertificate(w.getPayload());
+                    const certificate = brk: {
+                        var hw = try w.child(record.header_len);
+                        try cb.makeCertificate(&hw);
+                        break :brk hw.buffered();
+                    };
                     h.transcript.update(certificate);
                     try h.writeEncrypted(&w, certificate);
                 }
                 {
-                    const certificate_verify = try cb.makeCertificateVerify(w.getPayload());
+                    const certificate_verify = brk: {
+                        var hw = try w.child(record.header_len);
+                        try cb.makeCertificateVerify(&hw);
+                        break :brk hw.buffered();
+                    };
                     h.transcript.update(certificate_verify);
                     try h.writeEncrypted(&w, certificate_verify);
                 }
@@ -828,14 +858,9 @@ pub const Handshake = struct {
             }
         }
 
-        // Client handshake finished message
-        {
-            const client_finished = try h.makeClientFinishedTls13(w.getPayload());
-            h.transcript.update(client_finished);
-            try h.writeEncrypted(&w, client_finished);
-        }
+        try h.makeClientFinishedTls13(&w);
 
-        h.stream_writer.advance(w.getWritten().len);
+        h.stream_writer.advance(w.buffered().len);
     }
 
     fn certificateBuilder(h: *Self, auth: *CertKeyPair) CertificateBuilder {
@@ -848,27 +873,16 @@ pub const Handshake = struct {
         };
     }
 
-    fn makeClientFinishedTls13(h: *Self, buf: []u8) ![]const u8 {
-        var w = record.Writer{ .buf = buf };
-        const verify_data = h.transcript.clientFinishedTls13(w.getHandshakePayload());
-        try w.advanceHandshake(.finished, verify_data.len);
-        return w.getWritten();
-    }
-
-    fn makeClientKeyExchange(h: *Self, buf: []u8) ![]const u8 {
-        var w = record.Writer{ .buf = buf };
-        if (h.named_group) |named_group| {
-            const key = try h.dh_kp.publicKey(named_group);
-            try w.writeHandshakeHeader(.client_key_exchange, 1 + key.len);
-            try w.writeInt(@as(u8, @intCast(key.len)));
-            try w.write(key);
-        } else {
-            const key = try h.rsa_secret.encrypted(h.cert.pub_key_algo, h.cert.pub_key);
-            try w.writeHandshakeHeader(.client_key_exchange, 2 + key.len);
-            try w.writeInt(@as(u16, @intCast(key.len)));
-            try w.write(key);
-        }
-        return w.getWritten();
+    fn makeClientFinishedTls13(h: *Self, w: *record.Writer) !void {
+        const client_finished = brk: {
+            // cleartext finished handshake record
+            var hw = try w.child(record.header_len);
+            try hw.handshakeRecord(.finished, h.transcript.clientFinishedTls13());
+            break :brk hw.buffered();
+        };
+        h.transcript.update(client_finished);
+        // encrypt cleartext record
+        try h.writeEncrypted(w, client_finished);
     }
 
     fn readServerFlight2(h: *Self) !void {
@@ -895,8 +909,8 @@ pub const Handshake = struct {
 
     /// Write encrypted handshake message into `w`
     fn writeEncrypted(h: *Self, w: *record.Writer, cleartext: []const u8) !void {
-        const ciphertext = try h.cipher.encrypt(w.getFree(), .handshake, cleartext);
-        w.pos += ciphertext.len;
+        const ciphertext = try h.cipher.encrypt(w.unused(), .handshake, cleartext);
+        w.advance(ciphertext.len);
     }
 
     // Copy handshake parameters to opt.diagnostic
@@ -1101,12 +1115,13 @@ test "tls 1.3 process server flight" {
         try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, encrypted);
     }
     { // client finished message
-        var buf: [4 + Transcript.max_mac_length]u8 = undefined;
-        const client_finished = try h.makeClientFinishedTls13(&buf);
-        try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, client_finished[4..]);
+        const verify_data = h.transcript.clientFinishedTls13();
+        try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, verify_data);
+
         var buffer: [128]u8 = undefined;
-        const encrypted = try h.cipher.encrypt(&buffer, .handshake, client_finished);
-        try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, encrypted);
+        var w: record.Writer = .init(&buffer);
+        try h.makeClientFinishedTls13(&w);
+        try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, w.buffered());
     }
 }
 
@@ -1127,7 +1142,7 @@ test "create client hello" {
     );
 
     var h = brk: {
-        var buffer: [expected.len + 1]u8 = undefined;
+        var buffer: [256 + 10]u8 = undefined; // reserved + host name len
         var stream_writer: io.Writer = .fixed(&buffer);
         break :brk Handshake{
             .stream_writer = &stream_writer,
@@ -1147,7 +1162,28 @@ test "create client hello" {
 
     const actual = h.stream_writer.buffered();
     try testing.expectEqualSlices(u8, &expected, actual);
-    try testing.expectEqual(1, h.stream_writer.unusedCapacityLen());
+    try testing.expectEqual(152, h.stream_writer.unusedCapacityLen());
+    try testing.expectEqual(114, expected.len);
+}
+
+test "client hello size" {
+    const opt: Options = .{
+        .host = "some-host-name.net",
+        .root_ca = .{},
+        .cipher_suites = cipher_suites.all,
+        //.named_groups = supported_named_groups,
+    };
+
+    var buffer: [max_cleartext_len]u8 = undefined;
+    var stream_writer: io.Writer = .fixed(&buffer);
+    var h = Handshake{
+        .stream_writer = &stream_writer,
+        .stream_reader = undefined,
+    };
+    try h.initKeys(opt);
+    try h.makeClientHello(opt, null);
+    try testing.expectEqual(1572 + opt.host.len, h.stream_writer.end);
+    //try testing.expectEqual(2794 + opt.host.len, h.stream_writer.end);
 }
 
 test "handshake verify server finished message" {
