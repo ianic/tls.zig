@@ -359,8 +359,8 @@ pub const Writer = struct {
         try w.enumValue(content_type);
         try w.enumValue(proto.Version.tls_1_2);
         try w.int(u16, payload.len);
-        if (w.unused().ptr == payload.ptr and w.unused().len == payload.len) {
-            w.advance(payload.len);
+        if (w.unused().ptr == payload.ptr) {
+            w.inner.advance(payload.len);
         } else {
             try w.slice(payload);
         }
@@ -376,7 +376,11 @@ pub const Writer = struct {
     pub fn handshakeRecord(w: *Writer, handshake_type: proto.Handshake, payload: []const u8) !void {
         try w.enumValue(handshake_type);
         try w.int(u24, payload.len);
-        try w.slice(payload);
+        if (w.unused().ptr == payload.ptr) {
+            w.inner.advance(payload.len);
+        } else {
+            try w.slice(payload);
+        }
     }
 
     pub fn handshakeRecordHeader(w: *Writer, handshake_type: proto.Handshake, payload_len: usize) !void {

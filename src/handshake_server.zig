@@ -294,7 +294,11 @@ pub const Handshake = struct {
         }
     }
 
-    /// Write encrypted handshake message into `w`
+    /// Write encrypted handshake message into `w` Cleartext and write buffer
+    /// `w.unused()` are reusing same buffer. Cleartext is written 5 bytes ahead
+    /// (record header len) from w.unused() position to avoid memcopy in the
+    /// encrypt. Encrypt will add tls record head in first 5 bytes, encrypt
+    /// cleartext and add hmac at end.
     fn writeEncrypted(h: *Self, w: *record.Writer, cleartext: []const u8) !void {
         const ciphertext = try h.cipher.encrypt(w.unused(), .handshake, cleartext);
         w.advance(ciphertext.len);

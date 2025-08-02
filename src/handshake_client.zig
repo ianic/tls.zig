@@ -788,10 +788,10 @@ pub const Handshake = struct {
         try w.record(.change_cipher_spec, &[_]u8{1});
 
         { // Client handshake finished
-            var hw = try w.writerAdvance(record.header_len);
-            try hw.handshakeRecord(.finished, &h.transcript.clientFinishedTls12(&h.master_secret));
-            h.transcript.update(hw.buffered());
-            try h.writeEncrypted(&w, hw.buffered());
+            const client_finished = &record.handshakeHeader(.finished, 12) ++
+                h.transcript.clientFinishedTls12(&h.master_secret);
+            h.transcript.update(client_finished);
+            try h.writeEncrypted(&w, client_finished);
         }
 
         h.stream_writer.advance(w.buffered().len);
@@ -807,7 +807,7 @@ pub const Handshake = struct {
     fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair) !void {
         var w: record.Writer = .initFromIo(h.stream_writer);
 
-        // Client change cipher spec message
+        // Client change cipher spec
         try w.record(.change_cipher_spec, &[_]u8{1});
 
         if (h.client_certificate_requested) {
