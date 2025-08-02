@@ -7,28 +7,6 @@ const max_ciphertext_len = @import("cipher.zig").max_ciphertext_len;
 
 pub const header_len = 5;
 
-pub inline fn int2(int: u16) [2]u8 {
-    var arr: [2]u8 = undefined;
-    std.mem.writeInt(u16, &arr, int, .big);
-    return arr;
-}
-
-pub inline fn int3(int: u24) [3]u8 {
-    var arr: [3]u8 = undefined;
-    std.mem.writeInt(u24, &arr, int, .big);
-    return arr;
-}
-
-pub fn header(content_type: proto.ContentType, payload_len: usize) [header_len]u8 {
-    return [1]u8{@intFromEnum(content_type)} ++
-        int2(@intFromEnum(proto.Version.tls_1_2)) ++
-        int2(@intCast(payload_len));
-}
-
-pub fn handshakeHeader(handshake_type: proto.Handshake, payload_len: usize) [4]u8 {
-    return [1]u8{@intFromEnum(handshake_type)} ++ int3(@intCast(payload_len));
-}
-
 pub const Record = struct {
     content_type: proto.ContentType,
     protocol_version: proto.Version = .tls_1_2,
@@ -448,4 +426,29 @@ test "Writer" {
     try w.enumValue(proto.NamedGroup.x25519);
     try w.int(u16, 0x1234);
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.buffered());
+}
+
+inline fn int2(int: u16) [2]u8 {
+    var arr: [2]u8 = undefined;
+    std.mem.writeInt(u16, &arr, int, .big);
+    return arr;
+}
+
+inline fn int3(int: u24) [3]u8 {
+    var arr: [3]u8 = undefined;
+    std.mem.writeInt(u24, &arr, int, .big);
+    return arr;
+}
+
+pub fn header(content_type: proto.ContentType, payload_len: usize) [header_len]u8 {
+    return [1]u8{@intFromEnum(content_type)} ++
+        int2(@intFromEnum(proto.Version.tls_1_2)) ++
+        int2(@intCast(payload_len));
+}
+
+pub fn handshakeHeader(handshake_type: proto.Handshake, payload_len: usize) [4]u8 {
+    var ret: [4]u8 = undefined;
+    ret[0] = @intFromEnum(handshake_type);
+    std.mem.writeInt(u24, ret[1..4], @intCast(payload_len), .big);
+    return ret;
 }

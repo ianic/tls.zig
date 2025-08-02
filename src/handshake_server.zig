@@ -155,9 +155,10 @@ pub const Handshake = struct {
         }
         try w.record(.change_cipher_spec, &[_]u8{1});
         {
-            const encrypted_extensions = &record.handshakeHeader(.encrypted_extensions, 2) ++ [_]u8{ 0, 0 };
-            h.transcript.update(encrypted_extensions);
-            try h.writeEncrypted(&w, encrypted_extensions);
+            var hw = try w.writerAdvance(record.header_len);
+            try hw.handshakeRecord(.encrypted_extensions, &[_]u8{ 0, 0 });
+            h.transcript.update(hw.buffered());
+            try h.writeEncrypted(&w, hw.buffered());
         }
         if (opt.client_auth) |_| { // Certificate request
             var hw = try w.writerAdvance(record.header_len);

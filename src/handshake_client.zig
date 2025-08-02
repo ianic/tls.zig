@@ -742,7 +742,7 @@ pub const Handshake = struct {
         var w: record.Writer = .initFromIo(h.stream_writer);
         var cert_builder: ?CertificateBuilder = null;
 
-        // Client certificate message
+        // Client certificate
         if (h.client_certificate_requested) {
             if (auth) |a| {
                 const cb = h.certificateBuilder(a);
@@ -752,14 +752,14 @@ pub const Handshake = struct {
                 h.transcript.update(hw.buffered());
                 try w.record(.handshake, hw.buffered());
             } else {
-                const empty_certificate = &record.handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
-                h.transcript.update(empty_certificate);
-                try w.record(.handshake, empty_certificate);
+                var hw = try w.writerAdvance(record.header_len);
+                try hw.handshakeRecord(.certificate, &[_]u8{ 0, 0, 0 });
+                h.transcript.update(hw.buffered());
+                try w.record(.handshake, hw.buffered());
             }
         }
 
-        // Client key exchange message
-        {
+        { // Client key exchange
             var hw = try w.writerAdvance(record.header_len);
             if (h.named_group) |named_group| {
                 const key = try h.dh_kp.publicKey(named_group);
@@ -776,7 +776,7 @@ pub const Handshake = struct {
             try w.record(.handshake, hw.buffered());
         }
 
-        // Client certificate verify message
+        // Client certificate verify
         if (cert_builder) |cb| {
             var hw = try w.writerAdvance(record.header_len);
             try cb.makeCertificateVerify(&hw);
@@ -784,15 +784,14 @@ pub const Handshake = struct {
             try w.record(.handshake, hw.buffered());
         }
 
-        // Client change cipher spec message
+        // Client change cipher spec
         try w.record(.change_cipher_spec, &[_]u8{1});
 
-        // Client handshake finished message
-        {
-            const client_finished = &record.handshakeHeader(.finished, 12) ++
-                h.transcript.clientFinishedTls12(&h.master_secret);
-            h.transcript.update(client_finished);
-            try h.writeEncrypted(&w, client_finished);
+        { // Client handshake finished
+            var hw = try w.writerAdvance(record.header_len);
+            try hw.handshakeRecord(.finished, &h.transcript.clientFinishedTls12(&h.master_secret));
+            h.transcript.update(hw.buffered());
+            try h.writeEncrypted(&w, hw.buffered());
         }
 
         h.stream_writer.advance(w.buffered().len);
@@ -828,9 +827,10 @@ pub const Handshake = struct {
                 }
             } else {
                 // Empty certificate message and no certificate verify message
-                const empty_certificate = &record.handshakeHeader(.certificate, 4) ++ [_]u8{ 0, 0, 0, 0 };
-                h.transcript.update(empty_certificate);
-                try h.writeEncrypted(&w, empty_certificate);
+                var hw = try w.writerAdvance(record.header_len);
+                try hw.handshakeRecord(.certificate, &[_]u8{ 0, 0, 0, 0 });
+                h.transcript.update(hw.buffered());
+                try h.writeEncrypted(&w, hw.buffered());
             }
         }
 
