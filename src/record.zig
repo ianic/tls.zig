@@ -269,6 +269,10 @@ pub const Writer = struct {
         return w.inner.end;
     }
 
+    pub fn pos(w: Writer) usize {
+        return w.inner.end;
+    }
+
     pub inline fn byte(w: *Writer, b: u8) !void {
         try w.ensureCapacity(1);
         try w.inner.writeByte(b);
@@ -280,7 +284,7 @@ pub const Writer = struct {
     }
 
     pub inline fn int(w: *Writer, comptime T: type, value: anytype) !void {
-        try w.ensureCapacity(@sizeOf(T));
+        try w.ensureCapacity(@divExact(@typeInfo(T).int.bits, 8));
         try w.inner.writeInt(T, @intCast(value), .big);
     }
 
@@ -384,6 +388,12 @@ pub const Writer = struct {
         }
     }
 
+    pub fn recordHeader(w: *Writer, content_type: proto.ContentType, payload_len: usize) !void {
+        try w.enumValue(content_type);
+        try w.enumValue(proto.Version.tls_1_2);
+        try w.int(u16, payload_len);
+    }
+
     /// tls handshake record
     pub fn handshakeRecord(w: *Writer, handshake_type: proto.Handshake, payload: []const u8) !void {
         try w.enumValue(handshake_type);
@@ -416,6 +426,14 @@ pub const Writer = struct {
     pub fn child(w: *Writer, skip: usize) !Writer {
         try w.ensureCapacity(skip);
         return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[skip..]) };
+    }
+
+    /// Placeholder writer at current position. Skips `len` bytes. Used when we
+    /// know how many bytes to write but don't yet know the content.
+    pub fn placeholder(w: *Writer, len: usize) !Writer {
+        try w.ensureCapacity(len);
+        defer w.advance(len);
+        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[0..len]) };
     }
 };
 

@@ -312,7 +312,8 @@ pub const Handshake = struct {
     }
 
     fn makeServerHello(h: *Self, w: *record.Writer) ![]const u8 {
-        const header_buf = try w.writableArray(9); // tls record header (5 bytes) and handshake header (4 bytes)
+        // handshake header writer, used later when we know body len
+        var hw = try w.placeholder(9);
 
         try w.enumValue(proto.Version.tls_1_2);
         try w.slice(&h.server_random);
@@ -323,8 +324,8 @@ pub const Handshake = struct {
         try w.enumValue(h.cipher_suite);
         try w.slice(&[_]u8{0}); // compression method
 
-        const ext_len_buf = try w.writableArray(2); // placeholder for extensions length
-        const ext_head = w.bytesWritten(); // position where extensions start
+        var ew = try w.placeholder(2); // extensions length placeholder writer
+        const ext_start_pos = w.pos(); // position where extensions start
         { // supported versions extension
             try w.enumValue(proto.Extension.supported_versions);
             try w.int(u16, 2);
@@ -338,12 +339,9 @@ pub const Handshake = struct {
             try w.int(u16, key_len);
             try w.slice(h.server_pub_key);
         }
-        // extensions length
-        mem.writeInt(u16, ext_len_buf, @intCast(w.bytesWritten() - ext_head), .big);
-
-        const payload_len = w.bytesWritten() - header_buf.len;
-        header_buf.* = record.header(.handshake, 4 + payload_len) ++
-            record.handshakeHeader(.server_hello, payload_len);
+        try ew.int(u16, w.pos() - ext_start_pos);
+        try hw.recordHeader(.handshake, w.pos() - 4);
+        try hw.handshakeRecordHeader(.server_hello, w.pos() - 9);
 
         return w.buffered();
     }
