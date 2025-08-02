@@ -431,15 +431,13 @@ pub const Handshake = struct {
     fn makeClientHello(h: *Self, opt: Options, resumption_ticket: ?ResumptionTicket) !void {
         // Prepare data
         const tls_versions = try CipherSuite.versions(opt.cipher_suites);
-        const shared_keys: []const []const u8, const shared_keys_len: usize = if (tls_versions != .tls_1_2) brk: {
+        const shared_keys: []const []const u8 = if (tls_versions != .tls_1_2) brk: {
             var keys: [supported_named_groups.len][]const u8 = undefined;
-            var n: usize = 0;
             for (opt.named_groups, 0..) |ng, i| {
                 keys[i] = try h.dh_kp.publicKey(ng);
-                n += keys[i].len;
             }
-            break :brk .{ keys[0..opt.named_groups.len], n };
-        } else .{ &.{}, 0 };
+            break :brk keys[0..opt.named_groups.len];
+        } else &.{};
         const supported_versions = switch (tls_versions) {
             .both => &[_]proto.Version{ .tls_1_3, .tls_1_2 },
             .tls_1_3 => &[_]proto.Version{.tls_1_3},
@@ -447,61 +445,54 @@ pub const Handshake = struct {
         };
         const psk_binder_len = if (resumption_ticket == null) 0 else h.transcript.hashLength() + 3;
 
-        // TODO: remove estimation
-        // Calculate required buffer length
-        // 256 bytes reserved for all non variable parts.
-        const estimated_buffer_len = 256 + shared_keys_len + opt.host.len +
-            psk_binder_len + if (resumption_ticket) |ticket| ticket.identity.len else 0;
-        _ = estimated_buffer_len;
         var w: record.Writer = .initFromIo(h.stream_writer);
 
-        // Hello message parts:
-        // | header | payload | extensions |
-        // header
-        const header_buf = try w.writableArray(9); // tls record header (5 bytes) and handshake header (4 bytes)
-        // payload
+        // Placeholder for tls record header (5 bytes) and handshake header (4 bytes).
+        // We will write it when we know payload length.
+        const header_pos = try w.skip(9);
+
         try w.enumValue(proto.Version.tls_1_2);
         try w.slice(&h.client_random);
         try w.byte(0); // no session id
         try w.enumList(CipherSuite, opt.cipher_suites);
         try w.slice(&[_]u8{ 0x01, 0x00 }); // no compression
-        // extensions
-        const ext_len_buf = try w.writableArray(2); // placeholder for extensions length
-        const ext_head = w.bytesWritten(); // position where extensions start
+        // Remeber position to write extensions length
+        const ext_len_pos = try w.skip(2);
         try w.extension(.supported_versions, supported_versions);
         try w.extension(.signature_algorithms, common.supported_signature_algorithms);
         try w.extension(.supported_groups, opt.named_groups);
         try w.keyShare(opt.named_groups, shared_keys);
         try w.serverName(opt.host);
-        if (resumption_ticket) |ticket| {
+        // binder key placeholder
+        const binder_pos: ?usize = if (resumption_ticket) |ticket| brk: {
             // Add pre shared key extension if this is session resumption. Must be last extension.
             try w.extension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
             try w.preSharedKey(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
-        }
+            // Retruns placeholder for binder, we can write binder when we have
+            // hash up to thise point with valid extnsions length and
+            // record header written.
+            break :brk try w.skip(psk_binder_len);
+        } else null;
 
-        // Write extensions length and record header (now when we know exact lengths)
-        {
-            // If there is binder it not yet written but must be calculated in
-            // header lengths.
-            const msg_len = w.bytesWritten() + psk_binder_len;
-            // Write extensions length to the placeholder
-            mem.writeInt(u16, ext_len_buf, @intCast(msg_len - ext_head), .big);
-            // Writer header to the placeholder
-            const body_len = msg_len - header_buf.len;
-            header_buf.* = record.header(.handshake, 4 + body_len) ++ record.handshakeHeader(.client_hello, body_len);
-            const hash_data = w.buffered()[record.header_len..];
-            h.transcript.update(hash_data);
-        }
+        // Write extensions length to the placeholder
+        var ew = w.writerAt(ext_len_pos);
+        try ew.int(u16, w.pos() - ext_len_pos - 2);
+        // Writer header to the placeholder
+        var hw = w.writerAt(header_pos);
+        try hw.recordHeader(.handshake, w.pos() - 5);
+        try hw.handshakeRecordHeader(.client_hello, w.pos() - 9);
 
-        if (resumption_ticket) |_| {
-            // Finish pre shared key extension, add binder.
-            // psk binder, ref: https://datatracker.ietf.org/doc/html/rfc8446#autoid-39
-            // Binder is calculated with transcript of the partial hello up to the binder.
+        const pre_binder_hash_buf = w.buffered()[record.header_len .. w.pos() - psk_binder_len];
+        h.transcript.update(pre_binder_hash_buf);
+
+        if (binder_pos) |pos| {
+            // Write binder to the placeholder and update hash with binder extenstion
             const binder = h.transcript.pskBinder();
-            try w.preSharedKeyBinder(binder);
-            // now when binder is written update transcript with it
+            var bw = w.writerAt(pos);
+            try bw.preSharedKeyBinder(binder);
             h.transcript.update(w.buffered()[w.buffered().len - psk_binder_len ..]);
         }
+
         h.stream_writer.advance(w.buffered().len);
     }
 

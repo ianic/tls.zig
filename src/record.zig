@@ -423,9 +423,21 @@ pub const Writer = struct {
     /// created skipping header, payload is written in the right position and
     /// then we write header with the parent writer and advance over already
     /// written payload.
-    pub fn child(w: *Writer, skip: usize) !Writer {
-        try w.ensureCapacity(skip);
-        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[skip..]) };
+    pub fn child(w: *Writer, n: usize) !Writer {
+        try w.ensureCapacity(n);
+        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[n..]) };
+    }
+
+    pub fn skip(w: *Writer, n: usize) !usize {
+        try w.ensureCapacity(n);
+        const p = w.pos();
+        w.inner.advance(n);
+        return p;
+    }
+
+    pub fn writerAt(w: *Writer, p: usize) Writer {
+        assert(p < w.inner.end);
+        return Writer{ .inner = io.Writer.fixed(w.inner.buffered()[p..]) };
     }
 
     /// Placeholder writer at current position. Skips `len` bytes. Used when we

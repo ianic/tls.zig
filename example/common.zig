@@ -225,7 +225,7 @@ pub fn get(
 
     // Establish tcp connection
     var tcp: std.net.Stream = undefined;
-    var tnsf: usize = 4;
+    var tnsf: usize = 16;
     while (true) {
         tcp = std.net.tcpConnectToHost(allocator, host, if (port) |p| p else 443) catch |err| switch (err) {
             error.TemporaryNameServerFailure => {

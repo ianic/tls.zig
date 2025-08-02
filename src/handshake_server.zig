@@ -312,8 +312,7 @@ pub const Handshake = struct {
     }
 
     fn makeServerHello(h: *Self, w: *record.Writer) ![]const u8 {
-        // handshake header writer, used later when we know body len
-        var hw = try w.placeholder(9);
+        const header_pos = try w.skip(9);
 
         try w.enumValue(proto.Version.tls_1_2);
         try w.slice(&h.server_random);
@@ -324,8 +323,7 @@ pub const Handshake = struct {
         try w.enumValue(h.cipher_suite);
         try w.slice(&[_]u8{0}); // compression method
 
-        var ew = try w.placeholder(2); // extensions length placeholder writer
-        const ext_start_pos = w.pos(); // position where extensions start
+        const ext_len_pos = try w.skip(2); // extensions length placeholder writer
         { // supported versions extension
             try w.enumValue(proto.Extension.supported_versions);
             try w.int(u16, 2);
@@ -339,8 +337,10 @@ pub const Handshake = struct {
             try w.int(u16, key_len);
             try w.slice(h.server_pub_key);
         }
-        try ew.int(u16, w.pos() - ext_start_pos);
-        try hw.recordHeader(.handshake, w.pos() - 4);
+        var ew = w.writerAt(ext_len_pos);
+        try ew.int(u16, w.pos() - ext_len_pos - 2);
+        var hw = w.writerAt(header_pos);
+        try hw.recordHeader(.handshake, w.pos() - 5);
         try hw.handshakeRecordHeader(.server_hello, w.pos() - 9);
 
         return w.buffered();
