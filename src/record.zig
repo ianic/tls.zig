@@ -414,20 +414,9 @@ pub const Writer = struct {
         w.inner.advance(n);
     }
 
-    /// Another writer which uses same underlying bytes buffer. Skip is how many
-    /// bytes to advance from current position. Writing to child buffer don't
-    /// advance parent.
-    ///
-    /// Used in situations where we have header and payload, in header is
-    /// payload len but we don't know that len in advance. Child reader is
-    /// created skipping header, payload is written in the right position and
-    /// then we write header with the parent writer and advance over already
-    /// written payload.
-    pub fn child(w: *Writer, n: usize) !Writer {
-        try w.ensureCapacity(n);
-        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[n..]) };
-    }
-
+    /// Skip `n` bytes from current position and return position before skip.
+    /// Used with writerAt to later return to that point and write skipped
+    /// bytes.
     pub fn skip(w: *Writer, n: usize) !usize {
         try w.ensureCapacity(n);
         const p = w.pos();
@@ -435,17 +424,18 @@ pub const Writer = struct {
         return p;
     }
 
+    /// Returns writer at some previous position
+    /// Parent buffer position is not changed.
     pub fn writerAt(w: *Writer, p: usize) Writer {
         assert(p < w.inner.end);
         return Writer{ .inner = io.Writer.fixed(w.inner.buffered()[p..]) };
     }
 
-    /// Placeholder writer at current position. Skips `len` bytes. Used when we
-    /// know how many bytes to write but don't yet know the content.
-    pub fn placeholder(w: *Writer, len: usize) !Writer {
-        try w.ensureCapacity(len);
-        defer w.advance(len);
-        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[0..len]) };
+    /// Returns new writer in unused buffer part advancing `n` bytes.
+    /// Parent buffer position is not changed.
+    pub fn writerAdvance(w: *Writer, n: usize) !Writer {
+        try w.ensureCapacity(n);
+        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[n..]) };
     }
 };
 

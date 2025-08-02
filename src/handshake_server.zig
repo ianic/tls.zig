@@ -159,14 +159,11 @@ pub const Handshake = struct {
             h.transcript.update(encrypted_extensions);
             try h.writeEncrypted(&w, encrypted_extensions);
         }
-        if (opt.client_auth) |_| {
-            const certificate_request = brk: {
-                var hw = try w.child(record.header_len);
-                try makeCertificateRequest(&hw);
-                break :brk hw.buffered();
-            };
-            h.transcript.update(certificate_request);
-            try h.writeEncrypted(&w, certificate_request);
+        if (opt.client_auth) |_| { // Certificate request
+            var hw = try w.writerAdvance(record.header_len);
+            try makeCertificateRequest(&hw);
+            h.transcript.update(hw.buffered());
+            try h.writeEncrypted(&w, hw.buffered());
         }
         if (opt.auth) |a| {
             const cb = CertificateBuilder{
@@ -175,33 +172,24 @@ pub const Handshake = struct {
                 .transcript = &h.transcript,
                 .side = .server,
             };
-            {
-                const certificate = brk: {
-                    var hw = try w.child(record.header_len);
-                    try cb.makeCertificate(&hw);
-                    break :brk hw.buffered();
-                };
-                h.transcript.update(certificate);
-                try h.writeEncrypted(&w, certificate);
+            { // Certificate
+                var hw = try w.writerAdvance(record.header_len);
+                try cb.makeCertificate(&hw);
+                h.transcript.update(hw.buffered());
+                try h.writeEncrypted(&w, hw.buffered());
             }
-            {
-                const certificate_verify = brk: {
-                    var hw = try w.child(record.header_len);
-                    try cb.makeCertificateVerify(&hw);
-                    break :brk hw.buffered();
-                };
-                h.transcript.update(certificate_verify);
-                try h.writeEncrypted(&w, certificate_verify);
+            { // Certificate verify
+                var hw = try w.writerAdvance(record.header_len);
+                try cb.makeCertificateVerify(&hw);
+                h.transcript.update(hw.buffered());
+                try h.writeEncrypted(&w, hw.buffered());
             }
         }
-        {
-            const finished = brk: {
-                var hw = try w.child(record.header_len);
-                try hw.handshakeRecord(.finished, h.transcript.serverFinishedTls13());
-                break :brk hw.buffered();
-            };
-            h.transcript.update(finished);
-            try h.writeEncrypted(&w, finished);
+        { // Finished
+            var hw = try w.writerAdvance(record.header_len);
+            try hw.handshakeRecord(.finished, h.transcript.serverFinishedTls13());
+            h.transcript.update(hw.buffered());
+            try h.writeEncrypted(&w, hw.buffered());
         }
 
         h.stream_writer.advance(w.buffered().len);
@@ -347,16 +335,14 @@ pub const Handshake = struct {
     }
 
     fn makeCertificateRequest(w: *record.Writer) !void {
-        const ext = brk: {
-            var ew = try w.child(4 + 1 + 2);
-            try ew.extension(.signature_algorithms, common.supported_signature_algorithms);
-            break :brk ew.buffered();
-        };
-
-        try w.handshakeRecordHeader(.certificate_request, ext.len + 3);
-        try w.int(u8, 0); // certificate request context length = 0
-        try w.int(u16, ext.len); // extensions length
-        w.advance(ext.len);
+        const header_pos = try w.skip(4 + 1 + 2);
+        const ext_head = w.pos();
+        try w.extension(.signature_algorithms, common.supported_signature_algorithms);
+        const ext_len = w.pos() - ext_head;
+        var hw = w.writerAt(header_pos);
+        try hw.handshakeRecordHeader(.certificate_request, ext_len + 3);
+        try hw.int(u8, 0); // certificate request context length = 0
+        try hw.int(u16, ext_len); // extensions length
     }
 
     fn readClientHello(h: *Self) !void {

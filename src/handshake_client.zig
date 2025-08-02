@@ -747,13 +747,10 @@ pub const Handshake = struct {
             if (auth) |a| {
                 const cb = h.certificateBuilder(a);
                 cert_builder = cb;
-                const client_certificate = brk: {
-                    var hw = try w.child(record.header_len);
-                    try cb.makeCertificate(&hw);
-                    break :brk hw.buffered();
-                };
-                h.transcript.update(client_certificate);
-                try w.record(.handshake, client_certificate);
+                var hw = try w.writerAdvance(record.header_len);
+                try cb.makeCertificate(&hw);
+                h.transcript.update(hw.buffered());
+                try w.record(.handshake, hw.buffered());
             } else {
                 const empty_certificate = &record.handshakeHeader(.certificate, 3) ++ [_]u8{ 0, 0, 0 };
                 h.transcript.update(empty_certificate);
@@ -763,34 +760,28 @@ pub const Handshake = struct {
 
         // Client key exchange message
         {
-            const key_exchange = brk: {
-                var hw = try w.child(record.header_len);
-                if (h.named_group) |named_group| {
-                    const key = try h.dh_kp.publicKey(named_group);
-                    try hw.handshakeRecordHeader(.client_key_exchange, 1 + key.len);
-                    try hw.int(u8, key.len);
-                    try hw.slice(key);
-                } else {
-                    const key = try h.rsa_secret.encrypted(h.cert.pub_key_algo, h.cert.pub_key);
-                    try hw.handshakeRecordHeader(.client_key_exchange, 2 + key.len);
-                    try hw.int(u16, key.len);
-                    try hw.slice(key);
-                }
-                break :brk hw.buffered();
-            };
-            h.transcript.update(key_exchange);
-            try w.record(.handshake, key_exchange);
+            var hw = try w.writerAdvance(record.header_len);
+            if (h.named_group) |named_group| {
+                const key = try h.dh_kp.publicKey(named_group);
+                try hw.handshakeRecordHeader(.client_key_exchange, 1 + key.len);
+                try hw.int(u8, key.len);
+                try hw.slice(key);
+            } else {
+                const key = try h.rsa_secret.encrypted(h.cert.pub_key_algo, h.cert.pub_key);
+                try hw.handshakeRecordHeader(.client_key_exchange, 2 + key.len);
+                try hw.int(u16, key.len);
+                try hw.slice(key);
+            }
+            h.transcript.update(hw.buffered());
+            try w.record(.handshake, hw.buffered());
         }
 
         // Client certificate verify message
         if (cert_builder) |cb| {
-            const certificate_verify = brk: {
-                var hw = try w.child(record.header_len);
-                try cb.makeCertificateVerify(&hw);
-                break :brk hw.buffered();
-            };
-            h.transcript.update(certificate_verify);
-            try w.record(.handshake, certificate_verify);
+            var hw = try w.writerAdvance(record.header_len);
+            try cb.makeCertificateVerify(&hw);
+            h.transcript.update(hw.buffered());
+            try w.record(.handshake, hw.buffered());
         }
 
         // Client change cipher spec message
@@ -823,23 +814,17 @@ pub const Handshake = struct {
         if (h.client_certificate_requested) {
             if (auth) |a| {
                 const cb = h.certificateBuilder(a);
-                {
-                    const certificate = brk: {
-                        var hw = try w.child(record.header_len);
-                        try cb.makeCertificate(&hw);
-                        break :brk hw.buffered();
-                    };
-                    h.transcript.update(certificate);
-                    try h.writeEncrypted(&w, certificate);
+                { // Certificate
+                    var hw = try w.writerAdvance(record.header_len);
+                    try cb.makeCertificate(&hw);
+                    h.transcript.update(hw.buffered());
+                    try h.writeEncrypted(&w, hw.buffered());
                 }
-                {
-                    const certificate_verify = brk: {
-                        var hw = try w.child(record.header_len);
-                        try cb.makeCertificateVerify(&hw);
-                        break :brk hw.buffered();
-                    };
-                    h.transcript.update(certificate_verify);
-                    try h.writeEncrypted(&w, certificate_verify);
+                { // Client certificate
+                    var hw = try w.writerAdvance(record.header_len);
+                    try cb.makeCertificateVerify(&hw);
+                    h.transcript.update(hw.buffered());
+                    try h.writeEncrypted(&w, hw.buffered());
                 }
             } else {
                 // Empty certificate message and no certificate verify message
@@ -849,7 +834,12 @@ pub const Handshake = struct {
             }
         }
 
-        try h.makeClientFinishedTls13(&w);
+        { // Finished
+            var hw = try w.writerAdvance(record.header_len);
+            try hw.handshakeRecord(.finished, h.transcript.clientFinishedTls13());
+            h.transcript.update(hw.buffered());
+            try h.writeEncrypted(&w, hw.buffered());
+        }
 
         h.stream_writer.advance(w.buffered().len);
     }
@@ -862,18 +852,6 @@ pub const Handshake = struct {
             .tls_version = h.tls_version,
             .side = .client,
         };
-    }
-
-    fn makeClientFinishedTls13(h: *Self, w: *record.Writer) !void {
-        const client_finished = brk: {
-            // cleartext finished handshake record
-            var hw = try w.child(record.header_len);
-            try hw.handshakeRecord(.finished, h.transcript.clientFinishedTls13());
-            break :brk hw.buffered();
-        };
-        h.transcript.update(client_finished);
-        // encrypt cleartext record
-        try h.writeEncrypted(w, client_finished);
     }
 
     fn readServerFlight2(h: *Self) !void {
@@ -1110,9 +1088,11 @@ test "tls 1.3 process server flight" {
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, verify_data);
 
         var buffer: [128]u8 = undefined;
-        var w: record.Writer = .init(&buffer);
-        try h.makeClientFinishedTls13(&w);
-        try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, w.buffered());
+        var w: io.Writer = .fixed(&buffer);
+        h.stream_writer = &w;
+        try h.makeClientFlight2Tls13(null);
+        try testing.expectEqualSlices(u8, &testu.hexToBytes("140303000101"), w.buffered()[0..6]);
+        try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, w.buffered()[6..]);
     }
 }
 
