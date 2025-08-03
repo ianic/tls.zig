@@ -192,7 +192,6 @@ const supported_named_groups = &[_]proto.NamedGroup{
     .x25519,
     .secp256r1,
     .secp384r1,
-    .x25519_kyber768d00,
     .x25519_ml_kem768,
 };
 
@@ -219,8 +218,8 @@ pub const Handshake = struct {
     cipher: Cipher = undefined,
     cert: CertificateParser = undefined,
     client_certificate_requested: bool = false,
-    // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_ml_kem768 = 64, x25519_kyber768d00 = 1120
-    server_pub_key_buf: [2048]u8 = undefined,
+    // public key len: x25519 = 32, secp256r1 = 65, secp384r1 = 97, x25519_ml_kem768 = 1120
+    server_pub_key_buf: [1120]u8 = undefined,
     server_pub_key: []const u8 = undefined,
     pre_shared_selected_identity: ?u16 = null,
     // statistics
@@ -394,11 +393,11 @@ pub const Handshake = struct {
         else
             &h.rsa_secret.secret;
 
-        _ = common.dupe(
+        _ = common.dupeMin(
             &h.master_secret,
             h.transcript.masterSecret(pre_master_secret, h.client_random, h.server_random),
         );
-        _ = common.dupe(
+        _ = common.dupeMin(
             &h.key_material,
             h.transcript.keyMaterial(&h.master_secret, h.client_random, h.server_random),
         );
@@ -1393,9 +1392,9 @@ test "note about sizes" {
     // values valid only for 64 bit platform, so skip in ci
     if (true) return error.SkipZigTest;
 
-    try testing.expectEqual(33968, @sizeOf(NonBlock));
-    try testing.expectEqual(33824, @sizeOf(Handshake([]u8)));
-    try testing.expectEqual(28368, @sizeOf(DhKeyPair));
+    try testing.expectEqual(18928, @sizeOf(Handshake));
+    try testing.expectEqual(19072, @sizeOf(NonBlock));
+    try testing.expectEqual(14384, @sizeOf(DhKeyPair));
     try testing.expectEqual(136, @sizeOf(Options));
     try testing.expectEqual(2792, @sizeOf(CertKeyPair));
     try testing.expectEqual(1736, @sizeOf(CertificateParser));

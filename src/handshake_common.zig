@@ -13,7 +13,6 @@ const proto = @import("protocol.zig");
 const X25519 = crypto.dh.X25519;
 const EcdsaP256Sha256 = crypto.sign.ecdsa.EcdsaP256Sha256;
 const EcdsaP384Sha384 = crypto.sign.ecdsa.EcdsaP384Sha384;
-const Kyber768 = crypto.kem.kyber_d00.Kyber768;
 const MLKem768 = crypto.kem.ml_kem.MLKem768;
 
 pub const supported_signature_algorithms = &[_]proto.SignatureScheme{
@@ -370,6 +369,12 @@ fn SchemeHash(comptime scheme: proto.SignatureScheme) type {
 }
 
 pub fn dupe(buf: []u8, data: []const u8) []u8 {
+    assert(buf.len >= data.len);
+    @memcpy(buf[0..data.len], data);
+    return buf[0..data.len];
+}
+
+pub fn dupeMin(buf: []u8, data: []const u8) []u8 {
     const n = @min(data.len, buf.len);
     @memcpy(buf[0..n], data[0..n]);
     return buf[0..n];
@@ -379,7 +384,6 @@ pub const DhKeyPair = struct {
     x25519_kp: X25519.KeyPair = undefined,
     secp256r1_kp: EcdsaP256Sha256.KeyPair = undefined,
     secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
-    kyber768_kp: Kyber768.KeyPair = undefined,
     ml_kem768: MLKem768.KeyPair = undefined,
 
     pub const seed_len = 32 + 32 + 48 + 64 + 64;
@@ -391,7 +395,6 @@ pub const DhKeyPair = struct {
                 .x25519 => kp.x25519_kp = try X25519.KeyPair.generateDeterministic(seed[0..][0..X25519.seed_length].*),
                 .secp256r1 => kp.secp256r1_kp = try EcdsaP256Sha256.KeyPair.generateDeterministic(seed[32..][0..EcdsaP256Sha256.KeyPair.seed_length].*),
                 .secp384r1 => kp.secp384r1_kp = try EcdsaP384Sha384.KeyPair.generateDeterministic(seed[32 + 32 ..][0..EcdsaP384Sha384.KeyPair.seed_length].*),
-                .x25519_kyber768d00 => kp.kyber768_kp = try Kyber768.KeyPair.generateDeterministic(seed[32 + 32 + 48 ..][0..Kyber768.seed_length].*),
                 .x25519_ml_kem768 => kp.ml_kem768 = try MLKem768.KeyPair.generateDeterministic(seed[32 + 32 + 48 + 64 ..][0..MLKem768.seed_length].*),
                 else => return error.TlsIllegalParameter,
             };
@@ -418,19 +421,6 @@ pub const DhKeyPair = struct {
                 const mul = try pk.p.mulPublic(self.secp384r1_kp.secret_key.bytes, .big);
                 break :brk &mul.affineCoordinates().x.toBytes(.big);
             },
-            .x25519_kyber768d00 => brk: {
-                const xksl = crypto.dh.X25519.public_length;
-                const hksl = xksl + Kyber768.ciphertext_length;
-                if (server_pub_key.len != hksl)
-                    return error.TlsIllegalParameter;
-
-                break :brk &((crypto.dh.X25519.scalarmult(
-                    self.x25519_kp.secret_key,
-                    server_pub_key[0..xksl].*,
-                ) catch return error.TlsDecryptFailure) ++ (self.kyber768_kp.secret_key.decaps(
-                    server_pub_key[xksl..hksl],
-                ) catch return error.TlsDecryptFailure));
-            },
             .x25519_ml_kem768 => brk: {
                 const hksl = crypto.kem.ml_kem.MLKem768.ciphertext_length;
                 const xksl = hksl + crypto.dh.X25519.public_length;
@@ -446,13 +436,12 @@ pub const DhKeyPair = struct {
         };
     }
 
-    // Returns 32, 65, 97 or 1216 bytes (kyber and ml_kem)
+    // Returns 32, 65, 97 or 1216 bytes ml_kem
     pub inline fn publicKey(self: DhKeyPair, named_group: proto.NamedGroup) ![]const u8 {
         return switch (named_group) {
             .x25519 => &self.x25519_kp.public_key,
             .secp256r1 => &self.secp256r1_kp.public_key.toUncompressedSec1(),
             .secp384r1 => &self.secp384r1_kp.public_key.toUncompressedSec1(),
-            .x25519_kyber768d00 => &self.x25519_kp.public_key ++ self.kyber768_kp.public_key.toBytes(),
             .x25519_ml_kem768 => &self.ml_kem768.public_key.toBytes() ++ self.x25519_kp.public_key,
             else => return error.TlsIllegalParameter,
         };
