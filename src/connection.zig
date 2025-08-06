@@ -235,11 +235,13 @@ pub const Connection = struct {
 
         fn stream(r: *io.Reader, w: *io.Writer, limit: io.Limit) io.Reader.StreamError!usize {
             const self: *Reader = @fieldParentPtr("interface", r);
-            return self.conn.read(limit.slice(w.unusedCapacitySlice())) catch |err| {
+            const n = self.conn.read(limit.slice(w.unusedCapacitySlice())) catch |err| {
                 self.err = err;
                 if (err == error.EndOfStream) return error.EndOfStream;
                 return error.ReadFailed;
             };
+            if (n == 0) return error.EndOfStream;
+            return n;
         }
     };
 
