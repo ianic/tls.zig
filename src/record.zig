@@ -1,9 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const mem = std.mem;
 const io = std.io;
 const proto = @import("protocol.zig");
 const max_ciphertext_len = @import("cipher.zig").max_ciphertext_len;
+
+const log = std.log.scoped(.tls);
 
 pub const header_len = 5;
 
@@ -27,14 +30,14 @@ pub const Record = struct {
     const Error = error{
         EndOfStream, // clean close of the stream
         ReadFailed, // all other stream close
-        NoSpaceLeft, // read buffer is too small to fit entire tls record
+        InputBufferUndersize, // input can't fit tls record
         TlsRecordOverflow, // incorrect tls record
     };
 
     pub fn read(rdr: *io.Reader) Error!Record {
         if (header_len > rdr.buffer.len) {
             @branchHint(.cold);
-            return error.NoSpaceLeft;
+            return error.InputBufferUndersize;
         }
         const hdr = try rdr.peek(header_len);
         const payload_len = mem.readInt(u16, hdr[3..5], .big);
@@ -45,7 +48,9 @@ pub const Record = struct {
         const record_len = header_len + payload_len;
         if (record_len > rdr.buffer.len) {
             @branchHint(.cold);
-            return error.NoSpaceLeft;
+            if (!builtin.is_test)
+                log.err("intput buffer {} bytes, required: {}", .{ rdr.buffer.len, record_len });
+            return error.InputBufferUndersize;
         }
         return .init(try rdr.take(record_len));
     }
@@ -236,7 +241,8 @@ pub const Writer = struct {
     }
 
     inline fn ensureCapacity(w: Writer, n: usize) !void {
-        if (w.inner.unusedCapacityLen() < n) return error.NoSpaceLeft;
+        if (w.inner.unusedCapacityLen() < n)
+            return error.OutputBufferUndersize;
     }
 
     pub fn buffered(w: Writer) []const u8 {

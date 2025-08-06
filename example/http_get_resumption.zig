@@ -42,7 +42,7 @@ pub fn main() !void {
         defer tcp.close();
 
         // Upgrade tcp connection to tls
-        var conn = try tls.client(tcp, config);
+        var conn = try tls.clientFromStream(tcp, config);
 
         // Send http GET request
         var buf: [64]u8 = undefined;

@@ -252,7 +252,7 @@ pub fn get(
 
     // Upgrade tcp connection to tls
     opt.host = host;
-    var cli = try tls.client(tcp, opt);
+    var cli = try tls.clientFromStream(tcp, opt);
 
     // Send http GET request
     var buf: [64]u8 = undefined;

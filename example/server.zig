@@ -37,7 +37,7 @@ pub fn main() !void {
         defer tcp.stream.close();
 
         // Upgrade tcp to tls
-        var conn = tls.server(tcp.stream, .{
+        var conn = tls.serverFromStream(tcp.stream, .{
             // .client_auth = .{
             //     .auth_type = .request,
             //     .root_ca = client_root_ca,

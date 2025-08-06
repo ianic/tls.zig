@@ -65,7 +65,7 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.config.Server) !void {
     const tcp = try server.accept();
     defer tcp.stream.close();
 
-    var conn = try tls.server(tcp.stream, opt);
+    var conn = try tls.serverFromStream(tcp.stream, opt);
     while (try conn.next()) |buf| {
         //std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
@@ -99,7 +99,7 @@ fn acceptEcho(server: *std.net.Server, opt: tls.config.Server) !void {
     const tcp = try server.accept();
     defer tcp.stream.close();
 
-    var conn = try tls.server(tcp.stream, opt);
+    var conn = try tls.serverFromStream(tcp.stream, opt);
     while (try conn.next()) |buf| try conn.writeAll(buf);
     try conn.close();
 }

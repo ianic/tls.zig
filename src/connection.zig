@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const mem = std.mem;
 const io = std.io;
 const assert = std.debug.assert;
@@ -10,10 +11,12 @@ const cipher = @import("cipher.zig");
 const Cipher = cipher.Cipher;
 const SessionResumption = @import("handshake_client.zig").Options.SessionResumption;
 
+const log = std.log.scoped(.tls);
+
 pub const Connection = struct {
     /// Underlying network connection stream reader/writer pair.
-    stream_reader: *io.Reader, // source of the encrypted (ciphebroortext) data
-    stream_writer: *io.Writer, // sink to send encrypted (ciphertext) data
+    input: *io.Reader, // source of the encrypted (ciphebroortext) data
+    output: *io.Writer, // sink to send encrypted (ciphertext) data
     cipher: Cipher,
 
     max_encrypt_seq: u64 = std.math.maxInt(u64) - 1,
@@ -52,10 +55,16 @@ pub const Connection = struct {
     }
 
     fn encryptWrite(c: *Self, content_type: proto.ContentType, bytes: []const u8) !void {
-        const writable = try c.stream_writer.writableSliceGreedy(c.cipher.recordLen(bytes.len));
+        const encrypted_len = c.cipher.recordLen(bytes.len);
+        if (c.output.buffer.len < encrypted_len) {
+            if (!builtin.is_test)
+                log.err("output buffer {} bytes, required: {}", .{ c.output.buffer.len, encrypted_len });
+            return error.OutputBufferUndersize;
+        }
+        const writable = try c.output.writableSliceGreedy(encrypted_len);
         const rec = try c.cipher.encrypt(writable, content_type, bytes);
-        c.stream_writer.advance(rec.len);
-        try c.stream_writer.flush();
+        c.output.advance(rec.len);
+        try c.output.flush();
     }
 
     /// Returns next record of cleartext data.
@@ -76,7 +85,7 @@ pub const Connection = struct {
     fn nextRecord(c: *Self) !?struct { proto.ContentType, []const u8 } {
         if (c.eof()) return null;
         while (true) {
-            const rec = Record.read(c.stream_reader) catch |err| switch (err) {
+            const rec = Record.read(c.input) catch |err| switch (err) {
                 error.EndOfStream => return null,
                 else => return err,
             };
@@ -308,8 +317,8 @@ test "encrypt decrypt" {
     var stream_reader: io.Reader = .fixed(&data12.server_pong ** 4);
     var stream_writer: io.Writer = .fixed(&output_buf);
     var conn: Connection = .{
-        .stream_reader = &stream_reader,
-        .stream_writer = &stream_writer,
+        .input = &stream_reader,
+        .output = &stream_writer,
         .cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client),
     };
     conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.rnd = testu.random(0); // use fixed rng
@@ -317,17 +326,17 @@ test "encrypt decrypt" {
     { // encrypt verify data from example
         _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
         try conn.writeRecord(.handshake, &data12.client_finished);
-        try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, conn.stream_writer.buffered());
+        try testing.expectEqualSlices(u8, &data12.verify_data_encrypted_msg, conn.output.buffered());
     }
-    _ = conn.stream_writer.consumeAll(); // reset writer buffer
+    _ = conn.output.consumeAll(); // reset writer buffer
     { // encrypt ping
         const cleartext = "ping";
         _ = testu.random(0); // sets iv to 00, 01, ... 0f
 
         try conn.writeAll(cleartext);
-        try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.stream_writer.buffered());
+        try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.output.buffered());
     }
-    _ = conn.stream_writer.consumeAll();
+    _ = conn.output.consumeAll();
     { // writer interface
         const cleartext = "ping";
         _ = testu.random(0); // sets iv to 00, 01, ... 0f
@@ -336,7 +345,7 @@ test "encrypt decrypt" {
         var writer = conn.writer(&.{});
         var w = &writer.interface;
         try w.writeAll(cleartext);
-        try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.stream_writer.buffered());
+        try testing.expectEqualSlices(u8, &data12.encrypted_ping_msg, conn.output.buffered());
     }
     { // decrypt server pong message
         conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
@@ -435,13 +444,13 @@ test "client/server connection" {
     };
 
     var client_conn: Connection = .{
-        .stream_reader = undefined,
-        .stream_writer = undefined,
+        .input = undefined,
+        .output = undefined,
         .cipher = cipher_client,
     };
     var server_conn: Connection = .{
-        .stream_reader = undefined,
-        .stream_writer = undefined,
+        .input = undefined,
+        .output = undefined,
         .cipher = cipher_server,
     };
 
@@ -461,7 +470,7 @@ test "client/server connection" {
         // prepare ciphertext buffer
         var ciphertext_buf: [cleartext_buf.len]u8 = undefined;
         var w: io.Writer = .fixed(&ciphertext_buf);
-        client_conn.stream_writer = &w;
+        client_conn.output = &w;
 
         // write cleartext to the server side
         try client_conn.writeAll(client_cleartext);
@@ -470,7 +479,7 @@ test "client/server connection" {
 
         // feed ciphertext from client to the server
         var r: io.Reader = .fixed(w.buffered());
-        server_conn.stream_reader = &r;
+        server_conn.input = &r;
         var server_cleartext_buf: [cleartext_buf.len]u8 = undefined;
         // read cleartext from the server connection
         const nr = try server_conn.readAll(&server_cleartext_buf);
@@ -561,7 +570,7 @@ pub const NonBlock = struct {
         while (true) {
             // Find full tls record
             const rec = Record.read(&rdr) catch |err| switch (err) {
-                error.EndOfStream, error.NoSpaceLeft => break,
+                error.EndOfStream, error.InputBufferUndersize => break,
                 else => |e| return e,
             };
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;

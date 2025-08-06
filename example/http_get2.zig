@@ -24,17 +24,20 @@ pub fn main() !void {
     var tcp = try std.net.tcpConnectToHost(gpa, host, port);
     defer tcp.close();
 
-    var tcp_reader_buf: [tls.stream_reader_buffer_len]u8 = undefined;
-    var tcp_writer_buf: [tls.stream_writer_buffer_len]u8 = undefined;
+    var tcp_reader_buf: [tls.input_buffer_len]u8 = undefined;
+    var tcp_writer_buf: [tls.output_buffer_len]u8 = undefined;
     var tcp_reader = tcp.reader(&tcp_reader_buf);
     var tcp_writer = tcp.writer(&tcp_writer_buf);
 
     // Upgrade tcp connection to tls
-    var conn = try tls.client2(tcp_reader.interface(), &tcp_writer.interface, .{
+    var conn = try tls.client(tcp_reader.interface(), &tcp_writer.interface, .{
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
     });
+
+    // conn.output.buffer = conn.output.buffer[0..62];
+    // std.debug.print("conn output buffer: {}\n", .{conn.output.buffer.len});
 
     { // Send http GET request
         var buf: [64]u8 = undefined;

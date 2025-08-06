@@ -33,7 +33,7 @@ fn thisLib(allocator: std.mem.Allocator, root_ca: tls.config.cert.Bundle, verbos
 
     // Upgrade tcp connection to tls
     var diagnostic: tls.config.Client.Diagnostic = .{};
-    var conn = try tls.client(tcp, .{
+    var conn = try tls.clientFromStream(tcp, .{
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,

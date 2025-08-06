@@ -55,7 +55,7 @@ pub fn main() !void {
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.config.Client.Diagnostic = .{};
-            var cli = try tls.client(tcp, .{
+            var cli = try tls.clientFromStream(tcp, .{
                 .host = host,
                 .root_ca = root_ca,
                 .cipher_suites = cipher_suites,

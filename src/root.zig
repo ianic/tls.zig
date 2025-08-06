@@ -1,10 +1,13 @@
+const std = @import("std");
+const io = std.io;
+
 pub const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
-/// Suggested stream reader/writer buffer sizes:
+
 /// Minimal buffer big enough for any tls ciphertext record.
-pub const stream_reader_buffer_len = max_ciphertext_record_len; // 16645 bytes
+pub const input_buffer_len = max_ciphertext_record_len; // 16645 bytes
 /// Minimal buffer to fit any ciphertext record produced with this tls
 /// implementation.
-pub const stream_writer_buffer_len = @import("cipher.zig").max_encrypted_record_len; // 16469 bytes
+pub const output_buffer_len = @import("cipher.zig").max_encrypted_record_len; // 16469 bytes
 
 pub const Connection = @import("connection.zig").Connection;
 
@@ -14,47 +17,48 @@ const handshake = struct {
 };
 
 /// Upgrades existing stream to the tls connection by the client tls handshake.
-pub inline fn client(stream: anytype, opt: config.Client) !Connection {
-    var reader_buf: [stream_reader_buffer_len]u8 = undefined;
-    var writer_buf: [stream_writer_buffer_len]u8 = undefined;
-    var reader = stream.reader(&reader_buf);
-    var writer = stream.writer(&writer_buf);
-    const stream_reader = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
-    const stream_writer = &writer.interface;
+pub inline fn clientFromStream(stream: anytype, opt: config.Client) !Connection {
+    const input, const output = streamToRaderWriter(stream);
+    return try client(input, output, opt);
+}
 
-    var hc: handshake.Client = .{
-        .stream_reader = stream_reader,
-        .stream_writer = stream_writer,
-    };
+pub fn client(input: *io.Reader, output: *io.Writer, opt: config.Client) !Connection {
+    var hc: handshake.Client = .{ .input = input, .output = output };
     const cipher, const session_resumption_secret_idx = try hc.handshake(opt);
     return .{
         .cipher = cipher,
-        .stream_reader = stream_reader,
-        .stream_writer = stream_writer,
+        .input = input,
+        .output = output,
         .session_resumption_secret_idx = session_resumption_secret_idx,
         .session_resumption = opt.session_resumption,
     };
 }
 
 /// Upgrades existing stream to the tls connection by the server side tls handshake.
-pub inline fn server(stream: anytype, opt: config.Server) !Connection {
-    var reader_buf: [stream_reader_buffer_len]u8 = undefined;
-    var writer_buf: [stream_writer_buffer_len]u8 = undefined;
-    var reader = stream.reader(&reader_buf);
-    var writer = stream.writer(&writer_buf);
-    const stream_reader = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
-    const stream_writer = &writer.interface;
+pub inline fn serverFromStream(stream: anytype, opt: config.Server) !Connection {
+    const input, const output = streamToRaderWriter(stream);
+    return try server(input, output, opt);
+}
 
-    var hs: handshake.Server = .{
-        .stream_reader = stream_reader,
-        .stream_writer = stream_writer,
-    };
+pub fn server(input: *io.Reader, output: *io.Writer, opt: config.Server) !Connection {
+    var hs: handshake.Server = .{ .input = input, .output = output };
     const cipher = try hs.handshake(opt);
     return .{
         .cipher = cipher,
-        .stream_reader = stream_reader,
-        .stream_writer = stream_writer,
+        .input = input,
+        .output = output,
     };
+}
+
+/// With default buffer sizes
+inline fn streamToRaderWriter(stream: anytype) struct { *io.Reader, *io.Writer } {
+    var input_buf: [input_buffer_len]u8 = undefined;
+    var output_buf: [output_buffer_len]u8 = undefined;
+    var reader = stream.reader(&input_buf);
+    var writer = stream.writer(&output_buf);
+    const input = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
+    const output = &writer.interface;
+    return .{ input, output };
 }
 
 pub const config = struct {

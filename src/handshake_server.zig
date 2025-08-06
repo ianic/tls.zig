@@ -59,8 +59,8 @@ pub const Handshake = struct {
     const supported_named_groups = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
 
     /// Underlying network connection stream reader/writer pair.
-    stream_reader: *io.Reader,
-    stream_writer: *io.Writer,
+    input: *io.Reader,
+    output: *io.Writer,
 
     server_random: [32]u8 = undefined,
     client_random: [32]u8 = undefined,
@@ -82,13 +82,13 @@ pub const Handshake = struct {
     fn writeAlert(h: *Self, cph: ?*Cipher, err: anyerror) !void {
         if (cph) |c| {
             const cleartext = proto.alertFromError(err);
-            const ciphertext = try c.encrypt(h.stream_writer.unusedCapacitySlice(), .alert, &cleartext);
-            h.stream_writer.advance(ciphertext.len);
+            const ciphertext = try c.encrypt(h.output.unusedCapacitySlice(), .alert, &cleartext);
+            h.output.advance(ciphertext.len);
         } else {
             const alert = record.header(.alert, 2) ++ proto.alertFromError(err);
-            try h.stream_writer.writeAll(&alert);
+            try h.output.writeAll(&alert);
         }
-        try h.stream_writer.flush();
+        try h.output.flush();
     }
 
     pub fn handshake(h: *Self, opt: Options) !Cipher {
@@ -104,7 +104,7 @@ pub const Handshake = struct {
             try h.writeAlert(null, err);
             return err;
         };
-        try h.stream_writer.flush();
+        try h.output.flush();
 
         h.clientFlight2(opt) catch |err| {
             // Alert received from client
@@ -142,7 +142,7 @@ pub const Handshake = struct {
     }
 
     fn serverFlight(h: *Self, opt: Options) !void {
-        var w: record.Writer = .initFromIo(h.stream_writer);
+        var w: record.Writer = .initFromIo(h.output);
 
         const shared_key = try h.sharedKey();
         {
@@ -193,7 +193,7 @@ pub const Handshake = struct {
             try h.writeEncrypted(&w, hw.buffered());
         }
 
-        h.stream_writer.advance(w.buffered().len);
+        h.output.advance(w.buffered().len);
     }
 
     inline fn sharedKey(h: *Self) ![]const u8 {
@@ -218,7 +218,7 @@ pub const Handshake = struct {
         }
 
         outer: while (true) {
-            const rec = try Record.read(h.stream_reader);
+            const rec = try Record.read(h.input);
             if (rec.protocol_version != .tls_1_2 and rec.content_type != .alert)
                 return error.TlsProtocolVersion;
 
@@ -351,7 +351,7 @@ pub const Handshake = struct {
     }
 
     fn readClientHello(h: *Self) !void {
-        var d = try Record.decoder(h.stream_reader);
+        var d = try Record.decoder(h.input);
         if (d.payload.len > max_cleartext_len) return error.TlsRecordOverflow;
         try d.expectContentType(.handshake);
         h.transcript.update(d.payload);
@@ -471,8 +471,8 @@ const testu = @import("testu.zig");
 test "read client hello" {
     var reader: io.Reader = .fixed(&data13.client_hello);
     var h: Handshake = .{
-        .stream_reader = &reader,
-        .stream_writer = undefined,
+        .input = &reader,
+        .output = undefined,
     };
     h.signature_scheme = .ecdsa_secp521r1_sha512; // this must be supported in signature_algorithms extension
     try h.readClientHello();
@@ -484,7 +484,7 @@ test "read client hello" {
 }
 
 test "make server hello" {
-    var h: Handshake = .{ .stream_reader = undefined, .stream_writer = undefined };
+    var h: Handshake = .{ .input = undefined, .output = undefined };
 
     h.cipher_suite = .AES_256_GCM_SHA384;
     testu.fillFrom(&h.server_random, 0);
@@ -548,8 +548,8 @@ pub const NonBlock = struct {
 
     pub fn init(opt: Options) Self {
         var inner: Handshake = .{
-            .stream_reader = undefined,
-            .stream_writer = undefined,
+            .input = undefined,
+            .output = undefined,
         };
         inner.initKeys(opt);
         return .{
@@ -619,12 +619,12 @@ pub const NonBlock = struct {
 
         var reader: io.Reader = .fixed(recv_buf);
         var writer: io.Writer = .fixed(send_buf);
-        self.inner.stream_reader = &reader;
-        self.inner.stream_writer = &writer;
+        self.inner.input = &reader;
+        self.inner.output = &writer;
 
         const recv_pos: usize = if (recv_buf.len > 0) brk: {
             self.recv() catch |err| switch (err) {
-                error.EndOfStream, error.NoSpaceLeft => break :brk 0,
+                error.EndOfStream, error.InputBufferUndersize => break :brk 0,
                 else => return err,
             };
             break :brk reader.seek;

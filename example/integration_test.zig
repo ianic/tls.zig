@@ -23,7 +23,7 @@ fn acceptSend(server: *net.Server, opt: tls.config.Server, clients: usize) !void
     for (0..clients) |_| {
         const tcp = try server.accept();
         defer tcp.stream.close();
-        var conn = tls.server(tcp.stream, opt) catch |err| {
+        var conn = tls.serverFromStream(tcp.stream, opt) catch |err| {
             switch (err) {
                 error.EndOfStream,
                 error.TlsCertificateRequired,
@@ -45,7 +45,7 @@ fn connectReceive(addr: net.Address, opt_: tls.config.Client) !void {
     defer tcp.close();
     var opt = opt_;
     opt.key_log_callback = tls.config.key_log.callback;
-    var conn = try tls.client(tcp, opt);
+    var conn = try tls.clientFromStream(tcp, opt);
 
     var n: usize = 0;
     //var i: usize = 0;
@@ -242,7 +242,7 @@ test "server send key update" {
 fn acceptSendKeyUpdate(server: *net.Server, opt: tls.config.Server) !void {
     const tcp = try server.accept();
     defer tcp.stream.close();
-    var conn = try tls.server(tcp.stream, opt);
+    var conn = try tls.serverFromStream(tcp.stream, opt);
     conn.max_encrypt_seq = 8;
     try conn.writeAll(data);
     try conn.close();
