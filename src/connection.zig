@@ -15,7 +15,7 @@ const log = std.log.scoped(.tls);
 
 pub const Connection = struct {
     /// Underlying network connection stream reader/writer pair.
-    input: *io.Reader, // source of the encrypted (ciphebroortext) data
+    input: *io.Reader, // source of the encrypted (ciphertext) data
     output: *io.Writer, // sink to send encrypted (ciphertext) data
     cipher: Cipher,
 
@@ -71,18 +71,16 @@ pub const Connection = struct {
     /// Can be used in iterator like loop without memcpy to another buffer:
     ///   while (try client.next()) |buf| { ... }
     pub fn next(c: *Self) anyerror!?[]const u8 {
-        const content_type, const data = c.nextRecord() catch |err| {
+        return c.nextRecord() catch |err| {
             // Write alert on tls errors.
             // Stream errors return to the caller.
             if (mem.startsWith(u8, @errorName(err), "Tls"))
                 try c.encryptWrite(.alert, &proto.alertFromError(err));
             return err;
         } orelse return null;
-        if (content_type != .application_data) return error.TlsUnexpectedMessage;
-        return data;
     }
 
-    fn nextRecord(c: *Self) !?struct { proto.ContentType, []const u8 } {
+    fn nextRecord(c: *Self) !?[]const u8 {
         if (c.eof()) return null;
         while (true) {
             const rec = Record.read(c.input) catch |err| switch (err) {
@@ -140,7 +138,7 @@ pub const Connection = struct {
                 },
                 else => return error.TlsUnexpectedMessage,
             }
-            return .{ content_type, cleartext };
+            return cleartext;
         }
     }
 
@@ -285,6 +283,7 @@ pub const Connection = struct {
             const self: *Writer = @fieldParentPtr("interface", w);
             var n: usize = 0;
             for (data[0 .. data.len - 1]) |bytes| {
+                // nemere ovo ovako mozda je nesto i zapisao
                 self.conn.writeAll(bytes) catch |err| {
                     self.err = err;
                     return error.WriteFailed;
@@ -493,19 +492,25 @@ test "client/server connection" {
 pub const NonBlock = struct {
     const Self = @This();
 
-    cipher: Cipher,
+    inner: Connection,
 
     pub fn init(c: Cipher) Self {
-        return .{ .cipher = c };
+        return .{ .inner = .{ .cipher = c, .input = undefined, .output = undefined } };
     }
 
     /// Required ciphertext buffer length for the given cleartext length.
     pub fn encryptedLength(self: Self, cleartext_len: usize) usize {
+        const c = self.inner.cipher;
         const records_count = cleartext_len / cipher.max_cleartext_len;
-        if (records_count == 0) return self.cipher.recordLen(cleartext_len);
+        if (records_count == 0) return c.recordLen(cleartext_len);
         const last_chunk_len = cleartext_len - cipher.max_cleartext_len * records_count;
-        return self.cipher.recordLen(cipher.max_cleartext_len) * records_count +
-            if (last_chunk_len == 0) 0 else self.cipher.recordLen(last_chunk_len);
+        return c.recordLen(cipher.max_cleartext_len) * records_count +
+            if (last_chunk_len == 0) 0 else c.recordLen(last_chunk_len);
+    }
+
+    fn reset(self: *Self) void {
+        self.inner.input = undefined;
+        self.inner.output = undefined;
     }
 
     /// Encrypts cleartext into ciphertext.
@@ -525,24 +530,21 @@ pub const NonBlock = struct {
         /// Encrypted ciphertext data
         ciphertext: []u8,
     } {
-        var cleartext_pos: usize = 0;
-        var ciphertext_pos: usize = 0;
-        while (cleartext_pos < cleartext.len) {
-            const cleartext_record_len = @min(cleartext[cleartext_pos..].len, cipher.max_cleartext_len);
-            if (self.cipher.recordLen(cleartext_record_len) > (ciphertext.len - ciphertext_pos)) break; // not enough space in ciphertext
-            const cleartext_record = cleartext[cleartext_pos..][0..cleartext_record_len];
-            const ciphertext_record = try self.cipher.encrypt(
-                ciphertext[ciphertext_pos..],
-                .application_data,
-                cleartext_record,
-            );
-            cleartext_pos += cleartext_record_len;
-            ciphertext_pos += ciphertext_record.len;
+        defer self.reset();
+        var output: io.Writer = .fixed(ciphertext);
+        self.inner.output = &output;
+
+        var n: usize = 0;
+        while (n < cleartext.len) {
+            n += self.inner.write(cleartext[n..]) catch |err| switch (err) {
+                error.OutputBufferUndersize => break,
+                else => return err,
+            };
         }
         return .{
-            .cleartext_pos = cleartext_pos,
-            .unused_cleartext = cleartext[cleartext_pos..],
-            .ciphertext = ciphertext[0..ciphertext_pos],
+            .cleartext_pos = n,
+            .unused_cleartext = cleartext[n..],
+            .ciphertext = output.buffered(),
         };
     }
 
@@ -564,50 +566,30 @@ pub const NonBlock = struct {
         /// Is clear notify alert received
         closed: bool = false,
     } {
-        // Part of the ciphertext buffer filled with cleartext
-        var cleartext_len: usize = 0;
-        var rdr: io.Reader = .fixed(ciphertext);
-        while (true) {
-            // Find full tls record
-            const rec = Record.read(&rdr) catch |err| switch (err) {
-                error.EndOfStream, error.InputBufferUndersize => break,
-                else => |e| return e,
+        defer self.reset();
+        var input: io.Reader = .fixed(ciphertext);
+        self.inner.input = &input;
+
+        var n: usize = 0;
+        while (n < cleartext.len) {
+            const nn = self.inner.read(cleartext[n..]) catch |err| switch (err) {
+                error.InputBufferUndersize => break,
+                else => return err,
             };
-            if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-
-            // Decrypt record
-            const content_type, const cleartext_rec = try self.cipher.decrypt(cleartext[cleartext_len..], rec);
-
-            switch (content_type) {
-                // Move cleartext pointer
-                .application_data => cleartext_len += cleartext_rec.len,
-                .handshake => {
-                    // TODO: handle key_update and new_session_ticket
-                    continue;
-                },
-                .alert => {
-                    if (cleartext.len < 2) return error.TlsUnexpectedMessage;
-                    try proto.Alert.parse(cleartext_rec[0..2].*).toError();
-                    return .{
-                        .ciphertext_pos = rdr.seek,
-                        .unused_ciphertext = ciphertext[rdr.seek..],
-                        .cleartext = cleartext[0..cleartext_len],
-                        .closed = true,
-                    };
-                },
-                else => return error.TlsUnexpectedMessage,
-            }
+            if (nn == 0) break;
+            n += nn;
         }
 
         return .{
-            .ciphertext_pos = rdr.seek,
-            .unused_ciphertext = ciphertext[rdr.seek..],
-            .cleartext = cleartext[0..cleartext_len],
+            .ciphertext_pos = input.seek,
+            .unused_ciphertext = input.buffered(),
+            .cleartext = cleartext[0..n],
+            .closed = self.inner.received_close_notify,
         };
     }
 
     pub fn close(self: *Self, ciphertext: []u8) ![]const u8 {
-        return try self.cipher.encrypt(ciphertext, .alert, &proto.Alert.closeNotify());
+        return try self.inner.cipher.encrypt(ciphertext, .alert, &proto.Alert.closeNotify());
     }
 };
 
@@ -641,7 +623,7 @@ test "nonblock decrypt" {
     _, const server_cipher = cipher.testCiphers();
     var conn = NonBlock.init(server_cipher);
 
-    const ciphertext = &data13.client_ping_wrapped;
+    const ciphertext = data13.client_ping_wrapped;
     var cleartext_buf: [32]u8 = undefined;
 
     for (1..ciphertext.len - 1) |i| {
@@ -651,6 +633,6 @@ test "nonblock decrypt" {
         try testing.expectEqual(i, res.unused_ciphertext.len);
     }
 
-    const res = try conn.decrypt(&data13.client_ping_wrapped, &cleartext_buf);
+    const res = try conn.decrypt(&ciphertext, &cleartext_buf);
     try testing.expectEqualSlices(u8, "ping", res.cleartext);
 }

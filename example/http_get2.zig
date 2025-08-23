@@ -44,9 +44,7 @@ pub fn main() !void {
         const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
         try conn.writeAll(req);
     }
-
     try readHttpResponse(gpa, &conn);
-
     try conn.close();
 }
 

@@ -3,10 +3,15 @@ const io = std.io;
 
 pub const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
 
-/// Minimal buffer big enough for any tls ciphertext record.
+/// Buffer of this size will fit any tls ciphertext record sent by other side.
+/// To decrytp we need full record, smalled buffer will not work in general
+/// case. Bigger can be used for performance reason.
 pub const input_buffer_len = max_ciphertext_record_len; // 16645 bytes
-/// Minimal buffer to fit any ciphertext record produced with this tls
-/// implementation.
+
+/// Needed output buffer during handshake is the size of the tls hello message,
+/// which is (when client authentication is not used) ~1600 bytes. After
+/// handshake it limits how big tls record can be produced. This suggested value
+/// can hold max ciphertext record produced with this implementation.
 pub const output_buffer_len = @import("cipher.zig").max_encrypted_record_len; // 16469 bytes
 
 pub const Connection = @import("connection.zig").Connection;

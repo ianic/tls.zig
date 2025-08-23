@@ -21,3 +21,6 @@ tmp/
 /example/cert/
 /example/tlsfuzzer/
 /example/async/io/
+/example/issue.zig
+/example/issue_nb.zig
+/example/tlsfuzzer_0/

@@ -1212,7 +1212,6 @@ pub const NonBlock = struct {
         };
     }
 
-    /// Returns null if there is nothing to send at this state
     fn send(self: *Self) !void {
         switch (self.state) {
             .init => {
@@ -1228,7 +1227,6 @@ pub const NonBlock = struct {
         }
     }
 
-    /// Returns number of bytes consumed from buf
     fn recv(self: *Self) !void {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
@@ -1277,26 +1275,26 @@ pub const NonBlock = struct {
             .send = &.{},
         };
 
-        var reader: io.Reader = .fixed(recv_buf);
-        var writer: io.Writer = .fixed(send_buf);
-        self.inner.input = &reader;
-        self.inner.output = &writer;
+        var input: io.Reader = .fixed(recv_buf);
+        var output: io.Writer = .fixed(send_buf);
+        self.inner.input = &input;
+        self.inner.output = &output;
 
         const recv_pos: usize = if (recv_buf.len > 0) brk: {
             self.recv() catch |err| switch (err) {
                 error.EndOfStream, error.InputBufferUndersize => break :brk 0,
                 else => return err,
             };
-            break :brk reader.seek;
+            break :brk input.seek;
         } else 0;
 
         try self.send();
 
         return .{
             .recv_pos = recv_pos,
-            .send_pos = writer.end,
+            .send_pos = output.end,
             .unused_recv = recv_buf[recv_pos..],
-            .send = writer.buffered(),
+            .send = output.buffered(),
         };
     }
 
@@ -1308,17 +1306,16 @@ pub const NonBlock = struct {
 
 test "nonblock handshake" {
     var buffer: [1024]u8 = undefined;
-    var ah = NonBlock.init(.{
+    var h = NonBlock.init(.{
         .host = "example.ulfheim.net",
         .insecure_skip_verify = true,
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.AES_256_GCM_SHA384},
         .named_groups = &[_]proto.NamedGroup{.x25519},
     });
-    var h = &ah.inner;
     { // update secrets to well known from example
-        h.client_random = data13.client_random;
-        h.dh_kp.x25519_kp = .{
+        h.inner.client_random = data13.client_random;
+        h.inner.dh_kp.x25519_kp = .{
             .public_key = data13.client_public_key,
             .secret_key = data13.client_private_key,
         };
@@ -1339,53 +1336,41 @@ test "nonblock handshake" {
         \\ 35 80 72 d6 36 58 80 d1 ae ea 32 9a df 91 21 38 38 51 ed 21 a2 8e 3b 75 e9 65 d0 d2 cd 16 62 54
         \\ 00 00 00 18 00 16 00 00 13 65 78 61 6d 70 6c 65 2e 75 6c 66 68 65 69 6d 2e 6e 65 74
     );
-    var writer: io.Writer = .fixed(&buffer);
-    h.output = &writer;
-    try ah.send();
-    const client_flight_1 = h.output.buffered();
-    try testing.expectEqualSlices(u8, &expected_client_flight_1, client_flight_1);
+
+    var res = try h.run(&.{}, &buffer);
+    try testing.expectEqualSlices(u8, &expected_client_flight_1, res.send);
 
     { // update transcript to well known from example
-        h.transcript = .{};
-        h.transcript.update(data13.client_hello[record.header_len..]);
+        h.inner.transcript = .{};
+        h.inner.transcript.update(data13.client_hello[record.header_len..]);
     }
 
-    // parsing partial server flight message returns error.EndOfStream
-    for (1..data13.server_flight_1.len - 1) |i| {
-        var reader: io.Reader = .fixed(data13.server_flight_1[0..i]);
-        h.input = &reader;
-        ah.recv() catch |err| switch (err) {
-            error.InputBufferUndersize, error.EndOfStream => continue,
-            else => {},
-        };
-        unreachable;
+    // Parsing partial server flight consumes nothing
+    var i: usize = 1;
+    while (i < data13.server_flight_1.len) : (i += 16) {
+        //for (1..data13.server_flight_1.len - 1) |i| {
+        res = try h.run(data13.server_flight_1[0..i], &.{});
+        try testing.expectEqual(0, res.recv_pos);
+        try testing.expectEqual(i, res.unused_recv.len);
     }
 
-    var reader: io.Reader = .fixed(&(data13.server_flight_1 ++ "dummy footer".*));
-    h.input = &reader;
-    try ah.recv();
-    const n = h.input.seek;
-    { // inspect
-        try testing.expectEqual(data13.server_flight_1.len, n); // footer is not touched
-        try testing.expectEqual(.tls_1_3, h.tls_version);
-        try testing.expectEqual(.x25519, h.named_group);
-        try testing.expectEqualSlices(u8, &data13.server_random, &h.server_random);
-        try testing.expectEqual(.AES_256_GCM_SHA384, h.cipher_suite);
-        try testing.expectEqualSlices(u8, &data13.server_pub_key, h.server_pub_key);
-        try testing.expect(!ah.done());
+    res = try h.run(&(data13.server_flight_1 ++ "dummy footer".*), &buffer);
+    {
+        try testing.expectEqual(data13.server_flight_1.len, res.recv_pos); // footer is not touched
+        try testing.expectEqual(.tls_1_3, h.inner.tls_version);
+        try testing.expectEqual(.x25519, h.inner.named_group);
+        try testing.expectEqualSlices(u8, &data13.server_random, &h.inner.server_random);
+        try testing.expectEqual(.AES_256_GCM_SHA384, h.inner.cipher_suite);
+        try testing.expectEqualSlices(u8, &data13.server_pub_key, h.inner.server_pub_key);
+        try testing.expect(h.done());
+        try testing.expectEqualSlices(u8, &data13.client_flight_2, res.send);
     }
 
-    h.output.end = 0;
-    try ah.send();
-    const client_flight_2 = h.output.buffered();
-    try testing.expectEqualSlices(u8, &data13.client_flight_2, client_flight_2);
-    try testing.expect(ah.done());
-
-    var reader2: io.Reader = .fixed("dummy footer");
-    h.input = &reader2;
-    try ah.recv();
-    try testing.expectEqual(0, reader2.seek);
-    try testing.expect(ah.done());
+    // When done pushing more data is noop
+    res = try h.run(&("dummy footer".*), &buffer);
+    try testing.expectEqual(0, res.recv_pos);
+    try testing.expectEqual(0, res.send_pos);
+    try testing.expect(h.done());
 }
 
 test "note about sizes" {
