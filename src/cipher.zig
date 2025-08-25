@@ -197,6 +197,12 @@ pub const Cipher = union(CipherSuite) {
         };
     }
 
+    pub fn encryptOverhead(c: Cipher) usize {
+        return switch (c) {
+            inline else => |f| return @TypeOf(f).encrypt_overhead,
+        };
+    }
+
     pub fn encryptSeq(c: Cipher) u64 {
         return switch (c) {
             inline else => |f| f.encrypt_seq,

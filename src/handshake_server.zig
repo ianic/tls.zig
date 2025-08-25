@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const crypto = std.crypto;
 const mem = std.mem;
-const io = std.io;
+const Io = std.Io;
 const Certificate = crypto.Certificate;
 
 const Cipher = @import("cipher.zig").Cipher;
@@ -59,8 +59,8 @@ pub const Handshake = struct {
     const supported_named_groups = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1 };
 
     /// Underlying network connection stream reader/writer pair.
-    input: *io.Reader,
-    output: *io.Writer,
+    input: *Io.Reader,
+    output: *Io.Writer,
 
     server_random: [32]u8 = undefined,
     client_random: [32]u8 = undefined,
@@ -208,7 +208,7 @@ pub const Handshake = struct {
         // buffer for decrypted handshake records
         var cleartext_buffer: [max_cleartext_len]u8 = undefined;
         // cleartext writer
-        var cw = io.Writer.fixed(&cleartext_buffer);
+        var cw = Io.Writer.fixed(&cleartext_buffer);
 
         var handshake_state: proto.Handshake = .finished;
         var crt_parser: CertificateParser = undefined;
@@ -469,7 +469,7 @@ const data13 = @import("testdata/tls13.zig");
 const testu = @import("testu.zig");
 
 test "read client hello" {
-    var reader: io.Reader = .fixed(&data13.client_hello);
+    var reader: Io.Reader = .fixed(&data13.client_hello);
     var h: Handshake = .{
         .input = &reader,
         .output = undefined,
@@ -617,8 +617,8 @@ pub const NonBlock = struct {
             .send = &.{},
         };
 
-        var reader: io.Reader = .fixed(recv_buf);
-        var writer: io.Writer = .fixed(send_buf);
+        var reader: Io.Reader = .fixed(recv_buf);
+        var writer: Io.Writer = .fixed(send_buf);
         self.inner.input = &reader;
         self.inner.output = &writer;
 

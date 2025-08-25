@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
-const io = std.io;
+const Io = std.Io;
 const assert = std.debug.assert;
 
 const proto = @import("protocol.zig");
@@ -15,8 +15,8 @@ const log = std.log.scoped(.tls);
 
 pub const Connection = struct {
     /// Underlying network connection stream reader/writer pair.
-    input: *io.Reader, // source of the encrypted (ciphertext) data
-    output: *io.Writer, // sink to send encrypted (ciphertext) data
+    input: *Io.Reader, // source of the encrypted (ciphertext) data
+    output: *Io.Writer, // sink to send encrypted (ciphertext) data
     cipher: Cipher,
 
     max_encrypt_seq: u64 = std.math.maxInt(u64) - 1,
@@ -56,22 +56,17 @@ pub const Connection = struct {
 
     fn encryptWrite(c: *Self, content_type: proto.ContentType, bytes: []const u8) !void {
         const encrypted_len = c.cipher.recordLen(bytes.len);
-        if (c.output.buffer.len < encrypted_len) {
-            if (!builtin.is_test)
-                log.err("output buffer {} bytes, required: {}", .{ c.output.buffer.len, encrypted_len });
-            return error.OutputBufferUndersize;
-        }
         const writable = try c.output.writableSliceGreedy(encrypted_len);
         const rec = try c.cipher.encrypt(writable, content_type, bytes);
         c.output.advance(rec.len);
         try c.output.flush();
     }
 
-    /// Returns next record of cleartext data.
+    /// Returns next record of cleartext data. Null on end of stream.
     /// Can be used in iterator like loop without memcpy to another buffer:
     ///   while (try client.next()) |buf| { ... }
     pub fn next(c: *Self) anyerror!?[]const u8 {
-        return c.nextRecord(null) catch |err| {
+        return c.nextRecord(&.{}) catch |err| {
             if (err == error.EndOfStream) return null;
             // Write alert on tls errors.
             // Stream errors return to the caller.
@@ -81,25 +76,24 @@ pub const Connection = struct {
         };
     }
 
-    /// Decrypts next tls record into cleartext_buf, if that buffer is not
-    /// provided reuses input ciphertext buffer for cleartext.
-    /// Returns cleartext record data.
-    fn nextRecord(c: *Self, cleartext_buf: ?[]u8) ![]const u8 {
-        if (c.eof()) return error.EndOfStream;
-        //std.debug.print("nextRecord with {}\n", .{if (cleartext_buf) |cb| cb.len else 0});
+    /// Decrypt next tls record into buffer, if buffer is not big enough reuse
+    /// input ciphertext buffer for cleartext. Returns cleartext of the next tls
+    /// record.
+    fn nextRecord(c: *Self, buffer: []u8) ![]const u8 {
+        assert(c.cleartext_buf.len == 0);
+        if (c.received_close_notify) return error.EndOfStream;
         while (true) {
             const rec = try Record.read(c.input);
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
-            const content_type, const cleartext = try c.cipher.decrypt(
-                // Reuse record buffer for cleartext. `rec.header` and
-                // `rec.payload`(ciphertext) are also pointing somewhere in
-                // this buffer. Decrypter is first reading then writing a
-                // block, cleartext has less length then ciphertext,
-                // cleartext starts from the beginning of the buffer, so
-                // ciphertext is always ahead of cleartext.
-                if (cleartext_buf) |cb| cb else @constCast(rec.buffer),
-                rec,
-            );
+
+            // If provided buffer is not big enought reuse input buffer for
+            // cleartext. `rec.header` and `rec.payload`(ciphertext) are
+            // pointing somewhere in this buffer. Decrypter is first reading
+            // then writing a block, cleartext has less length then ciphertext,
+            // cleartext starts from the beginning of the buffer, so ciphertext
+            // is always ahead of cleartext.
+            const cleartext_buf = if (buffer.len >= rec.payload.len) buffer else @constCast(rec.buffer);
+            const content_type, const cleartext = try c.cipher.decrypt(cleartext_buf, rec);
 
             switch (content_type) {
                 .application_data => {},
@@ -159,7 +153,10 @@ pub const Connection = struct {
     /// tls record. Max single tls record payload length is 1<<14 (16K)
     /// bytes.
     pub fn write(c: *Self, bytes: []const u8) !usize {
-        const n = @min(bytes.len, cipher.max_cleartext_len);
+        const encrypt_overhead = c.cipher.encryptOverhead();
+        assert(c.output.buffer.len > encrypt_overhead);
+        // Find maximum number of bytes which can fit into output buffer as encrypted ciphertext
+        const n = @min(bytes.len, cipher.max_cleartext_len, c.output.buffer.len - encrypt_overhead);
         try c.writeRecord(.application_data, bytes[0..n]);
         return n;
     }
@@ -175,8 +172,21 @@ pub const Connection = struct {
 
     pub fn read(c: *Self, buffer: []u8) !usize {
         if (c.cleartext_buf.len == 0) {
-            c.cleartext_buf = try c.next() orelse return 0;
+            const cleartext = c.nextRecord(buffer) catch |err| {
+                if (err == error.EndOfStream) return 0;
+                if (mem.startsWith(u8, @errorName(err), "Tls"))
+                    try c.encryptWrite(.alert, &proto.alertFromError(err));
+                return err;
+            };
+            if (cleartext.ptr == buffer.ptr) {
+                // provided buffer is used for cleartext
+                return cleartext.len;
+            }
+            // Buffer was too small input ciphertext buffer was used for cleartext
+            // Store referenct to the cleartext
+            c.cleartext_buf = cleartext;
         }
+        // move part of the cleartext_buf into provided buffer
         const n = @min(c.cleartext_buf.len, buffer.len);
         @memcpy(buffer[0..n], c.cleartext_buf[0..n]);
         c.cleartext_buf = c.cleartext_buf[n..];
@@ -220,11 +230,11 @@ pub const Connection = struct {
         return vp.total;
     }
 
-    // io.Reader interface
+    // Io.Reader interface
 
     pub const Reader = struct {
         conn: *Connection,
-        interface: io.Reader,
+        interface: Io.Reader,
         err: ?anyerror = null,
 
         pub fn init(c: *Connection, buffer: []u8) Reader {
@@ -233,7 +243,6 @@ pub const Connection = struct {
                 .interface = .{
                     .vtable = &.{
                         .stream = stream,
-                        .discard = io.Reader.defaultDiscard,
                     },
                     .buffer = buffer,
                     .seek = 0,
@@ -242,7 +251,7 @@ pub const Connection = struct {
             };
         }
 
-        fn stream(r: *io.Reader, w: *io.Writer, limit: io.Limit) io.Reader.StreamError!usize {
+        fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
             const self: *Reader = @fieldParentPtr("interface", r);
             const n = self.conn.read(limit.slice(w.unusedCapacitySlice())) catch |err| {
                 self.err = err;
@@ -250,19 +259,24 @@ pub const Connection = struct {
                 return error.ReadFailed;
             };
             if (n == 0) return error.EndOfStream;
+            w.advance(n);
             return n;
         }
     };
 
+    /// There is no strict requirement on buffer size.
+    /// If the buffer is big enough tls record will be decrypted directly into
+    /// provided buffer. If not input buffer will be used for record decryption
+    /// and than cleartext will be copied to the reader buffer when needed.
     pub fn reader(c: *Self, buffer: []u8) Reader {
         return .init(c, buffer);
     }
 
-    // io.Writer interface
+    // Io.Writer interface
 
     pub const Writer = struct {
         conn: *Connection,
-        interface: io.Writer,
+        interface: Io.Writer,
         err: ?anyerror = null,
 
         pub fn init(c: *Connection, buffer: []u8) Writer {
@@ -278,29 +292,37 @@ pub const Connection = struct {
             };
         }
 
-        fn drain(w: *io.Writer, data: []const []const u8, splat: usize) io.Writer.Error!usize {
-
-            // TODO drain w.buffer
-            if (data.len == 0) return 0;
+        fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
             const self: *Writer = @fieldParentPtr("interface", w);
+            // w.buffer is consumed first
+            try self.writeAll(w.buffered());
+
+            if (data.len == 0) return 0;
+            // Followed by each slice of `data` in order
             var n: usize = 0;
             for (data[0 .. data.len - 1]) |bytes| {
-                // nemere ovo ovako mozda je nesto i zapisao
-                self.conn.writeAll(bytes) catch |err| {
-                    self.err = err;
-                    return error.WriteFailed;
-                };
+                try self.writeAll(bytes);
                 n += bytes.len;
             }
+
+            // Last element of `data` is repeated as necessary so that it is
+            // written `splat` number of times, which may be zero.
             const pattern = data[data.len - 1];
             for (0..splat) |_| {
-                self.conn.writeAll(pattern) catch |err| {
-                    self.err = err;
-                    return error.WriteFailed;
-                };
+                try self.writeAll(pattern);
                 n += pattern.len;
             }
+
+            // Number of bytes consumed from `data` is returned, excluding bytes
+            // from w.buffer.
             return n;
+        }
+
+        fn writeAll(self: *Writer, bytes: []const u8) Io.Writer.Error!void {
+            self.conn.writeAll(bytes) catch |err| {
+                self.err = err;
+                return error.WriteFailed;
+            };
         }
     };
 
@@ -315,8 +337,8 @@ const testu = @import("testu.zig");
 
 test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
-    var stream_reader: io.Reader = .fixed(&data12.server_pong ** 4);
-    var stream_writer: io.Writer = .fixed(&output_buf);
+    var stream_reader: Io.Reader = .fixed(&data12.server_pong ** 4);
+    var stream_writer: Io.Writer = .fixed(&output_buf);
     var conn: Connection = .{
         .input = &stream_reader,
         .output = &stream_writer,
@@ -470,7 +492,7 @@ test "client/server connection" {
 
         // prepare ciphertext buffer
         var ciphertext_buf: [cleartext_buf.len]u8 = undefined;
-        var w: io.Writer = .fixed(&ciphertext_buf);
+        var w: Io.Writer = .fixed(&ciphertext_buf);
         client_conn.output = &w;
 
         // write cleartext to the server side
@@ -479,7 +501,7 @@ test "client/server connection" {
         try testing.expectEqual(ciphertext_len, w.buffered().len);
 
         // feed ciphertext from client to the server
-        var r: io.Reader = .fixed(w.buffered());
+        var r: Io.Reader = .fixed(w.buffered());
         server_conn.input = &r;
         var server_cleartext_buf: [cleartext_buf.len]u8 = undefined;
         // read cleartext from the server connection
@@ -533,15 +555,12 @@ pub const NonBlock = struct {
         ciphertext: []u8,
     } {
         defer self.reset();
-        var output: io.Writer = .fixed(ciphertext);
+        var output: Io.Writer = .fixed(ciphertext);
         self.inner.output = &output;
 
         var n: usize = 0;
-        while (n < cleartext.len) {
-            n += self.inner.write(cleartext[n..]) catch |err| switch (err) {
-                error.OutputBufferUndersize => break,
-                else => return err,
-            };
+        while (n < cleartext.len and output.end < output.buffer.len) {
+            n += try self.inner.write(cleartext[n..]);
         }
         return .{
             .cleartext_pos = n,
@@ -569,7 +588,7 @@ pub const NonBlock = struct {
         closed: bool = false,
     } {
         defer self.reset();
-        var input: io.Reader = .fixed(ciphertext);
+        var input: Io.Reader = .fixed(ciphertext);
         self.inner.input = &input;
 
         var n: usize = 0;
@@ -602,22 +621,23 @@ test "nonblock encrypt" {
 
     const cleartext = "ping";
     try testing.expectEqual(26, conn.encryptedLength(cleartext.len));
-
     var ciphertext: [32]u8 = undefined;
 
-    // while ciphertext buffer is not enough for cleartext record
-    for (0..25) |i| {
-        const res = try conn.encrypt(cleartext, ciphertext[0..i]);
-        try testing.expectEqual(0, res.cleartext_pos);
-        try testing.expectEqual(cleartext.len, res.unused_cleartext.len);
-        try testing.expectEqual(0, res.ciphertext.len);
+    // with enough big buffer
+    {
+        const res = try conn.encrypt(cleartext, &ciphertext);
+        try testing.expectEqual(cleartext.len, res.cleartext_pos);
+        try testing.expectEqual(26, res.ciphertext.len);
+        try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, res.ciphertext);
     }
 
-    // with enough big buffer
-    const res = try conn.encrypt(cleartext, &ciphertext);
-    try testing.expectEqual(cleartext.len, res.cleartext_pos);
-    try testing.expectEqual(26, res.ciphertext.len);
-    try testing.expectEqualSlices(u8, &data13.client_ping_wrapped, res.ciphertext);
+    // while ciphertext buffer is not enough for cleartext record
+    for (conn.inner.cipher.encryptOverhead() + 1..ciphertext.len) |i| {
+        const res = try conn.encrypt(cleartext, ciphertext[0..i]);
+        const expected_used_cleartext = @min(cleartext.len, i - conn.inner.cipher.encryptOverhead());
+        try testing.expectEqual(expected_used_cleartext, res.cleartext_pos);
+        try testing.expectEqual(expected_used_cleartext + conn.inner.cipher.encryptOverhead(), res.ciphertext.len);
+    }
 }
 
 test "nonblock decrypt" {

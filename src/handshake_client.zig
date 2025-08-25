@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const crypto = std.crypto;
 const mem = std.mem;
-const io = std.io;
+const Io = std.Io;
 const Certificate = crypto.Certificate;
 
 const Cipher = @import("cipher.zig").Cipher;
@@ -201,8 +201,8 @@ const supported_named_groups = &[_]proto.NamedGroup{
 /// record when needed.
 pub const Handshake = struct {
     /// Underlying network connection stream reader/writer pair.
-    input: *io.Reader,
-    output: *io.Writer,
+    input: *Io.Reader,
+    output: *Io.Writer,
 
     client_random: [32]u8 = undefined,
     server_random: [32]u8 = undefined,
@@ -633,7 +633,7 @@ pub const Handshake = struct {
         // buffer for decrypted handshake records
         var cleartext_buffer: [max_cleartext_len]u8 = undefined;
         // cleartext writer
-        var cw = io.Writer.fixed(&cleartext_buffer);
+        var cw = Io.Writer.fixed(&cleartext_buffer);
         // valid handshake types for the next record
         var handshake_states: []const proto.Handshake = &.{.encrypted_extensions};
 
@@ -721,7 +721,7 @@ pub const Handshake = struct {
         if (h.cipher_suite.keyExchange() != .ecdhe) return;
         const verify_bytes = brk: {
             var buffer: [h.server_pub_key_buf.len + 128]u8 = undefined;
-            var w = io.Writer.fixed(&buffer);
+            var w = Io.Writer.fixed(&buffer);
             try w.writeAll(&h.client_random);
             try w.writeAll(&h.server_random);
             try w.writeByte(@intFromEnum(proto.Curve.named_curve));
@@ -925,8 +925,8 @@ const testu = @import("testu.zig");
 
 test "parse tls 1.2 server hello" {
     var buffer: [1024]u8 = undefined;
-    var writer: io.Writer = .fixed(&buffer);
-    var reader: io.Reader = .fixed(&data12.server_hello_responses);
+    var writer: Io.Writer = .fixed(&buffer);
+    var reader: Io.Reader = .fixed(&data12.server_hello_responses);
     var h: Handshake = .{
         .output = &writer,
         .input = &reader,
@@ -957,8 +957,8 @@ test "parse tls 1.2 server hello" {
 
 test "verify google.com certificate" {
     var buffer: [1024]u8 = undefined;
-    var writer: io.Writer = .fixed(&buffer);
-    var reader: io.Reader = .fixed(@embedFile("testdata/google.com/server_hello"));
+    var writer: Io.Writer = .fixed(&buffer);
+    var reader: Io.Reader = .fixed(@embedFile("testdata/google.com/server_hello"));
     var h: Handshake = .{
         .output = &writer,
         .input = &reader,
@@ -975,7 +975,7 @@ test "verify google.com certificate" {
 }
 
 test "parse tls 1.3 server hello" {
-    var reader: io.Reader = .fixed(&data13.server_hello);
+    var reader: Io.Reader = .fixed(&data13.server_hello);
     var d = try Record.decoder(&reader);
 
     const handshake_type = try d.decode(proto.Handshake);
@@ -1056,8 +1056,8 @@ test "tls 1.3 decrypt wrapped record" {
 
 inline fn testHandshake(reader_buffer: []const u8) Handshake {
     var buffer: [1024]u8 = undefined;
-    var writer: io.Writer = .fixed(&buffer);
-    var reader: io.Reader = .fixed(reader_buffer);
+    var writer: Io.Writer = .fixed(&buffer);
+    var reader: Io.Reader = .fixed(reader_buffer);
     return .{ .input = &reader, .output = &writer };
 }
 
@@ -1087,7 +1087,7 @@ test "tls 1.3 process server flight" {
         try testing.expectEqualSlices(u8, &data13.client_finished_verify_data, verify_data);
 
         var buffer: [128]u8 = undefined;
-        var w: io.Writer = .fixed(&buffer);
+        var w: Io.Writer = .fixed(&buffer);
         h.output = &w;
         try h.makeClientFlight2Tls13(null);
         try testing.expectEqualSlices(u8, &testu.hexToBytes("140303000101"), w.buffered()[0..6]);
@@ -1113,7 +1113,7 @@ test "create client hello" {
 
     var h = brk: {
         var buffer: [256 + 10]u8 = undefined; // reserved + host name len
-        var stream_writer: io.Writer = .fixed(&buffer);
+        var stream_writer: Io.Writer = .fixed(&buffer);
         break :brk Handshake{
             .output = &stream_writer,
             .input = undefined,
@@ -1145,7 +1145,7 @@ test "client hello size" {
     };
 
     var buffer: [max_cleartext_len]u8 = undefined;
-    var stream_writer: io.Writer = .fixed(&buffer);
+    var stream_writer: Io.Writer = .fixed(&buffer);
     var h = Handshake{
         .output = &stream_writer,
         .input = undefined,
@@ -1275,8 +1275,8 @@ pub const NonBlock = struct {
             .send = &.{},
         };
 
-        var input: io.Reader = .fixed(recv_buf);
-        var output: io.Writer = .fixed(send_buf);
+        var input: Io.Reader = .fixed(recv_buf);
+        var output: Io.Writer = .fixed(send_buf);
         self.inner.input = &input;
         self.inner.output = &output;
 

@@ -1,5 +1,6 @@
 const std = @import("std");
-const io = std.io;
+const assert = std.debug.assert;
+const Io = std.Io;
 
 pub const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
 
@@ -27,7 +28,10 @@ pub inline fn clientFromStream(stream: anytype, opt: config.Client) !Connection 
     return try client(input, output, opt);
 }
 
-pub fn client(input: *io.Reader, output: *io.Writer, opt: config.Client) !Connection {
+pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connection {
+    assert(input.buffer.len >= input_buffer_len);
+    assert(output.buffer.len >= 2048); // client hello requires: 1572 + opt.host.len
+
     var hc: handshake.Client = .{ .input = input, .output = output };
     const cipher, const session_resumption_secret_idx = try hc.handshake(opt);
     return .{
@@ -45,7 +49,7 @@ pub inline fn serverFromStream(stream: anytype, opt: config.Server) !Connection 
     return try server(input, output, opt);
 }
 
-pub fn server(input: *io.Reader, output: *io.Writer, opt: config.Server) !Connection {
+pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connection {
     var hs: handshake.Server = .{ .input = input, .output = output };
     const cipher = try hs.handshake(opt);
     return .{
@@ -56,7 +60,7 @@ pub fn server(input: *io.Reader, output: *io.Writer, opt: config.Server) !Connec
 }
 
 /// With default buffer sizes
-inline fn streamToRaderWriter(stream: anytype) struct { *io.Reader, *io.Writer } {
+inline fn streamToRaderWriter(stream: anytype) struct { *Io.Reader, *Io.Writer } {
     var input_buf: [input_buffer_len]u8 = undefined;
     var output_buf: [output_buffer_len]u8 = undefined;
     var reader = stream.reader(&input_buf);
