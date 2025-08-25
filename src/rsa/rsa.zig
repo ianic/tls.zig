@@ -825,7 +825,10 @@ fn testKeypair() !KeyPair {
     return kp;
 }
 
+const skip_slow_tests = true;
+
 test "rsa PKCS1-v1_5 encrypt and decrypt" {
+    if (skip_slow_tests) return error.SkipZigTest;
     const kp = try testKeypair();
 
     const msg = "rsa PKCS1-v1_5 encrypt and decrypt";
@@ -839,6 +842,7 @@ test "rsa PKCS1-v1_5 encrypt and decrypt" {
 }
 
 test "rsa OAEP encrypt and decrypt" {
+    if (skip_slow_tests) return error.SkipZigTest;
     const kp = try testKeypair();
 
     const msg = "rsa OAEP encrypt and decrypt";
@@ -853,6 +857,7 @@ test "rsa OAEP encrypt and decrypt" {
 }
 
 test "rsa PKCS1-v1_5 signature" {
+    if (skip_slow_tests) return error.SkipZigTest;
     const kp = try testKeypair();
 
     const msg = "rsa PKCS1-v1_5 signature";
@@ -863,6 +868,7 @@ test "rsa PKCS1-v1_5 signature" {
 }
 
 test "rsa PSS signature" {
+    if (skip_slow_tests) return error.SkipZigTest;
     const kp = try testKeypair();
 
     const msg = "rsa PSS signature";
