@@ -31,7 +31,7 @@ To upgrade existing tcp connection to the tls connection call `tls.client`:
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
-    var conn = try tls.client(tcp, .{
+    var conn = try tls.clientFromStream(tcp, .{
         .host = host,
         .root_ca = root_ca,
     });
@@ -40,13 +40,13 @@ After that you can use `conn` read/write methods as on plain tcp connection.
 
 ## Options
 
-Second parameter in calling `tls.client` are [tls.config.Client](https://github.com/ianic/tls.zig/blob/main/src/handshake_client.zig#L28-L73) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates, collect handshake diagnostics, exchange session keys with Wireshark to view decrypted traffic.
+Second parameter in calling `tls.clientFromStream` are [tls.config.Client](https://github.com/ianic/tls.zig/blob/main/src/handshake_client.zig#L28-L73) they can be used to force subset of implemented ciphers, set client authentication parameters, allow self insecure signed certificates, collect handshake diagnostics, exchange session keys with Wireshark to view decrypted traffic.
 
 ### Select cipher suite
 
 To use just ciphers which are graded secure or recommended on  https://ciphersuite.info:
 ```zig
-    var conn = try tls.client(tcp, .{
+    var conn = try tls.clientFromStream(tcp, .{
         .host = host,
         .root_ca = root_ca,
         .cipher_suites = tls.cipher_suites.secure,
@@ -64,7 +64,7 @@ If server requires client authentication set `auth` attribute in options. You ne
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, cert_dir, "cert.pem", "key.pem");
     defer auth.deinit(allocator);
 
-    var conn = try tls.client(tcp, .{
+    var conn = try tls.clientFromStream(tcp, .{
         .host = host,
         .root_ca = root_ca,
         .auth = auth,
@@ -82,7 +82,7 @@ Session keys can be written to file so that external programs can decrypt TLS co
 Key logging is enabled by setting the environment variable SSLKEYLOGFILE to point to a file. And enabling key log callback in client options:
 
 ```zig
-    var conn = try tls.client(tcp, .{
+    var conn = try tls.clientFromStream(tcp, .{
         .host = host,
         .root_ca = root_ca,
         .key_log_callback = tls.config.key_log.callback,
@@ -289,61 +289,6 @@ $ zig build ; cd example/go_tls_server; go run server.go & ; cd - ; sleep 1 && z
 Equivalent `curl` is:
 ```sh
 curl https://localhost:8443 --cacert example/cert/minica.pem --cert example/cert/client_rsa/cert.pem --key example/cert/client_rsa/key.pem
-```
-
-# Usage with standard library http.Client
-
-This library is only tls protocol implementation. Standard library has great
-http client. We can replace standard library tls implementation with this one
-and get http client with both tls 1.2 and 1.3 capability.
-[Here](https://github.com/ziglang/zig/compare/master...ianic:zig:tls23) are
-required changes, assuming that this library is available at
-`lib/std/crypt/tls23` path.
-
-This script will checkout tls.zig library, an fork of the zig repository and
-link tls.zig to the required path. After that we can point to that standard
-library copy while building zig project with `--zig-lib-dir` switch.
-
-
-```
-git clone https://github.com/ianic/tls.zig        
-git clone -b tls23 https://github.com/ianic/zig
-ln -s $(pwd)/tls.zig/src zig/lib/std/crypto/tls23
-
-cd tls.zig
-zig build --zig-lib-dir ../zig/lib
-zig-out/bin/std_top_sites 
-```
-
-# Performance comparison with standard library
-
-Starting local server which will stream a text file (`src/main.zig` in this example) to the connected client:
-```sh
-$ zig build -Doptimize=ReleaseFast && zig-out/bin/server src/main.zig
-```
-
-Running 50 client request to that server by using this library and then by using standard library implementation and comparing them:
-
-```sh
-$ zig build -Doptimize=ReleaseFast && sudo ~/.local/bin/poop './zig-out/bin/client --cycles 50' 'zig-out/bin/client --cycles 50 --std'
-Benchmark 1 (27 runs): ./zig-out/bin/client --cycles 50
-  measurement          mean ± σ            min … max           outliers         delta
-  wall_time           191ms ± 3.65ms     184ms …  199ms          0 ( 0%)        0%
-  peak_rss            803KB ±    0       803KB …  803KB          0 ( 0%)        0%
-  cpu_cycles          422M  ± 11.7M      401M  …  447M           0 ( 0%)        0%
-  instructions       1.62G  ± 29.4M     1.56G  … 1.65G           0 ( 0%)        0%
-  cache_references    478K  ± 83.2K      194K  …  540K           3 (11%)        0%
-  cache_misses       12.0K  ± 2.34K     8.67K  … 19.2K           0 ( 0%)        0%
-  branch_misses       255K  ± 21.0K      190K  …  277K           2 ( 7%)        0%
-Benchmark 2 (23 runs): zig-out/bin/client --cycles 50 --std
-  measurement          mean ± σ            min … max           outliers         delta
-  wall_time           220ms ± 3.86ms     216ms …  234ms          1 ( 4%)        💩+ 15.5% ±  1.1%
-  peak_rss            850KB ±  101KB     803KB … 1.06MB          4 (17%)        💩+  5.9% ±  4.9%
-  cpu_cycles          564M  ± 14.7M      509M  …  592M           3 (13%)        💩+ 33.5% ±  1.8%
-  instructions       2.21G  ± 54.2M     2.00G  … 2.25G           2 ( 9%)        💩+ 36.3% ±  1.5%
-  cache_references    531K  ± 31.8K      424K  …  556K           2 ( 9%)        💩+ 11.1% ±  7.8%
-  cache_misses       13.3K  ± 1.99K     9.21K  … 18.6K           1 ( 4%)          + 10.9% ± 10.4%
-  branch_misses       250K  ± 9.70K      224K  …  264K           2 ( 9%)          -  2.0% ±  3.8%
 ```
 
  
