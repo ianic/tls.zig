@@ -71,22 +71,24 @@ pub const Connection = struct {
     /// Can be used in iterator like loop without memcpy to another buffer:
     ///   while (try client.next()) |buf| { ... }
     pub fn next(c: *Self) anyerror!?[]const u8 {
-        return c.nextRecord() catch |err| {
+        return c.nextRecord(null) catch |err| {
+            if (err == error.EndOfStream) return null;
             // Write alert on tls errors.
             // Stream errors return to the caller.
             if (mem.startsWith(u8, @errorName(err), "Tls"))
                 try c.encryptWrite(.alert, &proto.alertFromError(err));
             return err;
-        } orelse return null;
+        };
     }
 
-    fn nextRecord(c: *Self) !?[]const u8 {
-        if (c.eof()) return null;
+    /// Decrypts next tls record into cleartext_buf, if that buffer is not
+    /// provided reuses input ciphertext buffer for cleartext.
+    /// Returns cleartext record data.
+    fn nextRecord(c: *Self, cleartext_buf: ?[]u8) ![]const u8 {
+        if (c.eof()) return error.EndOfStream;
+        //std.debug.print("nextRecord with {}\n", .{if (cleartext_buf) |cb| cb.len else 0});
         while (true) {
-            const rec = Record.read(c.input) catch |err| switch (err) {
-                error.EndOfStream => return null,
-                else => return err,
-            };
+            const rec = try Record.read(c.input);
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
             const content_type, const cleartext = try c.cipher.decrypt(
                 // Reuse record buffer for cleartext. `rec.header` and
@@ -95,7 +97,7 @@ pub const Connection = struct {
                 // block, cleartext has less length then ciphertext,
                 // cleartext starts from the beginning of the buffer, so
                 // ciphertext is always ahead of cleartext.
-                @constCast(rec.buffer),
+                if (cleartext_buf) |cb| cb else @constCast(rec.buffer),
                 rec,
             );
 
@@ -134,7 +136,7 @@ pub const Connection = struct {
                     try proto.Alert.parse(cleartext[0..2].*).toError();
                     // server side clean shutdown
                     c.received_close_notify = true;
-                    return null;
+                    return error.EndOfStream;
                 },
                 else => return error.TlsUnexpectedMessage,
             }
