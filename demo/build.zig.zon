@@ -4,8 +4,9 @@
     .fingerprint = 0xd642dfa0bb514ab0,
     .dependencies = .{
         .tls = .{
-            .url = "https://github.com/ianic/tls.zig/archive/e866e0f7ca79f7201f0863dfc3009ce57152ade5.tar.gz",
-            .hash = "tls-0.1.0-ER2e0oU3BQAHVDZ6vsvE0vzPFbvhgGgBVFLixlNzTyWG",
+            .path = "../",
+            //.url = "https://github.com/ianic/tls.zig/archive/e866e0f7ca79f7201f0863dfc3009ce57152ade5.tar.gz",
+            //.hash = "tls-0.1.0-ER2e0oU3BQAHVDZ6vsvE0vzPFbvhgGgBVFLixlNzTyWG",
         },
     },
     .paths = .{

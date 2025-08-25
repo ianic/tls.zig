@@ -20,7 +20,11 @@ pub fn main() !void {
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
-    var conn = try tls.client(tcp, .{
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
+    var reader = tcp.reader(&input_buf);
+    var writer = tcp.writer(&output_buf);
+    var conn = try tls.client(reader.interface(), &writer.interface, .{
         .host = host,
         .root_ca = root_ca,
     });
