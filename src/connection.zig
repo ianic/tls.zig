@@ -296,6 +296,7 @@ pub const Connection = struct {
             const self: *Writer = @fieldParentPtr("interface", w);
             // w.buffer is consumed first
             try self.writeAll(w.buffered());
+            w.end = 0;
 
             if (data.len == 0) return 0;
             // Followed by each slice of `data` in order
