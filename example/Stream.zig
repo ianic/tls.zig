@@ -4,8 +4,9 @@ const assert = std.debug.assert;
 const Io = std.Io;
 const linux = std.os.linux;
 const posix = std.posix;
-const net = std.net;
+const mem = std.mem;
 const errno = std.posix.errno;
+const c = @import("tls.h.zig");
 
 const Stream = @This();
 handle: posix.fd_t,
@@ -28,6 +29,14 @@ pub fn enableKtls(s: Stream) !void {
         .BUSY => unreachable, // AlreadyEnabled,
         else => |err| return posix.unexpectedErrno(err),
     }
+}
+
+pub fn reader(s: Stream, buffer: []u8) Reader {
+    return .init(s, buffer);
+}
+
+pub fn writer(s: Stream, buffer: []u8) Writer {
+    return .init(s, buffer);
 }
 
 pub const Reader = struct {
@@ -84,6 +93,7 @@ pub const Writer = struct {
         const self: *Writer = @fieldParentPtr("interface", w);
         // w.buffer is consumed first
         try self.writeAll(w.buffered());
+        w.end = 0;
 
         if (data.len == 0) return 0;
         // Followed by each slice of `data` in order
@@ -106,7 +116,7 @@ pub const Writer = struct {
         return n;
     }
 
-    fn writeAll(self: Writer, bytes: []const u8) Io.Writer.Error!void {
+    fn writeAll(self: *Writer, bytes: []const u8) Io.Writer.Error!void {
         var index: usize = 0;
         while (index < bytes.len) {
             index += posix.write(self.handle, bytes[index..]) catch |err| {
@@ -116,3 +126,34 @@ pub const Writer = struct {
         }
     }
 };
+
+pub fn upgrade(s: Stream, conn: tls.Connection) !void {
+    switch (conn.cipher) {
+        .AES_128_GCM_SHA256 => |cipher| {
+            const info_tx: c.tls12_crypto_info_aes_gcm_128 = .{
+                .info = .{
+                    .version = 0x0304,
+                    .cipher_type = c.TLS_CIPHER_AES_GCM_128,
+                },
+                .salt = cipher.encrypt_iv[0..4].*,
+                .iv = cipher.encrypt_iv[4..].*,
+                .key = cipher.encrypt_key,
+                .rec_seq = mem.toBytes(cipher.encrypt_seq),
+            };
+            try posix.setsockopt(s.handle, linux.SOL.TLS, c.TLS_TX, &mem.toBytes(info_tx));
+
+            const info_rx: c.tls12_crypto_info_aes_gcm_128 = .{
+                .info = .{
+                    .version = 0x0304,
+                    .cipher_type = c.TLS_CIPHER_AES_GCM_128,
+                },
+                .salt = cipher.decrypt_iv[0..4].*,
+                .iv = cipher.decrypt_iv[4..].*,
+                .key = cipher.decrypt_key,
+                .rec_seq = mem.toBytes(cipher.decrypt_seq),
+            };
+            try posix.setsockopt(s.handle, linux.SOL.TLS, c.TLS_RX, &mem.toBytes(info_rx));
+        },
+        else => unreachable,
+    }
+}

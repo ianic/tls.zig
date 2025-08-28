@@ -37,18 +37,18 @@ pub fn main() !void {
     var diagnostic: tls.config.Client.Diagnostic = .{};
 
     // Establish tcp connection
-    var tcp = try net.tcpConnectToHost(gpa, host, port);
+    const net_stream = try net.tcpConnectToHost(gpa, host, port);
+    const tcp = Stream{ .handle = net_stream.handle };
     defer tcp.close();
     {
-        const s = Stream{ .handle = tcp.handle };
-        try s.enableKtls();
+        try tcp.enableKtls();
     }
 
     var tcp_reader_buf: [tls.input_buffer_len]u8 = undefined;
     var tcp_writer_buf: [tls.output_buffer_len]u8 = undefined;
     var tcp_reader = tcp.reader(&tcp_reader_buf);
     var tcp_writer = tcp.writer(&tcp_writer_buf);
-    const input: *Io.Reader = tcp_reader.interface();
+    const input: *Io.Reader = &tcp_reader.interface;
     const output: *Io.Writer = &tcp_writer.interface;
 
     // Upgrade tcp connection to tls
@@ -60,70 +60,19 @@ pub fn main() !void {
         .key_log_callback = tls.config.key_log.callback,
     });
 
-    //try input.fillMore();
-    //std.debug.print("input buffered len: {}\n", .{input.bufferedLen()});
-    //_ = try input.discardRemaining();
-    {
-        std.debug.print("diagnostic: {}\n", .{diagnostic});
-        assert(conn.cipher == .AES_128_GCM_SHA256);
-        const cipher = conn.cipher.AES_128_GCM_SHA256;
-        const info_tx: tls12_crypto_info_aes_gcm_128 = .{
-            .salt = cipher.encrypt_iv[0..4].*,
-            .iv = cipher.encrypt_iv[4..].*,
-            .key = cipher.encrypt_key,
-            .rec_seq = cipher.encrypt_seq,
-        };
-        var rc = linux.setsockopt(tcp.handle, linux.SOL.TLS, TLS_TX, &std.mem.toBytes(info_tx), @sizeOf(tls12_crypto_info_aes_gcm_128));
-        std.debug.print("tx rc = {}\n", .{std.posix.errno(rc)});
-
-        const info_rx: tls12_crypto_info_aes_gcm_128 = .{
-            .salt = cipher.decrypt_iv[0..4].*,
-            .iv = cipher.decrypt_iv[4..].*,
-            .key = cipher.decrypt_key,
-            .rec_seq = cipher.decrypt_seq,
-        };
-        rc = linux.setsockopt(tcp.handle, linux.SOL.TLS, TLS_RX, &std.mem.toBytes(info_rx), @sizeOf(tls12_crypto_info_aes_gcm_128));
-        std.debug.print("rx rc = {}\n", .{std.posix.errno(rc)});
+    { // Move encryption keys to the kernel
+        try tcp.upgrade(conn);
     }
     { // Send http GET request
-        var buf: [64]u8 = undefined;
-        const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
-        //try conn.writeAll(req);
-        try tcp.writeAll(req);
+        try output.print("GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
+        try output.flush();
     }
     { // Parse http respose
-        // Buffer must be big enough for http headers
-        //var http_reader_buf: [4096]u8 = undefined;
-        //var http_reader = conn.reader(&http_reader_buf);
-        //try readHttpResponse(gpa, &http_reader.interface);
-
         try readHttpResponse(gpa, input);
     }
     std.debug.print("session resumption tickets: {}\n", .{session_resumption.tickets.items.len});
     try conn.close();
 }
-
-const TLS_TX = 1;
-const TLS_RX = 2;
-
-const tls_crypto_info = extern struct {
-    version: u16 = 0x0304,
-    cipher_type: u16 = 51,
-};
-
-const tls12_crypto_info_aes_gcm_128 = extern struct {
-    const TLS_CIPHER_AES_GCM_128_IV_SIZE = 8;
-    const TLS_CIPHER_AES_GCM_128_KEY_SIZE = 16;
-    const TLS_CIPHER_AES_GCM_128_SALT_SIZE = 4;
-    const TLS_CIPHER_AES_GCM_128_TAG_SIZE = 16;
-    const TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE = 8;
-
-    info: tls_crypto_info = .{ .version = 0x0304, .cipher_type = 51 },
-    iv: [TLS_CIPHER_AES_GCM_128_IV_SIZE]u8,
-    key: [TLS_CIPHER_AES_GCM_128_KEY_SIZE]u8,
-    salt: [TLS_CIPHER_AES_GCM_128_SALT_SIZE]u8,
-    rec_seq: u64,
-};
 
 fn readHttpResponse(gpa: Allocator, rdr: *Io.Reader) !void {
 
