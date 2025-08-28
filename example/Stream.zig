@@ -5,7 +5,6 @@ const Io = std.Io;
 const linux = std.os.linux;
 const posix = std.posix;
 const mem = std.mem;
-const errno = std.posix.errno;
 const c = @import("tls.h.zig");
 
 const Stream = @This();
@@ -17,7 +16,7 @@ pub fn close(s: Stream) void {
 
 pub fn enableKtls(s: Stream) !void {
     const res = linux.setsockopt(s.handle, linux.IPPROTO.TCP, linux.TCP.ULP, "tls", 3);
-    switch (errno(res)) {
+    switch (posix.errno(res)) {
         .SUCCESS => {},
         .NOENT => return error.KernelTlsModuleNotLoaded,
         .NOTCONN => return error.SocketNotConnected,
@@ -58,18 +57,80 @@ pub const Reader = struct {
         };
     }
 
+    const cmsghdr = extern struct {
+        len: u32,
+        level: i32,
+        typ: i32,
+        _: [4]u8,
+        record_type: u8,
+    };
+
     fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
         const self: *Reader = @fieldParentPtr("interface", r);
-        const n = posix.read(self.handle, limit.slice(w.unusedCapacitySlice())) catch |err| {
-            self.err = err;
-            if (err == error.EndOfStream) return error.EndOfStream;
-            return error.ReadFailed;
-        };
-        if (n == 0) return error.EndOfStream;
-        w.advance(n);
-        return n;
+        const buf = limit.slice(w.unusedCapacitySlice());
+
+        while (true) {
+            var iov: [1]posix.iovec = .{
+                posix.iovec{
+                    .base = buf.ptr,
+                    .len = buf.len,
+                },
+            };
+            var cmsg = mem.zeroes(cmsghdr);
+
+            var msg: linux.msghdr = .{
+                .name = null,
+                .control = &cmsg,
+                .controllen = @sizeOf(cmsghdr),
+                .namelen = 0,
+                .flags = 0,
+                .iov = &iov,
+                .iovlen = 1,
+            };
+
+            const n = recvmsg(self.handle, &msg, 0) catch |err| {
+                self.err = err;
+                return error.ReadFailed;
+            };
+            if (n == 0) return error.EndOfStream;
+
+            if (cmsg.typ == linux.SOL.TLS) {
+                if (cmsg.record_type == 22) {
+                    // there is handshake content message in the buf
+                    // std.debug.print(" {x}\n", .{buf[0..n]});
+                    // TODO: handle new session ticket message
+                    continue;
+                }
+            }
+            w.advance(n);
+            return n;
+        }
     }
 };
+
+fn recvmsg(fd: posix.fd_t, msg: *linux.msghdr, flags: u32) posix.ReadError!usize {
+    while (true) {
+        const rc = linux.recvmsg(fd, msg, flags);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .INVAL => unreachable,
+            .FAULT => unreachable,
+            .SRCH => return error.ProcessNotFound,
+            .AGAIN => return error.WouldBlock,
+            .CANCELED => return error.Canceled,
+            .BADF => return error.NotOpenForReading, // Can be a race condition.
+            .IO => return error.InputOutput,
+            .ISDIR => return error.IsDir,
+            .NOBUFS => return error.SystemResources,
+            .NOMEM => return error.SystemResources,
+            .NOTCONN => return error.SocketNotConnected,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .TIMEDOUT => return error.ConnectionTimedOut,
+            else => |err| return posix.unexpectedErrno(err),
+        }
+    }
+}
 
 pub const Writer = struct {
     handle: posix.fd_t,
@@ -127,6 +188,7 @@ pub const Writer = struct {
     }
 };
 
+// Move cipher key to the kernel
 pub fn upgrade(s: Stream, conn: tls.Connection) !void {
     switch (conn.cipher) {
         .AES_128_GCM_SHA256 => |cipher| {

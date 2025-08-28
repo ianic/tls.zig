@@ -75,7 +75,6 @@ pub fn main() !void {
 }
 
 fn readHttpResponse(gpa: Allocator, rdr: *Io.Reader) !void {
-
     // Find headers length
     const header_length = while (true) {
         try rdr.fillMore();
