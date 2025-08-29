@@ -289,11 +289,7 @@ const ktls = struct {
 
     pub const AES_GCM_128 = @as(c_int, 51);
     pub const AES_GCM_256 = @as(c_int, 52);
-    pub const AES_CCM_128 = @as(c_int, 53);
     pub const CHACHA20_POLY1305 = @as(c_int, 54);
-    pub const TLS_CIPHER_SM4_GCM = @as(c_int, 55);
-    pub const TLS_CIPHER_SM4_CCM = @as(c_int, 56);
-    pub const TLS_CIPHER_ARIA_GCM_128 = @as(c_int, 57);
 
     pub const info = extern struct {
         version: u16 = mem.zeroes(u16),
@@ -313,46 +309,11 @@ const ktls = struct {
         salt: [4]u8 = mem.zeroes([4]u8),
         rec_seq: [8]u8 = mem.zeroes([8]u8),
     };
-    pub const aes_ccm_128 = extern struct {
-        info: info = mem.zeroes(info),
-        iv: [8]u8 = mem.zeroes([8]u8),
-        key: [16]u8 = mem.zeroes([16]u8),
-        salt: [4]u8 = mem.zeroes([4]u8),
-        rec_seq: [8]u8 = mem.zeroes([8]u8),
-    };
     pub const chacha20_poly1305 = extern struct {
         info: info = mem.zeroes(info),
         iv: [12]u8 = mem.zeroes([12]u8),
         key: [32]u8 = mem.zeroes([32]u8),
         salt: [0]u8 = mem.zeroes([0]u8),
-        rec_seq: [8]u8 = mem.zeroes([8]u8),
-    };
-    pub const sm4_gcm = extern struct {
-        info: info = mem.zeroes(info),
-        iv: [8]u8 = mem.zeroes([8]u8),
-        key: [16]u8 = mem.zeroes([16]u8),
-        salt: [4]u8 = mem.zeroes([4]u8),
-        rec_seq: [8]u8 = mem.zeroes([8]u8),
-    };
-    pub const sm4_ccm = extern struct {
-        info: info = mem.zeroes(info),
-        iv: [8]u8 = mem.zeroes([8]u8),
-        key: [16]u8 = mem.zeroes([16]u8),
-        salt: [4]u8 = mem.zeroes([4]u8),
-        rec_seq: [8]u8 = mem.zeroes([8]u8),
-    };
-    pub const aria_gcm_128 = extern struct {
-        info: info = mem.zeroes(info),
-        iv: [8]u8 = mem.zeroes([8]u8),
-        key: [16]u8 = mem.zeroes([16]u8),
-        salt: [4]u8 = mem.zeroes([4]u8),
-        rec_seq: [8]u8 = mem.zeroes([8]u8),
-    };
-    pub const aria_gcm_256 = extern struct {
-        info: info = mem.zeroes(info),
-        iv: [8]u8 = mem.zeroes([8]u8),
-        key: [32]u8 = mem.zeroes([32]u8),
-        salt: [4]u8 = mem.zeroes([4]u8),
         rec_seq: [8]u8 = mem.zeroes([8]u8),
     };
 };
