@@ -5,29 +5,12 @@ const Io = std.Io;
 const linux = std.os.linux;
 const posix = std.posix;
 const mem = std.mem;
-const c = @import("tls.h.zig");
 
 const Stream = @This();
 handle: posix.fd_t,
 
 pub fn close(s: Stream) void {
     posix.close(s.handle);
-}
-
-pub fn enableKtls(s: Stream) !void {
-    const res = linux.setsockopt(s.handle, linux.IPPROTO.TCP, linux.TCP.ULP, "tls", 3);
-    switch (posix.errno(res)) {
-        .SUCCESS => {},
-        .NOENT => return error.KernelTlsModuleNotLoaded,
-        .NOTCONN => return error.SocketNotConnected,
-        .OPNOTSUPP, .NOPROTOOPT => return error.OperationNotSupported,
-        .BADF => unreachable,
-        .NOTSOCK => unreachable,
-        .INVAL => unreachable,
-        .FAULT => unreachable,
-        .BUSY => unreachable, // AlreadyEnabled,
-        else => |err| return posix.unexpectedErrno(err),
-    }
 }
 
 pub fn reader(s: Stream, buffer: []u8) Reader {
@@ -94,7 +77,8 @@ pub const Reader = struct {
             };
             if (n == 0) return error.EndOfStream;
 
-            if (cmsg.typ == linux.SOL.TLS) {
+            std.debug.print("cmsg: {}\n", .{cmsg});
+            if (cmsg.len > 0 and cmsg.typ == linux.SOL.TLS) {
                 if (cmsg.record_type == 22) {
                     // there is handshake content message in the buf
                     // std.debug.print(" {x}\n", .{buf[0..n]});
@@ -108,13 +92,14 @@ pub const Reader = struct {
     }
 };
 
-fn recvmsg(fd: posix.fd_t, msg: *linux.msghdr, flags: u32) posix.ReadError!usize {
+fn recvmsg(fd: posix.fd_t, msg: *linux.msghdr, flags: u32) !usize {
     while (true) {
         const rc = linux.recvmsg(fd, msg, flags);
         switch (posix.errno(rc)) {
             .SUCCESS => return @intCast(rc),
             .INTR => continue,
             .INVAL => unreachable,
+            .BADMSG => return error.BadMessage,
             .FAULT => unreachable,
             .SRCH => return error.ProcessNotFound,
             .AGAIN => return error.WouldBlock,
@@ -190,32 +175,164 @@ pub const Writer = struct {
 
 // Move cipher key to the kernel
 pub fn upgrade(s: Stream, conn: tls.Connection) !void {
+    try s.enableKtls();
     switch (conn.cipher) {
+        // TLS 1.3
         .AES_128_GCM_SHA256 => |cipher| {
-            const info_tx: c.tls12_crypto_info_aes_gcm_128 = .{
-                .info = .{
-                    .version = 0x0304,
-                    .cipher_type = c.TLS_CIPHER_AES_GCM_128,
-                },
-                .salt = cipher.encrypt_iv[0..4].*,
-                .iv = cipher.encrypt_iv[4..].*,
-                .key = cipher.encrypt_key,
-                .rec_seq = mem.toBytes(cipher.encrypt_seq),
-            };
-            try posix.setsockopt(s.handle, linux.SOL.TLS, c.TLS_TX, &mem.toBytes(info_tx));
-
-            const info_rx: c.tls12_crypto_info_aes_gcm_128 = .{
-                .info = .{
-                    .version = 0x0304,
-                    .cipher_type = c.TLS_CIPHER_AES_GCM_128,
-                },
-                .salt = cipher.decrypt_iv[0..4].*,
-                .iv = cipher.decrypt_iv[4..].*,
-                .key = cipher.decrypt_key,
-                .rec_seq = mem.toBytes(cipher.decrypt_seq),
-            };
-            try posix.setsockopt(s.handle, linux.SOL.TLS, c.TLS_RX, &mem.toBytes(info_rx));
+            try s.setCipher(
+                .{ .version = ktls.VERSION_1_3, .cipher_type = ktls.AES_GCM_128 },
+                ktls.aes_gcm_128,
+                cipher,
+            );
+        },
+        .AES_256_GCM_SHA384 => |cipher| {
+            try s.setCipher(
+                .{ .version = ktls.VERSION_1_3, .cipher_type = ktls.AES_GCM_256 },
+                ktls.aes_gcm_256,
+                cipher,
+            );
+        },
+        .CHACHA20_POLY1305_SHA256 => |cipher| {
+            try s.setCipher(
+                .{ .version = ktls.VERSION_1_3, .cipher_type = ktls.CHACHA20_POLY1305 },
+                ktls.chacha20_poly1305,
+                cipher,
+            );
+        },
+        // TLS 1.2
+        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 => |cipher| {
+            try s.setCipher(
+                .{ .version = ktls.VERSION_1_2, .cipher_type = ktls.AES_GCM_128 },
+                ktls.aes_gcm_128,
+                cipher,
+            );
+        },
+        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 => |cipher| {
+            try s.setCipher(
+                .{ .version = ktls.VERSION_1_2, .cipher_type = ktls.AES_GCM_256 },
+                ktls.aes_gcm_256,
+                cipher,
+            );
+        },
+        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 => |cipher| {
+            try s.setCipher(
+                .{ .version = ktls.VERSION_1_2, .cipher_type = ktls.CHACHA20_POLY1305 },
+                ktls.chacha20_poly1305,
+                cipher,
+            );
         },
         else => unreachable,
     }
 }
+
+fn setCipher(s: Stream, info: ktls.info, T: anytype, cipher: anytype) !void {
+    try setCipherOpt(s.handle, info, ktls.TX, T, cipher.encrypt_iv, cipher.encrypt_key, cipher.encrypt_seq);
+    try setCipherOpt(s.handle, info, ktls.RX, T, cipher.decrypt_iv, cipher.decrypt_key, cipher.decrypt_seq);
+}
+
+fn setCipherOpt(fd: posix.fd_t, info: ktls.info, optname: u32, T: anytype, iv: anytype, key: anytype, seq: u64) !void {
+    const salt_size = @sizeOf(@FieldType(T, "salt"));
+    var opt: T = .{
+        .info = info,
+        .salt = iv[0..salt_size].*,
+        .iv = if (iv.len > salt_size) iv[salt_size..].* else @splat(0),
+        .key = key,
+    };
+    std.mem.writeInt(u64, &opt.rec_seq, seq, .big);
+    try posix.setsockopt(fd, linux.SOL.TLS, optname, &mem.toBytes(opt));
+}
+
+fn enableKtls(s: Stream) !void {
+    const res = linux.setsockopt(s.handle, linux.IPPROTO.TCP, linux.TCP.ULP, "tls", 3);
+    switch (posix.errno(res)) {
+        .SUCCESS => {},
+        .NOENT => return error.KernelTlsModuleNotLoaded,
+        .NOTCONN => return error.SocketNotConnected,
+        .OPNOTSUPP, .NOPROTOOPT => return error.OperationNotSupported,
+        .BADF => unreachable,
+        .NOTSOCK => unreachable,
+        .INVAL => unreachable,
+        .FAULT => unreachable,
+        .BUSY, .EXIST => return error.AlreadyEnabled,
+        else => |err| return posix.unexpectedErrno(err),
+    }
+}
+
+// Kernel sturcs and constants from: /usr/include/linux/tls.h
+// Generated by zig translate and than cleaned a little bit.
+//$ zig translate-c -I/usr/include /usr/include/linux/tls.h
+const ktls = struct {
+    pub const VERSION_1_2 = 0x0303;
+    pub const VERSION_1_3 = 0x0304;
+    pub const TX = @as(c_int, 1);
+    pub const RX = @as(c_int, 2);
+
+    pub const AES_GCM_128 = @as(c_int, 51);
+    pub const AES_GCM_256 = @as(c_int, 52);
+    pub const AES_CCM_128 = @as(c_int, 53);
+    pub const CHACHA20_POLY1305 = @as(c_int, 54);
+    pub const TLS_CIPHER_SM4_GCM = @as(c_int, 55);
+    pub const TLS_CIPHER_SM4_CCM = @as(c_int, 56);
+    pub const TLS_CIPHER_ARIA_GCM_128 = @as(c_int, 57);
+
+    pub const info = extern struct {
+        version: u16 = mem.zeroes(u16),
+        cipher_type: u16 = mem.zeroes(u16),
+    };
+    pub const aes_gcm_128 = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [16]u8 = mem.zeroes([16]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const aes_gcm_256 = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [32]u8 = mem.zeroes([32]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const aes_ccm_128 = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [16]u8 = mem.zeroes([16]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const chacha20_poly1305 = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [12]u8 = mem.zeroes([12]u8),
+        key: [32]u8 = mem.zeroes([32]u8),
+        salt: [0]u8 = mem.zeroes([0]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const sm4_gcm = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [16]u8 = mem.zeroes([16]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const sm4_ccm = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [16]u8 = mem.zeroes([16]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const aria_gcm_128 = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [16]u8 = mem.zeroes([16]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+    pub const aria_gcm_256 = extern struct {
+        info: info = mem.zeroes(info),
+        iv: [8]u8 = mem.zeroes([8]u8),
+        key: [32]u8 = mem.zeroes([32]u8),
+        salt: [4]u8 = mem.zeroes([4]u8),
+        rec_seq: [8]u8 = mem.zeroes([8]u8),
+    };
+};

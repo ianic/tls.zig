@@ -27,22 +27,40 @@ pub fn main() !void {
     const url = if (args.len > 1) args[1] else "https://www.lutrija.hr";
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
-    const port = 443;
 
     // Load system root certificates
     var root_ca = try tls.config.cert.fromSystem(gpa);
     defer root_ca.deinit(gpa);
+
+    try get(gpa, .{
+        .host = host,
+        .root_ca = root_ca,
+        // .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        // .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        // .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+
+        //.cipher_suites = &[_]tls.config.CipherSuite{.AES_256_GCM_SHA384},
+        //.cipher_suites = &[_]tls.config.CipherSuite{.CHACHA20_POLY1305_SHA256},
+
+        //.cipher_suites = &[_]tls.config.CipherSuite{.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
+        //.cipher_suites = &[_]tls.config.CipherSuite{.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+        .cipher_suites = &[_]tls.config.CipherSuite{.ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
+
+        .key_log_callback = tls.config.key_log.callback,
+    });
+}
+
+const port = 443;
+
+fn get(gpa: Allocator, cfg: tls.config.Client) !void {
     var session_resumption: tls.config.Client.SessionResumption = .init(gpa);
     defer session_resumption.deinit();
     var diagnostic: tls.config.Client.Diagnostic = .{};
 
     // Establish tcp connection
-    const net_stream = try net.tcpConnectToHost(gpa, host, port);
+    const net_stream = try net.tcpConnectToHost(gpa, cfg.host, port);
     const tcp = Stream{ .handle = net_stream.handle };
     defer tcp.close();
-    {
-        try tcp.enableKtls();
-    }
 
     var tcp_reader_buf: [tls.input_buffer_len]u8 = undefined;
     var tcp_writer_buf: [tls.output_buffer_len]u8 = undefined;
@@ -51,26 +69,26 @@ pub fn main() !void {
     const input: *Io.Reader = &tcp_reader.interface;
     const output: *Io.Writer = &tcp_writer.interface;
 
+    var ccfg = cfg;
+    ccfg.diagnostic = &diagnostic;
+    ccfg.session_resumption = &session_resumption;
     // Upgrade tcp connection to tls
-    var conn = try tls.client(input, output, .{
-        .host = host,
-        .root_ca = root_ca,
-        .diagnostic = &diagnostic,
-        .session_resumption = &session_resumption,
-        .key_log_callback = tls.config.key_log.callback,
-    });
+    var conn = try tls.client(input, output, ccfg);
 
     { // Move encryption keys to the kernel
         try tcp.upgrade(conn);
     }
     { // Send http GET request
-        try output.print("GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
+        try output.print("GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{cfg.host});
         try output.flush();
     }
     { // Parse http respose
         try readHttpResponse(gpa, input);
     }
-    std.debug.print("session resumption tickets: {}\n", .{session_resumption.tickets.items.len});
+    std.debug.print("diagnostic: {}\nsession resumption tickets: {}\n", .{
+        diagnostic,
+        session_resumption.tickets.items.len,
+    });
     try conn.close();
 }
 
@@ -126,8 +144,9 @@ fn readHttpResponse(gpa: Allocator, rdr: *Io.Reader) !void {
                 const chunk_body = try rdr.readAlloc(gpa, cp.chunk_len);
                 defer gpa.free(chunk_body);
 
-                if (cp.chunk_len >= 7)
-                    std.debug.print("chunk {d:>6} bytes  ... {s}\n", .{ cp.chunk_len, chunk_body[chunk_body.len - 7 ..] });
+                // show length of the each chunk
+                // if (cp.chunk_len >= 7)
+                //     std.debug.print("chunk {d:>6} bytes  ... {s}\n", .{ cp.chunk_len, chunk_body[chunk_body.len - 7 ..] });
                 if (rdr.bufferedLen() != 0)
                     continue;
             }
