@@ -8,7 +8,7 @@ const posix = std.posix;
 const net = std.net;
 const errno = std.posix.errno;
 
-const Stream = @import("Stream.zig");
+const Socket = @import("Socket.zig");
 
 // Check if module is loaded:
 //$ lsmod | grep tls
@@ -32,22 +32,14 @@ pub fn main() !void {
     var root_ca = try tls.config.cert.fromSystem(gpa);
     defer root_ca.deinit(gpa);
 
-    try get(gpa, .{
-        .host = host,
-        .root_ca = root_ca,
-        // .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-        // .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        // .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-
-        //.cipher_suites = &[_]tls.config.CipherSuite{.AES_256_GCM_SHA384},
-        //.cipher_suites = &[_]tls.config.CipherSuite{.CHACHA20_POLY1305_SHA256},
-
-        //.cipher_suites = &[_]tls.config.CipherSuite{.ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256},
-        //.cipher_suites = &[_]tls.config.CipherSuite{.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-        .cipher_suites = &[_]tls.config.CipherSuite{.ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
-
-        .key_log_callback = tls.config.key_log.callback,
-    });
+    for (Socket.cipher_suites) |cipher_tag| {
+        try get(gpa, .{
+            .host = host,
+            .root_ca = root_ca,
+            .cipher_suites = &[_]tls.config.CipherSuite{cipher_tag},
+            .key_log_callback = tls.config.key_log.callback,
+        });
+    }
 }
 
 const port = 443;
@@ -59,7 +51,7 @@ fn get(gpa: Allocator, cfg: tls.config.Client) !void {
 
     // Establish tcp connection
     const net_stream = try net.tcpConnectToHost(gpa, cfg.host, port);
-    const tcp = Stream{ .handle = net_stream.handle };
+    const tcp = Socket{ .fd = net_stream.handle };
     defer tcp.close();
 
     var tcp_reader_buf: [tls.input_buffer_len]u8 = undefined;

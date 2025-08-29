@@ -6,18 +6,18 @@ const linux = std.os.linux;
 const posix = std.posix;
 const mem = std.mem;
 
-const Stream = @This();
-handle: posix.fd_t,
+const Socket = @This();
+fd: posix.fd_t,
 
-pub fn close(s: Stream) void {
-    posix.close(s.handle);
+pub fn close(s: Socket) void {
+    posix.close(s.fd);
 }
 
-pub fn reader(s: Stream, buffer: []u8) Reader {
+pub fn reader(s: Socket, buffer: []u8) Reader {
     return .init(s, buffer);
 }
 
-pub fn writer(s: Stream, buffer: []u8) Writer {
+pub fn writer(s: Socket, buffer: []u8) Writer {
     return .init(s, buffer);
 }
 
@@ -26,9 +26,9 @@ pub const Reader = struct {
     interface: Io.Reader,
     err: ?anyerror = null,
 
-    pub fn init(s: Stream, buffer: []u8) Reader {
+    pub fn init(s: Socket, buffer: []u8) Reader {
         return .{
-            .handle = s.handle,
+            .handle = s.fd,
             .interface = .{
                 .vtable = &.{
                     .stream = stream,
@@ -77,7 +77,6 @@ pub const Reader = struct {
             };
             if (n == 0) return error.EndOfStream;
 
-            std.debug.print("cmsg: {}\n", .{cmsg});
             if (cmsg.len > 0 and cmsg.typ == linux.SOL.TLS) {
                 if (cmsg.record_type == 22) {
                     // there is handshake content message in the buf
@@ -122,9 +121,9 @@ pub const Writer = struct {
     interface: Io.Writer,
     err: ?anyerror = null,
 
-    pub fn init(s: Stream, buffer: []u8) Writer {
+    pub fn init(s: Socket, buffer: []u8) Writer {
         return .{
-            .handle = s.handle,
+            .handle = s.fd,
             .interface = .{
                 .vtable = &.{
                     .drain = drain,
@@ -173,8 +172,23 @@ pub const Writer = struct {
     }
 };
 
+pub const cipher_suites = [_]tls.config.CipherSuite{
+    // tls 1.3 recommended
+    .AES_128_GCM_SHA256,
+    .AES_256_GCM_SHA384,
+    .CHACHA20_POLY1305_SHA256,
+    // tls 1.2 recommended
+    .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+    // tls 1.2 secure
+    .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+};
+
 // Move cipher key to the kernel
-pub fn upgrade(s: Stream, conn: tls.Connection) !void {
+pub fn upgrade(s: Socket, conn: tls.Connection) !void {
     try s.enableKtls();
     switch (conn.cipher) {
         // TLS 1.3
@@ -200,37 +214,43 @@ pub fn upgrade(s: Stream, conn: tls.Connection) !void {
             );
         },
         // TLS 1.2
-        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 => |cipher| {
+        .ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        .ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        => |cipher| {
             try s.setCipher(
                 .{ .version = ktls.VERSION_1_2, .cipher_type = ktls.AES_GCM_128 },
                 ktls.aes_gcm_128,
                 cipher,
             );
         },
-        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 => |cipher| {
+        .ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        => |cipher| {
             try s.setCipher(
                 .{ .version = ktls.VERSION_1_2, .cipher_type = ktls.AES_GCM_256 },
                 ktls.aes_gcm_256,
                 cipher,
             );
         },
-        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 => |cipher| {
+        .ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+        .ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+        => |cipher| {
             try s.setCipher(
                 .{ .version = ktls.VERSION_1_2, .cipher_type = ktls.CHACHA20_POLY1305 },
                 ktls.chacha20_poly1305,
                 cipher,
             );
         },
-        else => unreachable,
+        else => return error.UnsupportedCipher,
     }
 }
 
-fn setCipher(s: Stream, info: ktls.info, T: anytype, cipher: anytype) !void {
-    try setCipherOpt(s.handle, info, ktls.TX, T, cipher.encrypt_iv, cipher.encrypt_key, cipher.encrypt_seq);
-    try setCipherOpt(s.handle, info, ktls.RX, T, cipher.decrypt_iv, cipher.decrypt_key, cipher.decrypt_seq);
+fn setCipher(s: Socket, info: ktls.info, T: anytype, cipher: anytype) !void {
+    try s.setCipherKey(info, ktls.TX, T, cipher.encrypt_iv, cipher.encrypt_key, cipher.encrypt_seq);
+    try s.setCipherKey(info, ktls.RX, T, cipher.decrypt_iv, cipher.decrypt_key, cipher.decrypt_seq);
 }
 
-fn setCipherOpt(fd: posix.fd_t, info: ktls.info, optname: u32, T: anytype, iv: anytype, key: anytype, seq: u64) !void {
+fn setCipherKey(s: Socket, info: ktls.info, optname: u32, T: anytype, iv: anytype, key: anytype, seq: u64) !void {
     const salt_size = @sizeOf(@FieldType(T, "salt"));
     var opt: T = .{
         .info = info,
@@ -239,11 +259,11 @@ fn setCipherOpt(fd: posix.fd_t, info: ktls.info, optname: u32, T: anytype, iv: a
         .key = key,
     };
     std.mem.writeInt(u64, &opt.rec_seq, seq, .big);
-    try posix.setsockopt(fd, linux.SOL.TLS, optname, &mem.toBytes(opt));
+    try posix.setsockopt(s.fd, linux.SOL.TLS, optname, &mem.toBytes(opt));
 }
 
-fn enableKtls(s: Stream) !void {
-    const res = linux.setsockopt(s.handle, linux.IPPROTO.TCP, linux.TCP.ULP, "tls", 3);
+fn enableKtls(s: Socket) !void {
+    const res = linux.setsockopt(s.fd, linux.IPPROTO.TCP, linux.TCP.ULP, "tls", 3);
     switch (posix.errno(res)) {
         .SUCCESS => {},
         .NOENT => return error.KernelTlsModuleNotLoaded,
