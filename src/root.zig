@@ -70,6 +70,7 @@ inline fn streamToRaderWriter(stream: anytype) struct { *Io.Reader, *Io.Writer }
     return .{ input, output };
 }
 
+pub const Cipher = @import("cipher.zig").Cipher;
 pub const config = struct {
     const proto = @import("protocol.zig");
     const common = @import("handshake_common.zig");
