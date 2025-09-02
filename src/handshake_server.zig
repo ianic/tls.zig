@@ -135,7 +135,10 @@ pub const Handshake = struct {
         const app_cipher = try Cipher.initTls13(h.cipher_suite, application_secret, .server);
         // set application cipher instead of EndOfStream error
         h.readClientFlight2(opt) catch |err| {
-            if (err != error.EndOfStream) h.cipher = app_cipher;
+            if (err != error.EndOfStream and err != error.InputBufferUndersize) {
+                // don't change on short reads: https://github.com/ianic/tls.zig/commit/2f3f23485e01e4be8219c4a1ceda01ed961da61d
+                h.cipher = app_cipher;
+            }
             return err;
         };
         h.cipher = app_cipher;
