@@ -42,9 +42,9 @@ pub const Reader = struct {
 
     const cmsghdr = extern struct {
         len: u32,
+        _: [4]u8,
         level: i32,
         typ: i32,
-        _: [4]u8,
         record_type: u8,
     };
 
@@ -77,7 +77,7 @@ pub const Reader = struct {
             };
             if (n == 0) return error.EndOfStream;
 
-            if (cmsg.len > 0 and cmsg.typ == linux.SOL.TLS) {
+            if (cmsg.len > 0 and cmsg.level == linux.SOL.TLS and cmsg.typ == 2) {
                 if (cmsg.record_type == 22) {
                     // there is handshake content message in the buf
                     // std.debug.print(" {x}\n", .{buf[0..n]});
