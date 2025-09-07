@@ -538,10 +538,9 @@ pub const NonBlock = struct {
     // inner sync handshake
     inner: Handshake = undefined,
     opt: Options = undefined,
-    state: State = .none,
+    state: State = undefined,
 
     const State = enum {
-        none,
         init,
         client_flight_1,
         server_flight,
@@ -565,18 +564,6 @@ pub const NonBlock = struct {
         };
     }
 
-    /// Returns null if there is nothing to send at this state
-    fn send(self: *Self) !void {
-        switch (self.state) {
-            .client_flight_1 => {
-                try self.inner.serverFlight(self.opt);
-                self.state.next();
-            },
-            else => return,
-        }
-    }
-
-    /// Returns number of bytes consumed from buf
     fn recv(self: *Self) !void {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
@@ -624,19 +611,39 @@ pub const NonBlock = struct {
         };
 
         var reader: Io.Reader = .fixed(recv_buf);
-        var writer: Io.Writer = .fixed(send_buf);
         self.inner.input = &reader;
+        var writer: Io.Writer = .fixed(send_buf);
         self.inner.output = &writer;
 
-        const recv_pos: usize = if (recv_buf.len > 0) brk: {
-            self.recv() catch |err| switch (err) {
-                error.EndOfStream, error.InputBufferUndersize => break :brk 0,
-                else => return err,
-            };
-            break :brk reader.seek;
-        } else 0;
-
-        try self.send();
+        var recv_pos: usize = 0;
+        out: switch (self.state) {
+            .init, .server_flight => {
+                self.recv() catch |err| switch (err) {
+                    error.EndOfStream, error.InputBufferUndersize => {
+                        return .{
+                            .recv_pos = 0,
+                            .send_pos = 0,
+                            .unused_recv = recv_buf,
+                            .send = &.{},
+                        };
+                    },
+                    else => return err,
+                };
+                recv_pos = reader.seek;
+                continue :out self.state;
+            },
+            .client_flight_1 => {
+                // recv buffer is fully consumed, same buffer can be used for write
+                if (recv_pos != recv_buf.len) {
+                    return error.TlsUnexpectedMessage;
+                }
+                try self.inner.serverFlight(self.opt);
+                self.state.next();
+            },
+            .client_flight_2 => {
+                // done
+            },
+        }
 
         return .{
             .recv_pos = recv_pos,
