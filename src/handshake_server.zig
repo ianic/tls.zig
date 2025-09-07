@@ -633,8 +633,8 @@ pub const NonBlock = struct {
                 continue :out self.state;
             },
             .client_flight_1 => {
-                // recv buffer is fully consumed, same buffer can be used for write
-                if (recv_pos != recv_buf.len) {
+                if (recv_buf.ptr == send_buf.ptr and recv_pos != recv_buf.len) {
+                    // recv buffer is fully consumed, same buffer can be used for write
                     return error.TlsUnexpectedMessage;
                 }
                 try self.inner.serverFlight(self.opt);

@@ -18,7 +18,8 @@ key: union {
 const PrivateKey = @This();
 
 pub fn fromFile(gpa: Allocator, file: std.fs.File) !PrivateKey {
-    const buf = try file.readToEndAlloc(gpa, 1024 * 1024);
+    var file_reader = file.reader(&.{});
+    const buf = try file_reader.interface.allocRemaining(gpa, .limited(1024 * 1024));
     defer gpa.free(buf);
     return try parsePem(buf);
 }
