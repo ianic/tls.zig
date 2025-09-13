@@ -205,7 +205,7 @@ pub const Handshake = struct {
     inline fn sharedKey(h: *Self) ![]const u8 {
         var seed: [DhKeyPair.seed_len]u8 = undefined;
         crypto.random.bytes(&seed);
-        var kp = try DhKeyPair.init(seed, supported_named_groups);
+        var kp = try DhKeyPair.init(seed, &[_]proto.NamedGroup{h.named_group});
         h.server_pub_key = common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
         return try kp.sharedKey(h.named_group, h.client_pub_key);
     }
