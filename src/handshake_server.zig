@@ -172,10 +172,9 @@ pub const Handshake = struct {
             h.transcript.update(hw.buffered());
             try h.writeEncrypted(&w, hw.buffered());
         }
-        if (opt.auth) |a| {
+        if (opt.auth) |auth| {
             const cb = CertificateBuilder{
-                .bundle = a.bundle,
-                .key = a.key,
+                .cert_key_pair = auth,
                 .transcript = &h.transcript,
                 .side = .server,
             };
