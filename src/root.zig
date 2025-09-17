@@ -98,6 +98,8 @@ pub const nonblock = struct {
     pub const Connection = @import("connection.zig").NonBlock;
 };
 
+pub const Ktls = @import("Ktls.zig");
+
 test "nonblock handshake and connection" {
     const testing = @import("std").testing;
 

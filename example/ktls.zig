@@ -24,7 +24,7 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(gpa);
     defer std.process.argsFree(gpa, args);
-    const url = if (args.len > 1) args[1] else "https://www.lutrija.hr";
+    const url = if (args.len > 1) args[1] else "https://www.cloudflare.com";
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
 
