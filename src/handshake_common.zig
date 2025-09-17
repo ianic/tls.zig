@@ -85,6 +85,32 @@ pub const CertKeyPair = struct {
     pub fn deinit(c: *CertKeyPair, allocator: mem.Allocator) void {
         c.bundle.deinit(allocator);
     }
+
+    const EcdsaKeyPair = union(enum) {
+        ecdsa_secp256r1_sha256: EcdsaP256Sha256.KeyPair,
+        ecdsa_secp384r1_sha384: EcdsaP384Sha384.KeyPair,
+
+        fn init(pk: PrivateKey) !?EcdsaKeyPair {
+            switch (pk.signature_scheme) {
+                inline .ecdsa_secp256r1_sha256,
+                .ecdsa_secp384r1_sha384,
+                => |comptime_scheme| {
+                    const Ecdsa = SchemeEcdsa(comptime_scheme);
+                    const key = pk.key.ecdsa;
+                    const key_len = Ecdsa.SecretKey.encoded_length;
+                    if (key.len < key_len) return error.InvalidEncoding;
+                    const secret_key = try Ecdsa.SecretKey.fromBytes(key[0..key_len].*);
+                    const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
+                    return switch (comptime_scheme) {
+                        .ecdsa_secp256r1_sha256 => .{ .ecdsa_secp256r1_sha256 = key_pair },
+                        .ecdsa_secp384r1_sha384 => .{ .ecdsa_secp384r1_sha384 = key_pair },
+                        else => unreachable,
+                    };
+                },
+                else => return null,
+            }
+        }
+    };
 };
 
 pub const cert = struct {
@@ -110,32 +136,6 @@ pub const cert = struct {
         var bundle: Bundle = .{};
         try bundle.rescan(allocator);
         return bundle;
-    }
-};
-
-const EcdsaKeyPair = union(enum) {
-    ecdsa_secp256r1_sha256: EcdsaP256Sha256.KeyPair,
-    ecdsa_secp384r1_sha384: EcdsaP384Sha384.KeyPair,
-
-    fn init(pk: PrivateKey) !?EcdsaKeyPair {
-        switch (pk.signature_scheme) {
-            inline .ecdsa_secp256r1_sha256,
-            .ecdsa_secp384r1_sha384,
-            => |comptime_scheme| {
-                const Ecdsa = SchemeEcdsa(comptime_scheme);
-                const key = pk.key.ecdsa;
-                const key_len = Ecdsa.SecretKey.encoded_length;
-                if (key.len < key_len) return error.InvalidEncoding;
-                const secret_key = try Ecdsa.SecretKey.fromBytes(key[0..key_len].*);
-                const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret_key);
-                return switch (comptime_scheme) {
-                    .ecdsa_secp256r1_sha256 => .{ .ecdsa_secp256r1_sha256 = key_pair },
-                    .ecdsa_secp384r1_sha384 => .{ .ecdsa_secp384r1_sha384 = key_pair },
-                    else => unreachable,
-                };
-            },
-            else => return null,
-        }
     }
 };
 
