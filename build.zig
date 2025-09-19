@@ -23,7 +23,8 @@ pub fn build(b: *std.Build) void {
         "http_get_nonblock",
         "http_get_resumption",
         "http_get2",
-        "ktls",
+        // TODO: build tls zig on Linux
+        //"ktls",
     };
     inline for (examples) |path| {
         const source_file = "example/" ++ path ++ ".zig";
