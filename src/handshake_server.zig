@@ -34,6 +34,9 @@ pub const Options = struct {
     /// .request empty client certificate message will be accepted.
     /// Client certificate will be verified with root_ca certificates.
     client_auth: ?ClientAuth = null,
+
+    /// List of supported tls 1.3 cipher suites
+    cipher_suites: []const CipherSuite = cipher_suites.tls13,
 };
 
 pub const ClientAuth = struct {
@@ -94,7 +97,7 @@ pub const Handshake = struct {
     pub fn handshake(h: *Self, opt: Options) !Cipher {
         h.initKeys(opt);
 
-        h.readClientHello() catch |err| {
+        h.readClientHello(opt.cipher_suites) catch |err| {
             try h.writeAlert(null, err);
             return err;
         };
@@ -124,8 +127,8 @@ pub const Handshake = struct {
         }
     }
 
-    fn clientFlight1(h: *Self) !void {
-        try h.readClientHello();
+    fn clientFlight1(h: *Self, opt: Options) !void {
+        try h.readClientHello(opt.cipher_suites);
         h.transcript.use(h.cipher_suite.hash());
     }
 
@@ -135,7 +138,10 @@ pub const Handshake = struct {
         const app_cipher = try Cipher.initTls13(h.cipher_suite, application_secret, .server);
         // set application cipher instead of EndOfStream error
         h.readClientFlight2(opt) catch |err| {
-            if (err != error.EndOfStream) h.cipher = app_cipher;
+            if (err != error.EndOfStream and err != error.InputBufferUndersize) {
+                // don't change on short reads: https://github.com/ianic/tls.zig/commit/2f3f23485e01e4be8219c4a1ceda01ed961da61d
+                h.cipher = app_cipher;
+            }
             return err;
         };
         h.cipher = app_cipher;
@@ -166,10 +172,9 @@ pub const Handshake = struct {
             h.transcript.update(hw.buffered());
             try h.writeEncrypted(&w, hw.buffered());
         }
-        if (opt.auth) |a| {
+        if (opt.auth) |auth| {
             const cb = CertificateBuilder{
-                .bundle = a.bundle,
-                .key = a.key,
+                .cert_key_pair = auth,
                 .transcript = &h.transcript,
                 .side = .server,
             };
@@ -199,7 +204,7 @@ pub const Handshake = struct {
     inline fn sharedKey(h: *Self) ![]const u8 {
         var seed: [DhKeyPair.seed_len]u8 = undefined;
         crypto.random.bytes(&seed);
-        var kp = try DhKeyPair.init(seed, supported_named_groups);
+        var kp = try DhKeyPair.init(seed, &[_]proto.NamedGroup{h.named_group});
         h.server_pub_key = common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
         return try kp.sharedKey(h.named_group, h.client_pub_key);
     }
@@ -350,7 +355,7 @@ pub const Handshake = struct {
         try hw.int(u16, ext_len); // extensions length
     }
 
-    fn readClientHello(h: *Self) !void {
+    fn readClientHello(h: *Self, supported_cipher_suites: []const CipherSuite) !void {
         var d = try Record.decoder(h.input);
         if (d.payload.len > max_cleartext_len) return error.TlsRecordOverflow;
         try d.expectContentType(.handshake);
@@ -371,14 +376,14 @@ pub const Handshake = struct {
 
             while (d.idx < end_idx) {
                 const cipher_suite = try d.decode(CipherSuite);
-                if (cipher_suites.includes(cipher_suites.tls13, cipher_suite) and
+                if (cipher_suites.includes(supported_cipher_suites, cipher_suite) and
                     @intFromEnum(h.cipher_suite) == 0)
                 {
                     h.cipher_suite = cipher_suite;
                 }
             }
             if (@intFromEnum(h.cipher_suite) == 0)
-                return error.TlsHandshakeFailure;
+                return error.TlsNoSupportedCiphers;
         }
         try d.skip(2); // compression methods
 
@@ -475,7 +480,7 @@ test "read client hello" {
         .output = undefined,
     };
     h.signature_scheme = .ecdsa_secp521r1_sha512; // this must be supported in signature_algorithms extension
-    try h.readClientHello();
+    try h.readClientHello(cipher_suites.tls13);
 
     try testing.expectEqual(CipherSuite.AES_256_GCM_SHA384, h.cipher_suite);
     try testing.expectEqual(.x25519, h.named_group);
@@ -532,10 +537,9 @@ pub const NonBlock = struct {
     // inner sync handshake
     inner: Handshake = undefined,
     opt: Options = undefined,
-    state: State = .none,
+    state: State = undefined,
 
     const State = enum {
-        none,
         init,
         client_flight_1,
         server_flight,
@@ -559,25 +563,13 @@ pub const NonBlock = struct {
         };
     }
 
-    /// Returns null if there is nothing to send at this state
-    fn send(self: *Self) !void {
-        switch (self.state) {
-            .client_flight_1 => {
-                try self.inner.serverFlight(self.opt);
-                self.state.next();
-            },
-            else => return,
-        }
-    }
-
-    /// Returns number of bytes consumed from buf
     fn recv(self: *Self) !void {
         const prev: Transcript = self.inner.transcript;
         errdefer self.inner.transcript = prev;
 
         switch (self.state) {
             .init => {
-                try self.inner.clientFlight1();
+                try self.inner.clientFlight1(self.opt);
                 self.state.next();
             },
             .server_flight => {
@@ -618,19 +610,39 @@ pub const NonBlock = struct {
         };
 
         var reader: Io.Reader = .fixed(recv_buf);
-        var writer: Io.Writer = .fixed(send_buf);
         self.inner.input = &reader;
+        var writer: Io.Writer = .fixed(send_buf);
         self.inner.output = &writer;
 
-        const recv_pos: usize = if (recv_buf.len > 0) brk: {
-            self.recv() catch |err| switch (err) {
-                error.EndOfStream, error.InputBufferUndersize => break :brk 0,
-                else => return err,
-            };
-            break :brk reader.seek;
-        } else 0;
-
-        try self.send();
+        var recv_pos: usize = 0;
+        out: switch (self.state) {
+            .init, .server_flight => {
+                self.recv() catch |err| switch (err) {
+                    error.EndOfStream, error.InputBufferUndersize => {
+                        return .{
+                            .recv_pos = 0,
+                            .send_pos = 0,
+                            .unused_recv = recv_buf,
+                            .send = &.{},
+                        };
+                    },
+                    else => return err,
+                };
+                recv_pos = reader.seek;
+                continue :out self.state;
+            },
+            .client_flight_1 => {
+                if (recv_buf.ptr == send_buf.ptr and recv_pos != recv_buf.len) {
+                    // recv buffer is fully consumed, same buffer can be used for write
+                    return error.TlsUnexpectedMessage;
+                }
+                try self.inner.serverFlight(self.opt);
+                self.state.next();
+            },
+            .client_flight_2 => {
+                // done
+            },
+        }
 
         return .{
             .recv_pos = recv_pos,

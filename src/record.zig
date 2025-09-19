@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const mem = std.mem;
-const io = std.io;
+const Io = std.Io;
 const proto = @import("protocol.zig");
 const max_ciphertext_len = @import("cipher.zig").max_ciphertext_len;
 
@@ -34,7 +34,7 @@ pub const Record = struct {
         TlsRecordOverflow, // incorrect tls record
     };
 
-    pub fn read(rdr: *io.Reader) Error!Record {
+    pub fn read(rdr: *Io.Reader) Error!Record {
         if (header_len > rdr.buffer.len) {
             @branchHint(.cold);
             return error.InputBufferUndersize;
@@ -55,7 +55,7 @@ pub const Record = struct {
         return .init(try rdr.take(record_len));
     }
 
-    pub fn decoder(rdr: *io.Reader) !Decoder {
+    pub fn decoder(rdr: *Io.Reader) !Decoder {
         const rec = try Record.read(rdr);
         if (@intFromEnum(rec.protocol_version) != 0x0300 and
             @intFromEnum(rec.protocol_version) != 0x0301 and
@@ -176,7 +176,7 @@ test "record.read" {
         .{ .content_type = .change_cipher_spec, .payload_len = 1 },
         .{ .content_type = .handshake, .payload_len = 64 },
     };
-    var reader: io.Reader = .fixed(&data12.server_responses);
+    var reader: Io.Reader = .fixed(&data12.server_responses);
 
     {
         var n: usize = 0;
@@ -209,7 +209,7 @@ test "record.read" {
 }
 
 test Decoder {
-    var reader: io.Reader = .fixed(&data12.server_responses);
+    var reader: Io.Reader = .fixed(&data12.server_responses);
     var d = (try Record.decoder(&reader));
     try testing.expectEqual(.handshake, d.content_type);
 
@@ -230,14 +230,14 @@ test Decoder {
 }
 
 pub const Writer = struct {
-    inner: io.Writer,
+    inner: Io.Writer,
 
-    pub fn initFromIo(io_w: *io.Writer) Writer {
-        return .{ .inner = io.Writer.fixed(io_w.unusedCapacitySlice()) };
+    pub fn initFromIo(io_w: *Io.Writer) Writer {
+        return .{ .inner = Io.Writer.fixed(io_w.unusedCapacitySlice()) };
     }
 
     pub fn init(buffer: []u8) Writer {
-        return .{ .inner = io.Writer.fixed(buffer) };
+        return .{ .inner = Io.Writer.fixed(buffer) };
     }
 
     inline fn ensureCapacity(w: Writer, n: usize) !void {
@@ -416,20 +416,20 @@ pub const Writer = struct {
     /// Parent buffer position is not changed.
     pub fn writerAt(w: *Writer, p: usize) Writer {
         assert(p < w.inner.end);
-        return Writer{ .inner = io.Writer.fixed(w.inner.buffered()[p..]) };
+        return Writer{ .inner = Io.Writer.fixed(w.inner.buffered()[p..]) };
     }
 
     /// Returns new writer in unused buffer part advancing `n` bytes.
     /// Parent buffer position is not changed.
     pub fn writerAdvance(w: *Writer, n: usize) !Writer {
         try w.ensureCapacity(n);
-        return Writer{ .inner = io.Writer.fixed(w.inner.unusedCapacitySlice()[n..]) };
+        return Writer{ .inner = Io.Writer.fixed(w.inner.unusedCapacitySlice()[n..]) };
     }
 };
 
 test "Writer" {
     var buf: [16]u8 = undefined;
-    var w = Writer{ .inner = io.Writer.fixed(&buf) };
+    var w = Writer{ .inner = Io.Writer.fixed(&buf) };
 
     try w.slice("ab");
     try w.enumValue(proto.Curve.named_curve);

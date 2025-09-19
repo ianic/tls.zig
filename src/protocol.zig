@@ -206,6 +206,7 @@ pub const Alert = enum(u8) {
             error.TlsIllegalParameter,
             error.IdentityElement,
             error.InvalidEncoding,
+            error.TlsNoSupportedCiphers,
             => .illegal_parameter,
             error.TlsUnknownCa => .unknown_ca,
             error.TlsAccessDenied => .access_denied,

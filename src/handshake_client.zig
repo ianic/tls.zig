@@ -845,8 +845,7 @@ pub const Handshake = struct {
 
     fn certificateBuilder(h: *Self, auth: *CertKeyPair) CertificateBuilder {
         return .{
-            .bundle = auth.bundle,
-            .key = auth.key,
+            .cert_key_pair = auth,
             .transcript = &h.transcript,
             .tls_version = h.tls_version,
             .side = .client,

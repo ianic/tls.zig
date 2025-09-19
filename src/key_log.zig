@@ -51,8 +51,7 @@ fn fileWrite(file_name: []const u8, line: []const u8) !void {
 }
 
 pub fn formatLine(buf: []u8, label_: []const u8, client_random: []const u8, secret: []const u8) ![]const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(buf);
     try w.print("{s} ", .{label_});
     for (client_random) |b| {
         try w.print("{x:0>2}", .{b});
@@ -62,5 +61,5 @@ pub fn formatLine(buf: []u8, label_: []const u8, client_random: []const u8, secr
         try w.print("{x:0>2}", .{b});
     }
     try w.writeByte('\n');
-    return fbs.getWritten();
+    return w.buffered();
 }
