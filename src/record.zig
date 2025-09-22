@@ -48,8 +48,6 @@ pub const Record = struct {
         const record_len = header_len + payload_len;
         if (record_len > rdr.buffer.len) {
             @branchHint(.cold);
-            if (!builtin.is_test)
-                log.err("intput buffer {} bytes, required: {}", .{ rdr.buffer.len, record_len });
             return error.InputBufferUndersize;
         }
         return .init(try rdr.take(record_len));
