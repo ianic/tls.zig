@@ -2,6 +2,7 @@
     .name = .tls,
     .version = "0.1.0",
     .dependencies = .{},
+    .minimum_zig_version = "0.15.1",
     .fingerprint = 0xacfd1db3d29e1d11,
     .paths = .{
         "readme.md",
