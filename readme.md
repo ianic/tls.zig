@@ -49,7 +49,7 @@ To use just ciphers which are graded secure or recommended on  https://ciphersui
     var conn = try tls.clientFromStream(tcp, .{
         .host = host,
         .root_ca = root_ca,
-        .cipher_suites = tls.cipher_suites.secure,
+        .cipher_suites = tls.config.cipher_suites.secure,
     });
 ```
 `cipher_suites` can be used to force tls 1.3 only or tls 1.2 only ciphers. Or to reorder cipher preferences.
