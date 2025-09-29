@@ -17,6 +17,12 @@ https://github.com/ziglang/zig/issues/15226#issuecomment-2218809140
 https://github.com/ziglang/zig/issues/14172#issuecomment-2181202318
 -->
 
+## Toolchain version
+
+In order to build `tls.zig`, you need **Zig 15 or newer**. The code uses the new
+[`std.Io`](https://ziglang.org/documentation/0.15.1/std/#std.Io) interface, which isn't
+available in Zig 14 or older.
+
 # Client
 
 [Here](https://github.com/ianic/tls.zig/blob/main/demo/src/main.zig) is simple example of how to use library.   
