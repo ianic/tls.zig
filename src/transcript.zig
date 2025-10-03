@@ -198,6 +198,9 @@ fn TranscriptT(comptime Hash: type) type {
         handshake_secret: ?[Hmac.mac_length]u8 = null,
         server_finished_key: [Hmac.key_length]u8 = undefined,
         client_finished_key: [Hmac.key_length]u8 = undefined,
+        binder: [Hmac.mac_length]u8 =undefined,
+        server_hmac: [Hmac.mac_length]u8 = undefined,
+        client_hmac: [Hmac.mac_length]u8 = undefined,
 
         const Self = @This();
 
@@ -353,22 +356,19 @@ fn TranscriptT(comptime Hash: type) type {
 
             const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), Hash.digest_length);
             const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", Hash.digest_length);
-            var out: [Hash.digest_length]u8 = undefined;
-            Hmac.create(&out, &self.hash.peek(), &expanded);
-            return &out;
+            Hmac.create(&self.binder, &self.hash.peek(), &expanded);
+            return &self.binder;
         }
 
         inline fn serverFinishedTls13(self: *Self) []const u8 {
-            var buf: [mac_length]u8 = undefined;
-            Hmac.create(&buf, &self.hash.peek(), &self.server_finished_key);
-            return &buf;
+            Hmac.create(&self.server_hmac, &self.hash.peek(), &self.server_finished_key);
+            return &self.server_hmac;
         }
 
         // client finished message with header
         inline fn clientFinishedTls13(self: *Self) []const u8 {
-            var buf: [mac_length]u8 = undefined;
-            Hmac.create(&buf, &self.hash.peek(), &self.client_finished_key);
-            return &buf;
+            Hmac.create(&self.client_hmac, &self.hash.peek(), &self.client_finished_key);
+            return &self.client_hmac;
         }
     };
 }
@@ -379,6 +379,7 @@ const testing = std.testing;
 inline fn pskBinder_(
     comptime Hash: type,
     resumption_master_secret: [Hash.digest_length]u8,
+    binder: [Hash.mac_length]u8,
     binder_hash: [Hash.digest_length]u8,
     ticket_nonce: []const u8,
 ) []const u8 {
@@ -389,9 +390,7 @@ inline fn pskBinder_(
     const secret = Hkdf.extract(&[1]u8{0}, &ikm);
     const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), Hash.digest_length);
     const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", Hash.digest_length);
-    var binder: [Hash.digest_length]u8 = undefined;
     Hmac.create(&binder, &binder_hash, &expanded);
-    return &binder;
 }
 
 // Example from: https://datatracker.ietf.org/doc/html/rfc8448#autoid-4
@@ -436,6 +435,6 @@ test pskBinder_ {
     try testing.expectEqualSlices(
         u8,
         &expected_binder,
-        pskBinder_(Hash, resumption_master_secret, binder_hash, &ticket_nonce),
+        pskBinder_(Hash, resumption_master_secret, binder, binder_hash, &ticket_nonce),
     );
 }
