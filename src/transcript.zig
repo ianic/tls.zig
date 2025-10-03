@@ -198,9 +198,7 @@ fn TranscriptT(comptime Hash: type) type {
         handshake_secret: ?[Hmac.mac_length]u8 = null,
         server_finished_key: [Hmac.key_length]u8 = undefined,
         client_finished_key: [Hmac.key_length]u8 = undefined,
-        binder: [Hmac.mac_length]u8 = undefined,
-        server_hmac: [Hmac.mac_length]u8 = undefined,
-        client_hmac: [Hmac.mac_length]u8 = undefined,
+        hmac_buffer: [Hmac.mac_length]u8 = undefined,
 
         const Self = @This();
 
@@ -353,22 +351,21 @@ fn TranscriptT(comptime Hash: type) type {
 
         inline fn pskBinder(self: *Self) []const u8 {
             const secret = self.handshake_secret.?;
-
             const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), Hash.digest_length);
             const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", Hash.digest_length);
-            Hmac.create(&self.binder, &self.hash.peek(), &expanded);
-            return &self.binder;
+            Hmac.create(&self.hmac_buffer, &self.hash.peek(), &expanded);
+            return &self.hmac_buffer;
         }
 
         inline fn serverFinishedTls13(self: *Self) []const u8 {
-            Hmac.create(&self.server_hmac, &self.hash.peek(), &self.server_finished_key);
-            return &self.server_hmac;
+            Hmac.create(&self.hmac_buffer, &self.hash.peek(), &self.server_finished_key);
+            return &self.hmac_buffer;
         }
 
         // client finished message with header
         inline fn clientFinishedTls13(self: *Self) []const u8 {
-            Hmac.create(&self.client_hmac, &self.hash.peek(), &self.client_finished_key);
-            return &self.client_hmac;
+            Hmac.create(&self.hmac_buffer, &self.hash.peek(), &self.client_finished_key);
+            return &self.hmac_buffer;
         }
     };
 }
