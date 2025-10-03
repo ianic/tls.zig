@@ -198,7 +198,7 @@ fn TranscriptT(comptime Hash: type) type {
         handshake_secret: ?[Hmac.mac_length]u8 = null,
         server_finished_key: [Hmac.key_length]u8 = undefined,
         client_finished_key: [Hmac.key_length]u8 = undefined,
-        binder: [Hmac.mac_length]u8 =undefined,
+        binder: [Hmac.mac_length]u8 = undefined,
         server_hmac: [Hmac.mac_length]u8 = undefined,
         client_hmac: [Hmac.mac_length]u8 = undefined,
 
@@ -379,10 +379,10 @@ const testing = std.testing;
 inline fn pskBinder_(
     comptime Hash: type,
     resumption_master_secret: [Hash.digest_length]u8,
-    binder: [Hash.mac_length]u8,
+    binder: *[Hash.digest_length]u8,
     binder_hash: [Hash.digest_length]u8,
     ticket_nonce: []const u8,
-) []const u8 {
+) void {
     const Hmac = crypto.auth.hmac.Hmac(Hash);
     const Hkdf = crypto.kdf.hkdf.Hkdf(Hmac);
 
@@ -390,7 +390,7 @@ inline fn pskBinder_(
     const secret = Hkdf.extract(&[1]u8{0}, &ikm);
     const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), Hash.digest_length);
     const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", Hash.digest_length);
-    Hmac.create(&binder, &binder_hash, &expanded);
+    Hmac.create(binder, &binder_hash, &expanded);
 }
 
 // Example from: https://datatracker.ietf.org/doc/html/rfc8448#autoid-4
@@ -431,10 +431,11 @@ test pskBinder_ {
     try testing.expectEqualSlices(u8, &expected_expanded, &expanded);
     try testing.expectEqualSlices(u8, &expected_binder, &binder);
 
+    pskBinder_(Hash, resumption_master_secret, &binder, binder_hash, &ticket_nonce);
     // test pskBinder function
     try testing.expectEqualSlices(
         u8,
         &expected_binder,
-        pskBinder_(Hash, resumption_master_secret, binder, binder_hash, &ticket_nonce),
+        &binder,
     );
 }
