@@ -14,7 +14,6 @@ const proto = @import("protocol.zig");
 // tls 1.2 cbc cipher types
 const CbcAes128Sha1 = CbcType(crypto.core.aes.Aes128, Sha1);
 const CbcAes128Sha256 = CbcType(crypto.core.aes.Aes128, Sha256);
-const CbcAes256Sha256 = CbcType(crypto.core.aes.Aes256, Sha256);
 const CbcAes256Sha384 = CbcType(crypto.core.aes.Aes256, Sha384);
 // tls 1.2 gcm cipher types
 const Aead12Aes128Gcm = Aead12Type(crypto.aead.aes_gcm.Aes128Gcm);
@@ -30,7 +29,6 @@ const Aegis128Sha256 = Aead13Type(crypto.aead.aegis.Aegis128L, Sha256);
 pub const encrypt_overhead_tls_12: comptime_int = @max(
     CbcAes128Sha1.encrypt_overhead,
     CbcAes128Sha256.encrypt_overhead,
-    CbcAes256Sha256.encrypt_overhead,
     CbcAes256Sha384.encrypt_overhead,
     Aead12Aes128Gcm.encrypt_overhead,
     Aead12Aes256Gcm.encrypt_overhead,
@@ -556,7 +554,7 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
         const iv_len = 16;
         const encrypt_overhead = record.header_len + iv_len + mac_len + max_padding;
 
-        pub const Hmac = crypto.auth.hmac.Hmac(HashType);
+        const Hmac = crypto.auth.hmac.Hmac(HashType);
         const paddedLength = CBC.paddedLength;
         const max_padding = 16;
 
@@ -855,7 +853,7 @@ pub const CipherSuite = enum(u16) {
         sha512,
     };
 
-    pub inline fn hash(cs: CipherSuite) HashTag {
+    pub fn hash(cs: CipherSuite) HashTag {
         return switch (cs) {
             .ECDHE_RSA_WITH_AES_256_CBC_SHA384,
             .ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -1013,7 +1011,6 @@ fn encryptDecrypt(client_cipher: *Cipher, server_cipher: *Cipher) !void {
                 break :brk switch (T) {
                     CbcAes128Sha1,
                     CbcAes128Sha256,
-                    CbcAes256Sha256,
                     CbcAes256Sha384,
                     => record.header_len + T.paddedLength(T.iv_len + cleartext.len + T.mac_len),
                     Aead12Aes128Gcm,
