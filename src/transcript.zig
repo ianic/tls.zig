@@ -178,7 +178,7 @@ pub const Transcript = struct {
     }
 
     /// Copy of the current hash value
-    pub inline fn hash(t: *Transcript, comptime Hash: type) Hash {
+    pub fn hash(t: *Transcript, comptime Hash: type) Hash {
         return switch (Hash) {
             Sha256 => t.sha256.hash,
             Sha384 => t.sha384.hash,
@@ -349,7 +349,7 @@ fn TranscriptT(comptime Hash: type) type {
             return &hkdfExpandLabel(Hkdf, master_secret, "res master", &handshake_hash, Hash.digest_length);
         }
 
-        inline fn pskBinder(self: *Self) []const u8 {
+        fn pskBinder(self: *Self) []const u8 {
             const secret = self.handshake_secret.?;
             const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), Hash.digest_length);
             const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", Hash.digest_length);
@@ -357,13 +357,13 @@ fn TranscriptT(comptime Hash: type) type {
             return &self.hmac_buffer;
         }
 
-        inline fn serverFinishedTls13(self: *Self) []const u8 {
+        fn serverFinishedTls13(self: *Self) []const u8 {
             Hmac.create(&self.hmac_buffer, &self.hash.peek(), &self.server_finished_key);
             return &self.hmac_buffer;
         }
 
         // client finished message with header
-        inline fn clientFinishedTls13(self: *Self) []const u8 {
+        fn clientFinishedTls13(self: *Self) []const u8 {
             Hmac.create(&self.hmac_buffer, &self.hash.peek(), &self.client_finished_key);
             return &self.hmac_buffer;
         }
@@ -373,7 +373,7 @@ fn TranscriptT(comptime Hash: type) type {
 const hexToBytes = @import("testu.zig").hexToBytes;
 const testing = std.testing;
 
-inline fn pskBinder_(
+fn pskBinder_(
     comptime Hash: type,
     resumption_master_secret: [Hash.digest_length]u8,
     binder: *[Hash.digest_length]u8,
