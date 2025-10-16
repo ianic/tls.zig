@@ -238,7 +238,7 @@ pub const Writer = struct {
         return .{ .inner = Io.Writer.fixed(buffer) };
     }
 
-    inline fn ensureCapacity(w: Writer, n: usize) !void {
+    fn ensureCapacity(w: Writer, n: usize) !void {
         if (w.inner.unusedCapacityLen() < n)
             return error.OutputBufferUndersize;
     }
@@ -255,22 +255,22 @@ pub const Writer = struct {
         return w.inner.end;
     }
 
-    pub inline fn byte(w: *Writer, b: u8) !void {
+    pub fn byte(w: *Writer, b: u8) !void {
         try w.ensureCapacity(1);
         try w.inner.writeByte(b);
     }
 
-    pub inline fn slice(w: *Writer, bytes: []const u8) !void {
+    pub fn slice(w: *Writer, bytes: []const u8) !void {
         try w.ensureCapacity(bytes.len);
         try w.inner.writeAll(bytes);
     }
 
-    pub inline fn int(w: *Writer, comptime T: type, value: anytype) !void {
+    pub fn int(w: *Writer, comptime T: type, value: anytype) !void {
         try w.ensureCapacity(@divExact(@typeInfo(T).int.bits, 8));
         try w.inner.writeInt(T, @intCast(value), .big);
     }
 
-    pub inline fn writableArray(w: *Writer, comptime len: usize) !*[len]u8 {
+    pub fn writableArray(w: *Writer, comptime len: usize) !*[len]u8 {
         try w.ensureCapacity(len);
         return try w.inner.writableArray(len);
     }
@@ -436,13 +436,13 @@ test "Writer" {
     try testing.expectEqualSlices(u8, &[_]u8{ 'a', 'b', 0x03, 0x00, 0x1d, 0x12, 0x34 }, w.buffered());
 }
 
-inline fn int2(int: u16) [2]u8 {
+fn int2(int: u16) [2]u8 {
     var arr: [2]u8 = undefined;
     std.mem.writeInt(u16, &arr, int, .big);
     return arr;
 }
 
-inline fn int3(int: u24) [3]u8 {
+fn int3(int: u24) [3]u8 {
     var arr: [3]u8 = undefined;
     std.mem.writeInt(u24, &arr, int, .big);
     return arr;

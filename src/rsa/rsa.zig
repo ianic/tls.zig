@@ -678,7 +678,7 @@ test mgf1 {
 }
 
 /// For OAEP.
-inline fn labelHash(comptime Hash: type, label: []const u8) [Hash.digest_length]u8 {
+fn labelHash(comptime Hash: type, label: []const u8) [Hash.digest_length]u8 {
     if (label.len == 0) {
         // magic constants from NIST
         const sha2 = std.crypto.hash.sha2;
@@ -825,7 +825,7 @@ fn testKeypair() !KeyPair {
     return kp;
 }
 
-const skip_slow_tests = true;
+const skip_slow_tests = false;
 
 test "rsa PKCS1-v1_5 encrypt and decrypt" {
     if (skip_slow_tests) return error.SkipZigTest;
