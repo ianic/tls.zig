@@ -7,10 +7,10 @@ cd $cwd
 zig build
 zig build test
 zig build integration
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=ReleaseSafe
 
 # clone tlsfuzzer repo if don't exists
-if [[ ! -d example/tlsfuzzer ]] ; then
+if [[ ! -d example/tlsfuzzer ]]; then
     cd example
     git clone https://github.com/tlsfuzzer/tlsfuzzer.git
     python3 -m venv tlsfuzzer
