@@ -150,7 +150,13 @@ pub const Handshake = struct {
     fn serverFlight(h: *Self, opt: Options) !void {
         var w: record.Writer = .initFromIo(h.output);
 
-        const shared_key = try h.sharedKey();
+        const shared_key = brk: {
+            var seed: [DhKeyPair.seed_len]u8 = undefined;
+            crypto.random.bytes(&seed);
+            var kp = try DhKeyPair.init(seed, &[_]proto.NamedGroup{h.named_group});
+            h.server_pub_key = try common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
+            break :brk try kp.sharedKey(h.named_group, h.client_pub_key);
+        };
         {
             const hello = try h.makeServerHello(&w);
             h.transcript.update(hello[record.header_len..]);
@@ -199,14 +205,6 @@ pub const Handshake = struct {
         }
 
         h.output.advance(w.buffered().len);
-    }
-
-    inline fn sharedKey(h: *Self) ![]const u8 {
-        var seed: [DhKeyPair.seed_len]u8 = undefined;
-        crypto.random.bytes(&seed);
-        var kp = try DhKeyPair.init(seed, &[_]proto.NamedGroup{h.named_group});
-        h.server_pub_key = common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
-        return try kp.sharedKey(h.named_group, h.client_pub_key);
     }
 
     fn readClientFlight2(h: *Self, opt: Options) !void {
@@ -369,7 +367,7 @@ pub const Handshake = struct {
         h.client_random = try d.array(32);
         { // legacy session id
             const len = try d.decode(u8);
-            h.legacy_session_id = common.dupe(&h.legacy_session_id_buf, try d.slice(len));
+            h.legacy_session_id = try common.dupe(&h.legacy_session_id_buf, try d.slice(len));
         }
         { // cipher suites
             const end_idx = try d.decode(u16) + d.idx;
@@ -423,7 +421,7 @@ pub const Handshake = struct {
                         for (supported_named_groups, 0..) |supported, idx| {
                             if (named_group == supported and idx < selected_named_group_idx) {
                                 h.named_group = named_group;
-                                h.client_pub_key = common.dupe(&h.client_pub_key_buf, client_pub_key);
+                                h.client_pub_key = try common.dupe(&h.client_pub_key_buf, client_pub_key);
                                 selected_named_group_idx = idx;
                             }
                         }

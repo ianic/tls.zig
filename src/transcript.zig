@@ -28,8 +28,6 @@ pub const Transcript = struct {
 
     tag: HashTag = .sha256,
 
-    pub const max_mac_length = Type(.sha512).mac_length;
-
     // Transcript Type from hash tag
     fn Type(h: HashTag) type {
         return switch (h) {
@@ -52,34 +50,38 @@ pub const Transcript = struct {
 
     // tls 1.2 handshake specific
 
-    pub inline fn masterSecret(
+    pub fn masterSecret(
         t: *Transcript,
+        out: []u8,
         pre_master_secret: []const u8,
         client_random: [32]u8,
         server_random: [32]u8,
-    ) []const u8 {
-        return switch (t.tag) {
-            inline else => |h| &@field(t, @tagName(h)).masterSecret(
+    ) void {
+        switch (t.tag) {
+            inline else => |h| @field(t, @tagName(h)).masterSecret(
+                out,
                 pre_master_secret,
                 client_random,
                 server_random,
             ),
-        };
+        }
     }
 
-    pub inline fn keyMaterial(
+    pub fn keyMaterial(
         t: *Transcript,
+        out: []u8,
         master_secret: []const u8,
         client_random: [32]u8,
         server_random: [32]u8,
-    ) []const u8 {
-        return switch (t.tag) {
-            inline else => |h| &@field(t, @tagName(h)).keyExpansion(
+    ) void {
+        switch (t.tag) {
+            inline else => |h| @field(t, @tagName(h)).keyExpansion(
+                out,
                 master_secret,
                 client_random,
                 server_random,
             ),
-        };
+        }
     }
 
     pub fn clientFinishedTls12(t: *Transcript, master_secret: []const u8) [12]u8 {
@@ -112,25 +114,25 @@ pub const Transcript = struct {
         }
     }
 
-    pub inline fn serverCertificateVerify(t: *Transcript) []const u8 {
+    pub fn serverCertificateVerify(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline else => |h| &@field(t, @tagName(h)).serverCertificateVerify(),
+            inline else => |h| @field(t, @tagName(h)).serverCertificateVerify(),
         };
     }
 
-    pub inline fn clientCertificateVerify(t: *Transcript) []const u8 {
+    pub fn clientCertificateVerify(t: *Transcript) []const u8 {
         return switch (t.tag) {
-            inline else => |h| &@field(t, @tagName(h)).clientCertificateVerify(),
+            inline else => |h| @field(t, @tagName(h)).clientCertificateVerify(),
         };
     }
 
-    pub inline fn serverFinishedTls13(t: *Transcript) []const u8 {
+    pub fn serverFinishedTls13(t: *Transcript) []const u8 {
         return switch (t.tag) {
             inline else => |h| @field(t, @tagName(h)).serverFinishedTls13(),
         };
     }
 
-    pub inline fn clientFinishedTls13(t: *Transcript) []const u8 {
+    pub fn clientFinishedTls13(t: *Transcript) []const u8 {
         return switch (t.tag) {
             inline else => |h| @field(t, @tagName(h)).clientFinishedTls13(),
         };
@@ -141,25 +143,25 @@ pub const Transcript = struct {
         server: []const u8,
     };
 
-    pub inline fn handshakeSecret(t: *Transcript, shared_key: []const u8) Secret {
+    pub fn handshakeSecret(t: *Transcript, shared_key: []const u8) Secret {
         return switch (t.tag) {
             inline else => |h| @field(t, @tagName(h)).handshakeSecret(shared_key),
         };
     }
 
-    pub inline fn applicationSecret(t: *Transcript) Secret {
+    pub fn applicationSecret(t: *Transcript) Secret {
         return switch (t.tag) {
             inline else => |h| @field(t, @tagName(h)).applicationSecret(),
         };
     }
 
-    pub inline fn resumptionSecret(t: *Transcript) []const u8 {
+    pub fn resumptionSecret(t: *Transcript) []const u8 {
         return switch (t.tag) {
             inline else => |h| @field(t, @tagName(h)).resumptionSecret(),
         };
     }
 
-    pub inline fn pskBinder(t: *Transcript) []const u8 {
+    pub fn pskBinder(t: *Transcript) []const u8 {
         return switch (t.tag) {
             inline else => |h| @field(t, @tagName(h)).pskBinder(),
         };
@@ -167,7 +169,7 @@ pub const Transcript = struct {
 
     pub fn hashLength(t: *Transcript) u8 {
         return switch (t.tag) {
-            inline else => |h| @TypeOf(@field(t, @tagName(h))).mac_length,
+            inline else => |h| @TypeOf(@field(t, @tagName(h))).hash_length,
         };
     }
 
@@ -192,13 +194,13 @@ fn TranscriptT(comptime Hash: type) type {
     return struct {
         const Hmac = crypto.auth.hmac.Hmac(Hash);
         const Hkdf = crypto.kdf.hkdf.Hkdf(Hmac);
-        const mac_length = Hmac.mac_length;
+        const hash_length = Hash.digest_length; // Hmac.mac_length == Hmac.key_length == Hash.digest_length
 
         hash: Hash,
-        handshake_secret: ?[Hmac.mac_length]u8 = null,
-        server_finished_key: [Hmac.key_length]u8 = undefined,
-        client_finished_key: [Hmac.key_length]u8 = undefined,
-        hmac_buffer: [Hmac.mac_length]u8 = undefined,
+        handshake_secret: ?[hash_length]u8 = null,
+        server_finished_key: [hash_length]u8 = undefined,
+        client_finished_key: [hash_length]u8 = undefined,
+        buffer: [hash_length + 64 + 34]u8 = undefined,
 
         const Self = @This();
 
@@ -206,70 +208,78 @@ fn TranscriptT(comptime Hash: type) type {
             return .{ .transcript = transcript };
         }
 
-        fn serverCertificateVerify(c: *Self) [64 + 34 + Hash.digest_length]u8 {
-            return ([1]u8{0x20} ** 64) ++
+        fn serverCertificateVerify(self: *Self) []const u8 {
+            self.buffer = ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, server CertificateVerify\x00".* ++
-                c.hash.peek();
+                self.hash.peek();
+            return &self.buffer;
         }
 
         // ref: https://www.rfc-editor.org/rfc/rfc8446#section-4.4.3
-        fn clientCertificateVerify(c: *Self) [64 + 34 + Hash.digest_length]u8 {
-            return ([1]u8{0x20} ** 64) ++
+        fn clientCertificateVerify(self: *Self) []u8 {
+            self.buffer = ([1]u8{0x20} ** 64) ++
                 "TLS 1.3, client CertificateVerify\x00".* ++
-                c.hash.peek();
+                self.hash.peek();
+            return &self.buffer;
         }
 
         fn masterSecret(
             _: *Self,
+            out: []u8,
             pre_master_secret: []const u8,
             client_random: [32]u8,
             server_random: [32]u8,
-        ) [mac_length * 2]u8 {
+        ) void {
             const seed = "master secret" ++ client_random ++ server_random;
 
-            var a1: [mac_length]u8 = undefined;
-            var a2: [mac_length]u8 = undefined;
+            var a1: [hash_length]u8 = undefined;
+            var a2: [hash_length]u8 = undefined;
             Hmac.create(&a1, seed, pre_master_secret);
             Hmac.create(&a2, &a1, pre_master_secret);
 
-            var p1: [mac_length]u8 = undefined;
-            var p2: [mac_length]u8 = undefined;
+            var p1: [hash_length]u8 = undefined;
+            var p2: [hash_length]u8 = undefined;
             Hmac.create(&p1, a1 ++ seed, pre_master_secret);
             Hmac.create(&p2, a2 ++ seed, pre_master_secret);
 
-            return p1 ++ p2;
+            const master_secret = p1 ++ p2;
+            const len = @min(out.len, master_secret.len);
+            @memcpy(out[0..len], master_secret[0..len]);
         }
 
         fn keyExpansion(
             _: *Self,
+            out: []u8,
             master_secret: []const u8,
             client_random: [32]u8,
             server_random: [32]u8,
-        ) [mac_length * 4]u8 {
+        ) void {
             const seed = "key expansion" ++ server_random ++ client_random;
 
             const a0 = seed;
-            var a1: [mac_length]u8 = undefined;
-            var a2: [mac_length]u8 = undefined;
-            var a3: [mac_length]u8 = undefined;
-            var a4: [mac_length]u8 = undefined;
+            var a1: [hash_length]u8 = undefined;
+            var a2: [hash_length]u8 = undefined;
+            var a3: [hash_length]u8 = undefined;
+            var a4: [hash_length]u8 = undefined;
             Hmac.create(&a1, a0, master_secret);
             Hmac.create(&a2, &a1, master_secret);
             Hmac.create(&a3, &a2, master_secret);
             Hmac.create(&a4, &a3, master_secret);
 
-            var key_material: [mac_length * 4]u8 = undefined;
-            Hmac.create(key_material[0..mac_length], a1 ++ seed, master_secret);
-            Hmac.create(key_material[mac_length .. mac_length * 2], a2 ++ seed, master_secret);
-            Hmac.create(key_material[mac_length * 2 .. mac_length * 3], a3 ++ seed, master_secret);
-            Hmac.create(key_material[mac_length * 3 ..], a4 ++ seed, master_secret);
-            return key_material;
+            var key_material: [hash_length * 4]u8 = undefined;
+            Hmac.create(key_material[0..hash_length], a1 ++ seed, master_secret);
+            Hmac.create(key_material[hash_length .. hash_length * 2], a2 ++ seed, master_secret);
+            Hmac.create(key_material[hash_length * 2 .. hash_length * 3], a3 ++ seed, master_secret);
+            Hmac.create(key_material[hash_length * 3 ..], a4 ++ seed, master_secret);
+
+            const len = @min(out.len, key_material.len);
+            @memcpy(out[0..len], key_material[0..len]);
         }
 
         fn clientFinishedTls12(self: *Self, master_secret: []const u8) [12]u8 {
             const seed = "client finished" ++ self.hash.peek();
-            var a1: [mac_length]u8 = undefined;
-            var p1: [mac_length]u8 = undefined;
+            var a1: [hash_length]u8 = undefined;
+            var p1: [hash_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
             return p1[0..12].*;
@@ -277,8 +287,8 @@ fn TranscriptT(comptime Hash: type) type {
 
         fn serverFinishedTls12(self: *Self, master_secret: []const u8) [12]u8 {
             const seed = "server finished" ++ self.hash.peek();
-            var a1: [mac_length]u8 = undefined;
-            var p1: [mac_length]u8 = undefined;
+            var a1: [hash_length]u8 = undefined;
+            var p1: [hash_length]u8 = undefined;
             Hmac.create(&a1, seed, master_secret);
             Hmac.create(&p1, a1 ++ seed, master_secret);
             return p1[0..12].*;
@@ -293,10 +303,10 @@ fn TranscriptT(comptime Hash: type) type {
         ) void {
             const ikm = hkdfExpandLabel(
                 Hkdf,
-                resumption_secret[0..mac_length].*,
+                resumption_secret[0..hash_length].*,
                 "resumption",
                 ticket_nonce,
-                Hash.digest_length,
+                hash_length,
             );
             self.handshake_secret = Hkdf.extract(&[1]u8{0}, &ikm);
         }
@@ -305,67 +315,73 @@ fn TranscriptT(comptime Hash: type) type {
             self.handshake_secret = null;
         }
 
-        inline fn handshakeSecret(self: *Self, shared_key: []const u8) Transcript.Secret {
+        fn handshakeSecret(self: *Self, shared_key: []const u8) Transcript.Secret {
             const hello_hash = self.hash.peek();
 
             const empty_hash = tls.emptyHash(Hash);
-            const zeroes = [1]u8{0} ** Hash.digest_length;
+            const zeroes = [1]u8{0} ** hash_length;
             const early_secret = if (self.handshake_secret) |hs| hs else Hkdf.extract(&[1]u8{0}, &zeroes);
-            const hs_derived_secret = hkdfExpandLabel(Hkdf, early_secret, "derived", &empty_hash, Hash.digest_length);
+            const hs_derived_secret = hkdfExpandLabel(Hkdf, early_secret, "derived", &empty_hash, hash_length);
 
             const secret = Hkdf.extract(&hs_derived_secret, shared_key);
             self.handshake_secret = secret;
-            const client_secret = hkdfExpandLabel(Hkdf, secret, "c hs traffic", &hello_hash, Hash.digest_length);
-            const server_secret = hkdfExpandLabel(Hkdf, secret, "s hs traffic", &hello_hash, Hash.digest_length);
+            const client_secret = hkdfExpandLabel(Hkdf, secret, "c hs traffic", &hello_hash, hash_length);
+            const server_secret = hkdfExpandLabel(Hkdf, secret, "s hs traffic", &hello_hash, hash_length);
 
-            self.server_finished_key = hkdfExpandLabel(Hkdf, server_secret, "finished", "", Hmac.key_length);
-            self.client_finished_key = hkdfExpandLabel(Hkdf, client_secret, "finished", "", Hmac.key_length);
+            self.server_finished_key = hkdfExpandLabel(Hkdf, server_secret, "finished", "", hash_length);
+            self.client_finished_key = hkdfExpandLabel(Hkdf, client_secret, "finished", "", hash_length);
 
-            return .{ .client = &client_secret, .server = &server_secret };
+            self.buffer[0..hash_length].* = client_secret;
+            self.buffer[hash_length .. 2 * hash_length].* = server_secret;
+            return .{
+                .client = self.buffer[0..hash_length],
+                .server = self.buffer[hash_length .. 2 * hash_length],
+            };
         }
 
-        inline fn applicationSecret(self: *Self) Transcript.Secret {
+        fn applicationSecret(self: *Self) Transcript.Secret {
             const handshake_hash = self.hash.peek();
 
             const empty_hash = tls.emptyHash(Hash);
-            const zeroes = [1]u8{0} ** Hash.digest_length;
-            const ap_derived_secret = hkdfExpandLabel(Hkdf, self.handshake_secret.?, "derived", &empty_hash, Hash.digest_length);
+            const zeroes = [1]u8{0} ** hash_length;
+            const ap_derived_secret = hkdfExpandLabel(Hkdf, self.handshake_secret.?, "derived", &empty_hash, hash_length);
             const master_secret = Hkdf.extract(&ap_derived_secret, &zeroes);
 
-            const client_secret = hkdfExpandLabel(Hkdf, master_secret, "c ap traffic", &handshake_hash, Hash.digest_length);
-            const server_secret = hkdfExpandLabel(Hkdf, master_secret, "s ap traffic", &handshake_hash, Hash.digest_length);
-
-            return .{ .client = &client_secret, .server = &server_secret };
+            self.buffer[0..hash_length].* = hkdfExpandLabel(Hkdf, master_secret, "c ap traffic", &handshake_hash, hash_length);
+            self.buffer[hash_length .. 2 * hash_length].* = hkdfExpandLabel(Hkdf, master_secret, "s ap traffic", &handshake_hash, hash_length);
+            return .{
+                .client = self.buffer[0..hash_length],
+                .server = self.buffer[hash_length .. 2 * hash_length],
+            };
         }
 
-        inline fn resumptionSecret(self: *Self) []const u8 {
+        fn resumptionSecret(self: *Self) []const u8 {
             const handshake_hash = self.hash.peek();
-
             const empty_hash = tls.emptyHash(Hash);
-            const zeroes = [1]u8{0} ** Hash.digest_length;
-            const ap_derived_secret = hkdfExpandLabel(Hkdf, self.handshake_secret.?, "derived", &empty_hash, Hash.digest_length);
+            const zeroes = [1]u8{0} ** hash_length;
+            const ap_derived_secret = hkdfExpandLabel(Hkdf, self.handshake_secret.?, "derived", &empty_hash, hash_length);
             const master_secret = Hkdf.extract(&ap_derived_secret, &zeroes);
-
-            return &hkdfExpandLabel(Hkdf, master_secret, "res master", &handshake_hash, Hash.digest_length);
+            self.buffer[0..hash_length].* = hkdfExpandLabel(Hkdf, master_secret, "res master", &handshake_hash, hash_length);
+            return self.buffer[0..hash_length];
         }
 
         fn pskBinder(self: *Self) []const u8 {
             const secret = self.handshake_secret.?;
-            const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), Hash.digest_length);
-            const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", Hash.digest_length);
-            Hmac.create(&self.hmac_buffer, &self.hash.peek(), &expanded);
-            return &self.hmac_buffer;
+            const prk = hkdfExpandLabel(Hkdf, secret, "res binder", &tls.emptyHash(Hash), hash_length);
+            const expanded = hkdfExpandLabel(Hkdf, prk, "finished", "", hash_length);
+            Hmac.create(self.buffer[0..hash_length], &self.hash.peek(), &expanded);
+            return self.buffer[0..hash_length];
         }
 
         fn serverFinishedTls13(self: *Self) []const u8 {
-            Hmac.create(&self.hmac_buffer, &self.hash.peek(), &self.server_finished_key);
-            return &self.hmac_buffer;
+            Hmac.create(self.buffer[0..hash_length], &self.hash.peek(), &self.server_finished_key);
+            return self.buffer[0..hash_length];
         }
 
         // client finished message with header
         fn clientFinishedTls13(self: *Self) []const u8 {
-            Hmac.create(&self.hmac_buffer, &self.hash.peek(), &self.client_finished_key);
-            return &self.hmac_buffer;
+            Hmac.create(self.buffer[0..hash_length], &self.hash.peek(), &self.client_finished_key);
+            return self.buffer[0..hash_length];
         }
     };
 }

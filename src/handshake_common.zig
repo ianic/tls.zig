@@ -177,20 +177,12 @@ pub const CertificateBuilder = struct {
     }
 
     pub fn makeCertificateVerify(h: CertificateBuilder, w: *record.Writer) !void {
-        const signature, const signature_scheme = try h.createSignature();
-        try w.handshakeRecordHeader(.certificate_verify, signature.len + 4);
-        try w.enumValue(signature_scheme);
-        try w.int(u16, signature.len);
-        try w.slice(signature);
-    }
-
-    /// Creates signature for client certificate signature message.
-    /// Returns signature bytes and signature scheme.
-    inline fn createSignature(h: CertificateBuilder) !struct { []const u8, proto.SignatureScheme } {
-        switch (h.cert_key_pair.key.signature_scheme) {
+        // Creates signature for client certificate signature message.
+        // Returns signature bytes and signature scheme.
+        const signature, const signature_scheme = switch (h.cert_key_pair.key.signature_scheme) {
             inline .ecdsa_secp256r1_sha256,
             .ecdsa_secp384r1_sha384,
-            => |comptime_scheme| {
+            => |comptime_scheme| brk: {
                 const Ecdsa = SchemeEcdsa(comptime_scheme);
                 const key_pair = switch (comptime_scheme) {
                     .ecdsa_secp256r1_sha256 => h.cert_key_pair.ecdsa_key_pair.?.ecdsa_secp256r1_sha256,
@@ -201,21 +193,26 @@ pub const CertificateBuilder = struct {
                 h.setSignatureVerifyBytes(&signer);
                 const signature = try signer.finalize();
                 var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
-                return .{ signature.toDer(&buf), comptime_scheme };
+                break :brk .{ signature.toDer(&buf), comptime_scheme };
             },
             inline .rsa_pss_rsae_sha256,
             .rsa_pss_rsae_sha384,
             .rsa_pss_rsae_sha512,
-            => |comptime_scheme| {
+            => |comptime_scheme| brk: {
                 const Hash = SchemeHash(comptime_scheme);
                 var signer = try h.cert_key_pair.key.key.rsa.signerOaep(Hash, null);
                 h.setSignatureVerifyBytes(&signer);
                 var buf: [512]u8 = undefined;
                 const signature = try signer.finalize(&buf);
-                return .{ signature.bytes, comptime_scheme };
+                break :brk .{ signature.bytes, comptime_scheme };
             },
             else => return error.TlsUnknownSignatureScheme,
-        }
+        };
+
+        try w.handshakeRecordHeader(.certificate_verify, signature.len + 4);
+        try w.enumValue(signature_scheme);
+        try w.int(u16, signature.len);
+        try w.slice(signature);
     }
 
     fn setSignatureVerifyBytes(h: CertificateBuilder, signer: anytype) void {
@@ -247,7 +244,7 @@ fn SchemeEcdsa(comptime scheme: proto.SignatureScheme) type {
 
 pub const CertificateParser = struct {
     pub_key_algo: Certificate.Parsed.PubKeyAlgo = undefined,
-    pub_key_buf: [600]u8 = undefined,
+    pub_key_buf: [1038]u8 = undefined,
     pub_key: []const u8 = undefined,
 
     signature_scheme: proto.SignatureScheme = @enumFromInt(0),
@@ -297,7 +294,7 @@ pub const CertificateParser = struct {
                 if (!h.skip_verify and h.host.len > 0) {
                     try subject.verifyHostName(h.host);
                 }
-                h.pub_key = dupe(&h.pub_key_buf, subject.pubKey());
+                h.pub_key = try dupe(&h.pub_key_buf, subject.pubKey());
                 h.pub_key_algo = subject.pub_key_algo;
                 last_cert = subject;
             }
@@ -317,7 +314,7 @@ pub const CertificateParser = struct {
 
     pub fn parseCertificateVerify(h: *CertificateParser, d: *record.Decoder) !void {
         h.signature_scheme = try d.decode(proto.SignatureScheme);
-        h.signature = dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
+        h.signature = try dupe(&h.signature_buf, try d.slice(try d.decode(u16)));
     }
 
     pub fn verifySignature(h: *CertificateParser, verify_bytes: []const u8) !void {
@@ -398,8 +395,10 @@ fn SchemeHash(comptime scheme: proto.SignatureScheme) type {
     };
 }
 
-pub fn dupe(buf: []u8, data: []const u8) []u8 {
-    assert(buf.len >= data.len);
+pub fn dupe(buf: []u8, data: []const u8) ![]u8 {
+    if (buf.len < data.len) {
+        return error.BufferUndersize;
+    }
     @memcpy(buf[0..data.len], data);
     return buf[0..data.len];
 }
@@ -416,6 +415,11 @@ pub const DhKeyPair = struct {
     secp384r1_kp: EcdsaP384Sha384.KeyPair = undefined,
     ml_kem768: MLKem768.KeyPair = undefined,
 
+    secp256r1_pk_buf: [EcdsaP256Sha256.PublicKey.uncompressed_sec1_encoded_length]u8 = undefined, //65 bytes
+    secp384r1_pk_buf: [EcdsaP384Sha384.PublicKey.uncompressed_sec1_encoded_length]u8 = undefined, //97
+    ml_kem768_pk_buf: [MLKem768.PublicKey.bytes_length + X25519.public_length]u8 = undefined, // 1216
+    shared_key_buf: [64]u8 = undefined,
+
     pub const seed_len = 32 + 32 + 48 + 64 + 64;
 
     pub fn init(seed: [seed_len]u8, named_groups: []const proto.NamedGroup) !DhKeyPair {
@@ -431,27 +435,31 @@ pub const DhKeyPair = struct {
         return kp;
     }
 
-    pub inline fn sharedKey(self: DhKeyPair, named_group: proto.NamedGroup, server_pub_key: []const u8) ![]const u8 {
+    // x25519: 32,  secp256r1: 32, secp384r1: 48, x25519_ml_kem768: 64
+    pub fn sharedKey(self: *DhKeyPair, named_group: proto.NamedGroup, server_pub_key: []const u8) ![]const u8 {
         return switch (named_group) {
-            .x25519 => brk: {
+            .x25519 => {
                 if (server_pub_key.len != X25519.public_length)
                     return error.TlsIllegalParameter;
-                break :brk &(try X25519.scalarmult(
+                self.shared_key_buf[0..32].* = try X25519.scalarmult(
                     self.x25519_kp.secret_key,
                     server_pub_key[0..X25519.public_length].*,
-                ));
+                );
+                return self.shared_key_buf[0..32];
             },
-            .secp256r1 => brk: {
+            .secp256r1 => {
                 const pk = try EcdsaP256Sha256.PublicKey.fromSec1(server_pub_key);
                 const mul = try pk.p.mulPublic(self.secp256r1_kp.secret_key.bytes, .big);
-                break :brk &mul.affineCoordinates().x.toBytes(.big);
+                self.shared_key_buf[0..32].* = mul.affineCoordinates().x.toBytes(.big);
+                return self.shared_key_buf[0..32];
             },
-            .secp384r1 => brk: {
+            .secp384r1 => {
                 const pk = try EcdsaP384Sha384.PublicKey.fromSec1(server_pub_key);
                 const mul = try pk.p.mulPublic(self.secp384r1_kp.secret_key.bytes, .big);
-                break :brk &mul.affineCoordinates().x.toBytes(.big);
+                self.shared_key_buf[0..48].* = mul.affineCoordinates().x.toBytes(.big);
+                return self.shared_key_buf[0..48];
             },
-            .x25519_ml_kem768 => brk: {
+            .x25519_ml_kem768 => {
                 const hksl = crypto.kem.ml_kem.MLKem768.ciphertext_length;
                 const xksl = hksl + crypto.dh.X25519.public_length;
                 if (server_pub_key.len != xksl) return error.TlsIllegalParameter;
@@ -460,19 +468,29 @@ pub const DhKeyPair = struct {
                     return error.TlsDecryptFailure;
                 const xsk = crypto.dh.X25519.scalarmult(self.x25519_kp.secret_key, server_pub_key[hksl..xksl].*) catch
                     return error.TlsDecryptFailure;
-                break :brk &(hsk ++ xsk);
+                self.shared_key_buf = (hsk ++ xsk);
+                return &self.shared_key_buf;
             },
             else => return error.TlsIllegalParameter,
         };
     }
 
     // Returns 32, 65, 97 or 1216 bytes ml_kem
-    pub inline fn publicKey(self: DhKeyPair, named_group: proto.NamedGroup) ![]const u8 {
+    pub fn publicKey(self: *DhKeyPair, named_group: proto.NamedGroup) ![]const u8 {
         return switch (named_group) {
             .x25519 => &self.x25519_kp.public_key,
-            .secp256r1 => &self.secp256r1_kp.public_key.toUncompressedSec1(),
-            .secp384r1 => &self.secp384r1_kp.public_key.toUncompressedSec1(),
-            .x25519_ml_kem768 => &self.ml_kem768.public_key.toBytes() ++ self.x25519_kp.public_key,
+            .secp256r1 => {
+                self.secp256r1_pk_buf = self.secp256r1_kp.public_key.toUncompressedSec1();
+                return &self.secp256r1_pk_buf;
+            },
+            .secp384r1 => {
+                self.secp384r1_pk_buf = self.secp384r1_kp.public_key.toUncompressedSec1();
+                return &self.secp384r1_pk_buf;
+            },
+            .x25519_ml_kem768 => {
+                self.ml_kem768_pk_buf = self.ml_kem768.public_key.toBytes() ++ self.x25519_kp.public_key;
+                return &self.ml_kem768_pk_buf;
+            },
             else => return error.TlsIllegalParameter,
         };
     }
@@ -489,6 +507,6 @@ test "DhKeyPair.x25519" {
         \\ F1 67 FB 4A 49 B2 91 77  08 29 45 A1 F7 08 5A 21
         \\ AF FE 9E 78 C2 03 9B 81  92 40 72 73 74 7A 46 1E
     );
-    const kp = try DhKeyPair.init(seed, &.{.x25519});
+    var kp = try DhKeyPair.init(seed, &.{.x25519});
     try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
 }

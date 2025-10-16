@@ -393,14 +393,9 @@ pub const Handshake = struct {
         else
             &h.rsa_secret.secret;
 
-        _ = common.dupeMin(
-            &h.master_secret,
-            h.transcript.masterSecret(pre_master_secret, h.client_random, h.server_random),
-        );
-        _ = common.dupeMin(
-            &h.key_material,
-            h.transcript.keyMaterial(&h.master_secret, h.client_random, h.server_random),
-        );
+        h.transcript.masterSecret(&h.master_secret, pre_master_secret, h.client_random, h.server_random);
+        h.transcript.keyMaterial(&h.key_material, &h.master_secret, h.client_random, h.server_random);
+
         if (key_log_callback) |cb| {
             cb(key_log.label.client_random, &h.client_random, &h.master_secret);
         }
@@ -594,7 +589,7 @@ pub const Handshake = struct {
                     },
                     .key_share => {
                         h.named_group = try d.decode(proto.NamedGroup);
-                        h.server_pub_key = common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
+                        h.server_pub_key = try common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
                         if (len != h.server_pub_key.len + 4) return error.TlsIllegalParameter;
                     },
                     .pre_shared_key => {
@@ -620,9 +615,9 @@ pub const Handshake = struct {
     fn parseServerKeyExchange(h: *Self, d: *record.Decoder) !void {
         const curve_type = try d.decode(proto.Curve);
         h.named_group = try d.decode(proto.NamedGroup);
-        h.server_pub_key = common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
+        h.server_pub_key = try common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u8)));
         h.cert.signature_scheme = try d.decode(proto.SignatureScheme);
-        h.cert.signature = common.dupe(&h.cert.signature_buf, try d.slice(try d.decode(u16)));
+        h.cert.signature = try common.dupe(&h.cert.signature_buf, try d.slice(try d.decode(u16)));
         if (curve_type != .named_curve) return error.TlsIllegalParameter;
     }
 
@@ -766,7 +761,8 @@ pub const Handshake = struct {
                 try hw.int(u8, key.len);
                 try hw.slice(key);
             } else {
-                const key = try h.rsa_secret.encrypted(h.cert.pub_key_algo, h.cert.pub_key);
+                var key_buf: [512]u8 = undefined;
+                const key = try h.rsa_secret.encrypted(&key_buf, h.cert.pub_key_algo, h.cert.pub_key);
                 try hw.handshakeRecordHeader(.client_key_exchange, 2 + key.len);
                 try hw.int(u16, key.len);
                 try hw.slice(key);
@@ -905,15 +901,15 @@ const RsaSecret = struct {
     }
 
     // Pre master secret encrypted with certificate public key.
-    inline fn encrypted(
+    fn encrypted(
         self: RsaSecret,
+        out: *[512]u8,
         cert_pub_key_algo: Certificate.Parsed.PubKeyAlgo,
         cert_pub_key: []const u8,
     ) ![]const u8 {
         if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
         const pk = try rsa.PublicKey.fromDer(cert_pub_key);
-        var out: [512]u8 = undefined;
-        return try pk.encryptPkcsv1_5(&self.secret, &out);
+        return try pk.encryptPkcsv1_5(&self.secret, out);
     }
 };
 
@@ -1053,15 +1049,13 @@ test "tls 1.3 decrypt wrapped record" {
     }
 }
 
-inline fn testHandshake(reader_buffer: []const u8) Handshake {
-    var buffer: [1024]u8 = undefined;
-    var writer: Io.Writer = .fixed(&buffer);
-    var reader: Io.Reader = .fixed(reader_buffer);
-    return .{ .input = &reader, .output = &writer };
-}
-
 test "tls 1.3 process server flight" {
-    var h = testHandshake(&data13.server_flight);
+    var h: Handshake = brk: {
+        var buffer: [1024]u8 = undefined;
+        var writer: Io.Writer = .fixed(&buffer);
+        var reader: Io.Reader = .fixed(&data13.server_flight);
+        break :brk .{ .input = &reader, .output = &writer };
+    };
     try initExampleHandshake(&h);
 
     h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{} };
@@ -1156,7 +1150,13 @@ test "client hello size" {
 }
 
 test "handshake verify server finished message" {
-    var h = testHandshake(&data12.server_handshake_finished_msgs);
+    var h: Handshake = brk: {
+        var buffer: [1024]u8 = undefined;
+        var writer: Io.Writer = .fixed(&buffer);
+        var reader: Io.Reader = .fixed(&data12.server_handshake_finished_msgs);
+        break :brk .{ .input = &reader, .output = &writer };
+    };
+
     h.cipher_suite = .ECDHE_ECDSA_WITH_AES_128_CBC_SHA;
     h.master_secret = data12.master_secret;
 
