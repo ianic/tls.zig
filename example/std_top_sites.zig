@@ -3,6 +3,7 @@ const tls = @import("tls");
 const http = std.http;
 
 const cmn = @import("common.zig");
+const curl = @import("top_sites.zig").curl;
 const log = std.log.scoped(.main);
 
 pub fn main() !void {
@@ -14,7 +15,7 @@ pub fn main() !void {
 
     var counter: cmn.Counter = .{};
 
-    // var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
+    //var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     var rdr = cmn.CsvReader.init(@embedFile("domains"));
     while (rdr.next()) |domain| {
         if (domain.len == 0) continue;
@@ -33,20 +34,26 @@ pub fn main() !void {
 const header_buffer_size = 16 * 1024;
 
 fn run(allocator: std.mem.Allocator, domain: []const u8, counter: *cmn.Counter) void {
+    //std.debug.print("-> {s:<25}\n", .{domain});
     get(allocator, domain) catch |err| {
         switch (err) {
             error.TlsInitializationFailed => {
-                std.debug.print("❌ {s}\n", .{domain});
+                curl(allocator, domain) catch |curl_err| {
+                    std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
+                    counter.add(.err);
+                    return;
+                };
+                std.debug.print("❌ {s:<25}\n", .{domain});
                 counter.add(.fail);
             },
             else => {
-                std.debug.print("➖ {s} {}\n", .{ domain, err });
+                std.debug.print("➖ {s:<25} {}\n", .{ domain, err });
                 counter.add(.err);
             },
         }
         return;
     };
-    std.debug.print("✔️ {s}\n", .{domain});
+    //std.debug.print("✔️ {s}\n", .{domain});
     counter.add(.success);
 }
 
@@ -57,18 +64,10 @@ pub fn get(allocator: std.mem.Allocator, domain: []const u8) !void {
 
     var url_buffer: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buffer, "https://{s}", .{domain});
-    const uri = try std.Uri.parse(url);
 
-    const conn = try client.connectTcp(uri.host.?.percent_encoded, 443, .tls);
-
-    var server_header_buffer: [header_buffer_size]u8 = undefined;
-    var req = try client.open(.GET, uri, .{
-        .server_header_buffer = &server_header_buffer,
-        .keep_alive = false,
+    _ = try client.fetch(.{
         .redirect_behavior = .unhandled,
-        .connection = conn,
+        .location = .{ .url = url },
+        .keep_alive = false,
     });
-    defer req.deinit();
-    try req.send();
-    try req.wait();
 }

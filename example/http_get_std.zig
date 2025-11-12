@@ -25,12 +25,24 @@ pub fn main() !void {
             break :brk try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
         };
 
-        const uri = try std.Uri.parse(url);
-        var server_header_buffer: [16 * 1024]u8 = undefined;
-        var req = try client.open(.GET, uri, .{ .server_header_buffer = &server_header_buffer });
-        defer req.deinit();
-
-        try req.send();
-        try req.wait();
+        const result = try client.fetch(.{
+            .redirect_behavior = .unhandled,
+            .location = .{ .url = url },
+            .keep_alive = false,
+        });
+        std.debug.print("uri: {s} status: {s}\n", .{ url, @tagName(result.status) });
     }
+}
+
+test "case" {
+    //const url = "https://y.at";
+    const url = "https://www.gov.br";
+    var client: std.http.Client = .{ .allocator = std.testing.allocator };
+    defer client.deinit();
+
+    _ = try client.fetch(.{
+        .location = .{ .url = url },
+        //.redirect_behavior = .unhandled,
+        //.keep_alive = false,
+    });
 }

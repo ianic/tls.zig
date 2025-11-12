@@ -90,7 +90,7 @@ pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config
     }
 }
 
-fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
+pub fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     var url_buf: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
 

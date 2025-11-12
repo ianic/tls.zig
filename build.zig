@@ -10,12 +10,12 @@ pub fn build(b: *std.Build) void {
 
     const examples = [_][]const u8{
         "http_get",
-        //"http_get_std",
+        "http_get_std",
         //"client",
         "server",
         "top_sites",
         "badssl",
-        //"std_top_sites",
+        "std_top_sites",
         "all_ciphers",
         "client_auth",
         //"client_std",

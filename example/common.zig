@@ -99,6 +99,26 @@ pub const domainsToSkip = [_][]const u8{
     "tagcommander.com", //          error.ConnectionTimedOut
     "lastline.come", //
     "list-manage.com", //           error.ConnectionTimedOut
+
+    // this one fails in std with assert
+    "y.at",
+    "tmz.com",
+    "dreamstime.com",
+    // thread 1158024 panic: reached unreachable code
+    // /home/ianic/.build/zig/zig-x86_64-linux-0.16.0-dev.731+958faa703/lib/std/debug.zig:406:14: 0x10545a9 in assert (std.zig)
+    //     if (!ok) unreachable; // assertion failure
+    //              ^
+    // /home/ianic/.build/zig/zig-x86_64-linux-0.16.0-dev.731+958faa703/lib/std/Io/Reader.zig:199:11: 0x105766b in defaultDiscard (std.zig)
+    //     assert(r.seek == r.end);
+    //           ^
+    // /home/ianic/.build/zig/zig-x86_64-linux-0.16.0-dev.731+958faa703/lib/std/Io/Reader.zig:270:35: 0x1183f18 in discardRemaining (std.zig)
+    //         offset += r.vtable.discard(r, .unlimited) catch |err| switch (err) {
+    //                                   ^
+    // /home/ianic/.build/zig/zig-x86_64-linux-0.16.0-dev.731+958faa703/lib/std/http/Client.zig:1809:36: 0x1178596 in fetch (std.zig)
+    //         _ = reader.discardRemaining() catch |err| switch (err) {
+    //                                    ^
+    // /home/ianic/Code/tls.zig/example/std_top_sites.zig:62:36: 0x1170f02 in get (std_top_sites.zig)
+    //     const result = try client.fetch(.{
 };
 
 pub const domainsWithErrors = [_][]const u8{
