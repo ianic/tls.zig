@@ -2,7 +2,7 @@ name: test
 
 on:
   push:
-    branches: [ "main", "ci" ]
+    branches: [ "main", "zig-0.15.x" ]
   pull_request:
 
 jobs:
@@ -12,8 +12,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: mlugg/setup-zig@v2
-        with:
-          version: master
 
       - run: zig build
       - run: zig build test --summary all
