@@ -53,7 +53,7 @@ fn runServer(port: u16, opt: tls.config.Server) !void {
             }
             if (@errorReturnTrace()) |trace| {
                 std.debug.print("\n{}\n", .{err});
-                std.debug.dumpStackTrace(trace);
+                std.debug.dumpStackTrace(trace.*);
             }
             continue;
         };
@@ -87,7 +87,7 @@ fn runEchoServer(port: u16, opt: tls.config.Server) !void {
             std.debug.print("e", .{});
             if (@errorReturnTrace()) |trace| {
                 std.debug.print("\n{}\n", .{err});
-                std.debug.dumpStackTrace(trace);
+                std.debug.dumpStackTrace(trace.*);
             }
             continue;
         };
