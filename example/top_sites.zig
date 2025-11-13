@@ -5,45 +5,62 @@ const Io = std.Io;
 const cmn = @import("common.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    var debug_allocator = std.heap.DebugAllocator(.{}){};
+    const gpa = debug_allocator.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(gpa);
     defer threaded.deinit();
     const io = threaded.io();
 
-    var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = allocator, .n_jobs = 16 });
-
-    var root_ca = try tls.config.cert.fromSystem(allocator, io);
-    defer root_ca.deinit(allocator);
-
-    var counter: cmn.Counter = .{};
+    var root_ca = try tls.config.cert.fromSystem(gpa, io);
+    defer root_ca.deinit(gpa);
 
     // Some other sources of domains list:
     // source: https://moz.com/top500
-    //var rdr = cmn.CsvReader.init(@embedFile("domains_with_big_tls_records_in_handshake"));
+    // var rdr = cmn.CsvReader.init(@embedFile("domains_with_big_tls_records_in_handshake"));
     var rdr = cmn.CsvReader.init(@embedFile("moz_top500.csv"));
     // source: https://dataforseo.com/free-seo-stats/top-1000-websites
     // var rdr = cmn.CsvReader.init(@embedFile("ranked_domains.csv"));
     // source: https://radar.cloudflare.com/domains
     // var rdr = cmn.CsvReader.init(@embedFile("cloudflare-radar_top-10000-domains_20241209-20241216.csv"));
     // var rdr = cmn.CsvReader.init(@embedFile("domains"));
+
+    var group: Io.Group = .init;
+    var tasks: usize = 0;
+    var counter: cmn.Counter = .{};
     while (rdr.next()) |domain| {
-        if (cmn.skipDomain(domain)) {
-            std.debug.print("➰ {s:<25} SKIP\n", .{domain});
-            counter.add(.skip);
-            continue;
-        }
         if (domain.len == 0) continue;
-        try pool.spawn(run, .{ allocator, io, domain, root_ca, &counter });
+        tasks += 1;
+        // if (cmn.skipDomain(domain)) {
+        //     std.debug.print("➰ {s:<25} SKIP\n", .{domain});
+        //     counter.add(.skip);
+        //     continue;
+        // }
+        group.async(io, run, .{ gpa, io, domain, root_ca, &counter });
     }
-    pool.deinit();
+
+    var elapsed: usize = 0;
+    const max_sec: usize = tasks / 10;
+    while (counter.total() < tasks) {
+        try io.sleep(.fromSeconds(1), .real);
+        elapsed += 1;
+        if (elapsed > max_sec) {
+            group.cancel(io);
+            break;
+        }
+    }
+    group.wait(io);
+
     counter.show();
     if (counter.failRate() > 0.01) std.posix.exit(1);
 }
 
-pub fn run(allocator: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) void {
+fn cancelGroup(io: Io, group: *Io.Group) !void {
+    try io.sleep(.fromSeconds(1), .real);
+    group.cancel(io);
+}
+
+pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) void {
     var diagnostic: tls.config.Client.Diagnostic = .{};
     var opt: tls.config.Client = .{
         .host = "",
@@ -54,19 +71,33 @@ pub fn run(allocator: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tl
     if (cmn.inList(domain, &cmn.no_keyber)) {
         opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };
     }
-    // std.debug.print("{s:<25}", .{domain});
     const only_fail = false;
     cmn.get(io, domain, null, false, false, opt) catch |err| {
         switch (err) {
-            error.UnknownHostName, error.ConnectionTimedOut, error.ConnectionRefused, error.NetworkUnreachable => {
+            error.UnknownHostName,
+            error.ConnectionTimedOut,
+            error.ConnectionRefused,
+            error.NetworkUnreachable,
+            => {
                 counter.add(.err);
                 if (!only_fail) {
                     std.debug.print("➖ {s:<25} {}\n", .{ domain, err });
                 }
                 return;
             },
+            // canceled errors
+            error.Canceled,
+            error.ReadFailed,
+            error.WriteFailed,
+            => {
+                counter.add(.skip);
+                if (!only_fail) {
+                    std.debug.print("➰ {s:<25} {s}\n", .{ domain, @errorName(err) });
+                }
+                return;
+            },
             else => {
-                curl(allocator, domain) catch |curl_err| {
+                curl(gpa, domain) catch |curl_err| {
                     if (!only_fail) {
                         std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
                     }

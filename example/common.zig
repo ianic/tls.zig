@@ -198,11 +198,13 @@ pub const Counter = struct {
         }
     }
 
-    pub fn total(self: @This()) usize {
+    pub fn total(self: *@This()) usize {
+        self.mu.lock();
+        defer self.mu.unlock();
         return self.success + self.fail + self.skip + self.err;
     }
 
-    pub fn show(self: @This()) void {
+    pub fn show(self: *@This()) void {
         std.debug.print(
             "stats:\n\t total: {}\n\t success: {}\n\t\t tls 1.2: {}\n\t\t tls 1.3: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n\n",
             .{ self.total(), self.success, self.tls_1_2, self.tls_1_3, self.fail, self.err, self.skip },
@@ -251,16 +253,10 @@ pub fn get(
     // Establish tcp connection
     var tcp = try host_name.connect(io, if (port) |p| p else 443, .{
         .mode = .stream,
-        // TODO: imeout is not implemented
-        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(10), .clock = .real } },
+        // TODO: timeout is not implemented in the std lib
+        // .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(10), .clock = .real } },
     });
     defer tcp.close(io);
-
-    // // Set socket timeout
-    // const read_timeout: std.posix.timeval = .{ .sec = 10, .usec = 0 };
-    // const fd = tcp.socket.handle;
-    // try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
-    // try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     // Prepare and show handshake stats
     if (show_handshake_stat and opt.diagnostic == null) {
