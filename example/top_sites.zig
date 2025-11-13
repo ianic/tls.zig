@@ -1,16 +1,21 @@
 const std = @import("std");
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
+const Io = std.Io;
 const cmn = @import("common.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = allocator, .n_jobs = 128 });
+    var threaded: std.Io.Threaded = .init(allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    var root_ca = try tls.config.cert.fromSystem(allocator);
+    var pool: std.Thread.Pool = undefined;
+    try pool.init(.{ .allocator = allocator, .n_jobs = 16 });
+
+    var root_ca = try tls.config.cert.fromSystem(allocator, io);
     defer root_ca.deinit(allocator);
 
     var counter: cmn.Counter = .{};
@@ -31,25 +36,27 @@ pub fn main() !void {
             continue;
         }
         if (domain.len == 0) continue;
-        try pool.spawn(run, .{ allocator, domain, root_ca, &counter });
+        try pool.spawn(run, .{ allocator, io, domain, root_ca, &counter });
     }
     pool.deinit();
     counter.show();
     if (counter.failRate() > 0.01) std.posix.exit(1);
 }
 
-pub fn run(allocator: std.mem.Allocator, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) void {
+pub fn run(allocator: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) void {
     var diagnostic: tls.config.Client.Diagnostic = .{};
     var opt: tls.config.Client = .{
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
+        .now = std.Io.Clock.real.now(io) catch unreachable,
     };
     if (cmn.inList(domain, &cmn.no_keyber)) {
         opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };
     }
+    // std.debug.print("{s:<25}", .{domain});
     const only_fail = false;
-    cmn.get(allocator, domain, null, false, false, opt) catch |err| {
+    cmn.get(io, domain, null, false, false, opt) catch |err| {
         switch (err) {
             error.UnknownHostName, error.ConnectionTimedOut, error.ConnectionRefused, error.NetworkUnreachable => {
                 counter.add(.err);

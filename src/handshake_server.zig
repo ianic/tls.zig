@@ -37,6 +37,8 @@ pub const Options = struct {
 
     /// List of supported tls 1.3 cipher suites
     cipher_suites: []const CipherSuite = cipher_suites.tls13,
+
+    now: Io.Timestamp,
 };
 
 pub const ClientAuth = struct {
@@ -216,7 +218,11 @@ pub const Handshake = struct {
         var handshake_state: proto.Handshake = .finished;
         var crt_parser: CertificateParser = undefined;
         if (opt.client_auth) |client_auth| {
-            crt_parser = .{ .root_ca = client_auth.root_ca, .host = "" };
+            crt_parser = .{
+                .root_ca = client_auth.root_ca,
+                .host = "",
+                .now_sec = opt.now.toSeconds(),
+            };
             handshake_state = .certificate;
         }
 

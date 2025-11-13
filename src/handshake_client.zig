@@ -28,6 +28,8 @@ const cert = common.cert;
 const log = std.log.scoped(.tls);
 
 pub const Options = struct {
+    now: Io.Timestamp,
+
     host: []const u8,
     /// Set of root certificate authorities that clients use when verifying
     /// server certificates.
@@ -98,7 +100,7 @@ pub const Options = struct {
             // pointer to the externaly allocated secret
             secret: []const u8,
 
-            pub fn init(payload: []const u8, secret: []const u8) !Ticket {
+            pub fn init(payload: []const u8, secret: []const u8, now: Io.Timestamp) !Ticket {
                 var d = record.Decoder.init(.handshake, payload);
                 const handshake_type: proto.Handshake = @enumFromInt(try d.decode(u8));
                 if (handshake_type != proto.Handshake.new_session_ticket) return error.InvalidType;
@@ -112,26 +114,31 @@ pub const Options = struct {
                     .identity = try d.slice(try d.decode(u16)),
                     .payload = payload,
                     .secret = secret,
-                    .created_at = std.time.milliTimestamp(),
+                    .created_at = @intCast(@divTrunc(now.nanoseconds, std.time.ns_per_ms)),
                 };
             }
 
             /// Obfuscated age for pre shared extension in client hello message when
             /// using this ticket.
-            pub fn obfuscatedAge(t: Ticket) u32 {
-                const age: u32 = @intCast(std.time.milliTimestamp() - t.created_at);
+            pub fn obfuscatedAge(t: Ticket, now: Io.Timestamp) u32 {
+                const now_ms: i64 = @intCast(@divTrunc(now.nanoseconds, std.time.ns_per_ms));
+                const age: u32 = @intCast(now_ms - t.created_at);
                 return t.age_add +% age;
             }
         };
 
         allocator: std.mem.Allocator,
+        now: Io.Timestamp,
         hash_tag: CipherSuite.HashTag = .sha256,
         tickets: std.ArrayListUnmanaged(Ticket) = .empty,
         secrets: std.ArrayListUnmanaged([]const u8) = .empty,
         used_tickets: usize = 0,
 
-        pub fn init(allocator: mem.Allocator) Self {
-            return .{ .allocator = allocator };
+        pub fn init(allocator: mem.Allocator, now: Io.Timestamp) Self {
+            return .{
+                .allocator = allocator,
+                .now = now,
+            };
         }
 
         /// Set resumption master secret (known at then end of the handshake) to
@@ -152,7 +159,7 @@ pub const Options = struct {
             try self.tickets.ensureUnusedCapacity(self.allocator, 1);
             const payload = try self.allocator.dupe(u8, data);
             errdefer self.allocator.free(payload);
-            const ticket = try Ticket.init(payload, self.secrets.items[secret_idx]);
+            const ticket = try Ticket.init(payload, self.secrets.items[secret_idx], self.now);
             self.tickets.appendAssumeCapacity(ticket);
         }
 
@@ -242,6 +249,7 @@ pub const Handshake = struct {
             .host = opt.host,
             .root_ca = opt.root_ca,
             .skip_verify = opt.insecure_skip_verify,
+            .now_sec = opt.now.toSeconds(),
         };
     }
 
@@ -461,7 +469,7 @@ pub const Handshake = struct {
         const binder_pos: ?usize = if (resumption_ticket) |ticket| brk: {
             // Add pre shared key extension if this is session resumption. Must be last extension.
             try w.extension(.psk_key_exchange_modes, &[_]proto.KeyExchangeModes{.psk_dhe_ke});
-            try w.preSharedKey(ticket.identity, ticket.obfuscatedAge(), psk_binder_len);
+            try w.preSharedKey(ticket.identity, ticket.obfuscatedAge(opt.now), psk_binder_len);
             // Retruns placeholder for binder, we can write binder when we have
             // hash up to thise point with valid extnsions length and
             // record header written.
@@ -934,7 +942,7 @@ test "parse tls 1.2 server hello" {
     // Read cipher suite, named group, signature scheme, server random certificate public key
     // Verify host name, signature
     // Calculate key material
-    h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{} };
+    h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{}, .now_sec = 0 };
     try h.readServerFlight1();
     try testing.expectEqual(.ECDHE_RSA_WITH_AES_128_CBC_SHA, h.cipher_suite);
     try testing.expectEqual(.x25519, h.named_group.?);
@@ -960,8 +968,12 @@ test "verify google.com certificate" {
         .client_random = @embedFile("testdata/google.com/client_random").*,
     };
 
+    var threaded: std.Io.Threaded = .init(testing.allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     var ca_bundle: Certificate.Bundle = .{};
-    try ca_bundle.rescan(testing.allocator);
+    try ca_bundle.rescan(testing.allocator, io, try std.Io.Clock.real.now(io));
     defer ca_bundle.deinit(testing.allocator);
 
     h.cert = .{ .host = "google.com", .skip_verify = true, .root_ca = .{}, .now_sec = 1714846451 };
@@ -1058,7 +1070,7 @@ test "tls 1.3 process server flight" {
     };
     try initExampleHandshake(&h);
 
-    h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{} };
+    h.cert = .{ .host = "example.ulfheim.net", .skip_verify = true, .root_ca = .{}, .now_sec = 0 };
     try h.readEncryptedServerFlight1(false);
 
     { // application cipher keys calculation
@@ -1121,6 +1133,7 @@ test "create client hello" {
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
         .named_groups = &[_]proto.NamedGroup{ .x25519, .secp256r1, .secp384r1 },
+        .now = .zero,
     }, null);
 
     const actual = h.output.buffered();
@@ -1134,6 +1147,7 @@ test "client hello size" {
         .host = "some-host-name.net",
         .root_ca = .{},
         .cipher_suites = cipher_suites.all,
+        .now = .zero,
         //.named_groups = supported_named_groups,
     };
 
@@ -1311,6 +1325,7 @@ test "nonblock handshake" {
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.AES_256_GCM_SHA384},
         .named_groups = &[_]proto.NamedGroup{.x25519},
+        .now = .zero,
     });
     { // update secrets to well known from example
         h.inner.client_random = data13.client_random;

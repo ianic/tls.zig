@@ -5,13 +5,18 @@ const Certificate = std.crypto.Certificate;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+
+    var threaded: std.Io.Threaded = .init(allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     const file_name = if (args.len > 1) args[1] else "example/cert/pg2600.txt";
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir.adaptToNewApi(), "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
     // try auth.bundle.addCertsFromFilePath(allocator, dir, "minica.pem");
 
@@ -21,8 +26,9 @@ pub fn main() !void {
 
     // Tcp listener
     const port = 9443;
-    const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
-    var server = try address.listen(.{
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+    var server = try address.listen(io, .{
+        .mode = .stream,
         .reuse_address = true,
     });
 
@@ -32,17 +38,17 @@ pub fn main() !void {
     var buf: [32 * 1024]u8 = undefined;
     while (true) {
         // Tcp accept
-        const tcp = try server.accept();
-        // std.debug.print("accepted {}\n", .{tcp.address});
-        defer tcp.stream.close();
+        const stream = try server.accept(io);
+        defer stream.close(io);
 
         // Upgrade tcp to tls
-        var conn = tls.serverFromStream(tcp.stream, .{
+        var conn = tls.serverFromStream(io, stream, .{
             // .client_auth = .{
             //     .auth_type = .request,
             //     .root_ca = client_root_ca,
             // },
             .auth = &auth,
+            .now = try std.Io.Clock.real.now(io),
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             continue;

@@ -7,23 +7,26 @@ pub fn main() !void {
     defer _ = dbga.deinit();
     const allocator = dbga.allocator();
 
-    var url: []const u8 = "https://ziglang.org";
+    var threaded: std.Io.Threaded = .init(allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
+    const now = try std.Io.Clock.real.now(io);
 
     // Get url from args
+    var url: []const u8 = "https://ziglang.org";
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     if (args.len > 1) url = args[1];
-
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
     const port = 443;
 
     // Load system root certificates
-    var root_ca = try tls.config.cert.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator, io);
     defer root_ca.deinit(allocator);
 
     // Prepare config with session resumption collector
-    var session_resumption: tls.config.Client.SessionResumption = .init(allocator);
+    var session_resumption: tls.config.Client.SessionResumption = .init(allocator, now);
     defer session_resumption.deinit();
     var diagnostic: tls.config.Client.Diagnostic = .{};
     const config: tls.config.Client = .{
@@ -32,17 +35,19 @@ pub fn main() !void {
         .session_resumption = &session_resumption,
         .key_log_callback = tls.config.key_log.callback,
         .diagnostic = &diagnostic,
+        .now = now,
     };
 
     // Make multiple connections. After the first one other should use session
     // resumption if supported by server.
     for (0..4) |_| {
         // Establish tcp connection
-        var tcp = try std.net.tcpConnectToHost(allocator, host, port);
-        defer tcp.close();
+        const host_name = try std.Io.net.HostName.init(host);
+        const tcp = try host_name.connect(io, port, .{ .mode = .stream });
+        defer tcp.close(io);
 
         // Upgrade tcp connection to tls
-        var conn = try tls.clientFromStream(tcp, config);
+        var conn = try tls.clientFromStream(io, tcp, config);
 
         // Send http GET request
         var buf: [64]u8 = undefined;

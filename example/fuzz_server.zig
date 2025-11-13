@@ -1,38 +1,52 @@
 const std = @import("std");
 const tls = @import("tls");
+const Io = std.Io;
 const Certificate = std.crypto.Certificate;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    var threaded: std.Io.Threaded = .init(allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir.adaptToNewApi(), "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer rsa_auth.deinit(allocator);
 
-    var ec_auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var ec_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir.adaptToNewApi(), "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer ec_auth.deinit(allocator);
 
     // ca to check client certificate
-    var client_root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
+    var client_root_ca = try tls.config.cert.fromFilePath(allocator, io, dir.adaptToNewApi(), "minica.pem");
     defer client_root_ca.deinit(allocator);
 
-    const opt1: tls.config.Server = .{ .auth = &rsa_auth };
+    const now = try std.Io.Clock.real.now(io);
+
+    const opt1: tls.config.Server = .{
+        .auth = &rsa_auth,
+        .now = now,
+    };
     const opt2: tls.config.Server = .{
         .client_auth = .{
             .auth_type = .request,
             .root_ca = client_root_ca,
         },
         .auth = &rsa_auth,
+        .now = now,
     };
-    const opt4: tls.config.Server = .{ .auth = &ec_auth };
+    const opt4: tls.config.Server = .{
+        .auth = &ec_auth,
+        .now = now,
+    };
 
-    const s1 = try std.Thread.spawn(.{}, runServer, .{ 4433, opt1 });
-    const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ 4435, opt1 });
+    const s1 = try std.Thread.spawn(.{}, runServer, .{ io, 4433, opt1 });
+    const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ io, 4435, opt1 });
 
-    const s2 = try std.Thread.spawn(.{}, runServer, .{ 4434, opt2 });
-    const s4 = try std.Thread.spawn(.{}, runServer, .{ 4436, opt4 });
+    const s2 = try std.Thread.spawn(.{}, runServer, .{ io, 4434, opt2 });
+    const s4 = try std.Thread.spawn(.{}, runServer, .{ io, 4436, opt4 });
 
     s1.join();
     s2.join();
@@ -40,12 +54,12 @@ pub fn main() !void {
     s4.join();
 }
 
-fn runServer(port: u16, opt: tls.config.Server) !void {
-    const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
-    var server = try address.listen(.{ .reuse_address = true });
+fn runServer(io: Io, port: u16, opt: tls.config.Server) !void {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+    var server = try address.listen(io, .{ .reuse_address = true, .mode = .stream });
 
     while (true) {
-        acceptUpgrade(&server, opt) catch |err| {
+        acceptUpgrade(io, &server, opt) catch |err| {
             if (err == error.TlsAlertCloseNotify) {
                 std.debug.print("c", .{});
             } else {
@@ -61,11 +75,11 @@ fn runServer(port: u16, opt: tls.config.Server) !void {
     }
 }
 
-fn acceptUpgrade(server: *std.net.Server, opt: tls.config.Server) !void {
-    const tcp = try server.accept();
-    defer tcp.stream.close();
+fn acceptUpgrade(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void {
+    const stream = try server.accept(io);
+    defer stream.close(io);
 
-    var conn = try tls.serverFromStream(tcp.stream, opt);
+    var conn = try tls.serverFromStream(io, stream, opt);
     while (try conn.next()) |buf| {
         //std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
@@ -78,12 +92,12 @@ fn acceptUpgrade(server: *std.net.Server, opt: tls.config.Server) !void {
     try conn.close();
 }
 
-fn runEchoServer(port: u16, opt: tls.config.Server) !void {
-    const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
-    var server = try address.listen(.{ .reuse_address = true });
+fn runEchoServer(io: Io, port: u16, opt: tls.config.Server) !void {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+    var server = try address.listen(io, .{ .reuse_address = true, .mode = .stream });
 
     while (true) {
-        acceptEcho(&server, opt) catch |err| {
+        acceptEcho(io, &server, opt) catch |err| {
             std.debug.print("e", .{});
             if (@errorReturnTrace()) |trace| {
                 std.debug.print("\n{}\n", .{err});
@@ -95,11 +109,11 @@ fn runEchoServer(port: u16, opt: tls.config.Server) !void {
     }
 }
 
-fn acceptEcho(server: *std.net.Server, opt: tls.config.Server) !void {
-    const tcp = try server.accept();
-    defer tcp.stream.close();
+fn acceptEcho(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void {
+    const stream = try server.accept(io);
+    defer stream.close(io);
 
-    var conn = try tls.serverFromStream(tcp.stream, opt);
+    var conn = try tls.serverFromStream(io, stream, opt);
     while (try conn.next()) |buf| try conn.writeAll(buf);
     try conn.close();
 }

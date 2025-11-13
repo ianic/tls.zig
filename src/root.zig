@@ -22,9 +22,10 @@ const handshake = struct {
     const Server = @import("handshake_server.zig").Handshake;
 };
 
+//TODO: io first
 /// Upgrades existing stream to the tls connection by the client tls handshake.
-pub inline fn clientFromStream(stream: anytype, opt: config.Client) !Connection {
-    const input, const output = streamToRaderWriter(stream);
+pub inline fn clientFromStream(io: std.Io, stream: anytype, opt: config.Client) !Connection {
+    const input, const output = streamToRaderWriter(io, stream);
     return try client(input, output, opt);
 }
 
@@ -44,8 +45,8 @@ pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connec
 }
 
 /// Upgrades existing stream to the tls connection by the server side tls handshake.
-pub inline fn serverFromStream(stream: anytype, opt: config.Server) !Connection {
-    const input, const output = streamToRaderWriter(stream);
+pub inline fn serverFromStream(io: Io, stream: anytype, opt: config.Server) !Connection {
+    const input, const output = streamToRaderWriter(io, stream);
     return try server(input, output, opt);
 }
 
@@ -60,11 +61,11 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
 }
 
 /// With default buffer sizes
-inline fn streamToRaderWriter(stream: anytype) struct { *Io.Reader, *Io.Writer } {
+inline fn streamToRaderWriter(io: std.Io, stream: anytype) struct { *Io.Reader, *Io.Writer } {
     var input_buf: [input_buffer_len]u8 = undefined;
     var output_buf: [output_buffer_len]u8 = undefined;
-    var reader = stream.reader(&input_buf);
-    var writer = stream.writer(&output_buf);
+    var reader = stream.reader(io, &input_buf);
+    var writer = stream.writer(io, &output_buf);
     const input = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
     const output = &writer.interface;
     return .{ input, output };
@@ -114,8 +115,9 @@ test "nonblock handshake and connection" {
             .root_ca = .{},
             .host = &.{},
             .insecure_skip_verify = true,
+            .now = .zero,
         });
-        var srv = nonblock.Server.init(.{ .auth = null });
+        var srv = nonblock.Server.init(.{ .auth = null, .now = .zero });
 
         // client flight1; client hello is in buf1
         var cr = try cli.run(&sc_buf, &cs_buf);

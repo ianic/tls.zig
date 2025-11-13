@@ -18,11 +18,15 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    var threaded: std.Io.Threaded = .init(allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // We are running binary from project root
     const dir = try std.fs.cwd().openDir("example/cert", .{});
 
     // Init certificate bundle with ca
-    var root_ca = try tls.config.cert.fromFilePath(allocator, dir, "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, io, dir.adaptToNewApi(), "minica.pem");
     defer root_ca.deinit(allocator);
 
     const host = "localhost";
@@ -45,23 +49,25 @@ pub fn main() !void {
     }) |cipher_suites| {
         for (client_keys) |sub_path| {
             // Make tcp connection
-            var tcp = try std.net.tcpConnectToHost(allocator, host, port);
-            defer tcp.close();
+            const host_name = try std.Io.net.HostName.init(host);
+            var tcp = try host_name.connect(io, port, .{ .mode = .stream });
+            defer tcp.close(io);
 
             // Prepare client authentication key pair
             const cert_dir = try dir.openDir(sub_path, .{});
-            var auth = try tls.config.CertKeyPair.fromFilePath(allocator, cert_dir, "cert.pem", "key.pem");
+            var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, cert_dir.adaptToNewApi(), "cert.pem", "key.pem");
             defer auth.deinit(allocator);
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.config.Client.Diagnostic = .{};
-            var cli = try tls.clientFromStream(tcp, .{
+            var cli = try tls.clientFromStream(io, tcp, .{
                 .host = host,
                 .root_ca = root_ca,
                 .cipher_suites = cipher_suites,
                 .auth = &auth,
                 .diagnostic = &diagnostic,
                 .key_log_callback = tls.config.key_log.callback,
+                .now = try std.Io.Clock.real.now(io),
             });
 
             // Show response

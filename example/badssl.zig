@@ -6,10 +6,14 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    var threaded: std.Io.Threaded = .init(allocator);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     const sets = try readBadssl(allocator);
     defer sets.deinit();
 
-    var root_ca = try tls.config.cert.fromSystem(allocator);
+    var root_ca = try tls.config.cert.fromSystem(allocator, io);
     defer root_ca.deinit(allocator);
 
     for (sets.value) |set| {
@@ -22,7 +26,11 @@ pub fn main() !void {
             var domain_buf: [128]u8 = undefined;
             const domain = try std.fmt.bufPrint(&domain_buf, "{s}.badssl.com", .{sd.subdomain});
 
-            cmn.get(allocator, domain, if (sd.port == 0) null else sd.port, false, false, .{ .root_ca = root_ca, .host = "" }) catch |err| {
+            cmn.get(io, domain, if (sd.port == 0) null else sd.port, false, false, .{
+                .root_ca = root_ca,
+                .host = "",
+                .now = try std.Io.Clock.real.now(io),
+            }) catch |err| {
                 std.debug.print(
                     "\t{s} {s} {}\n",
                     .{ fail.emoji(), domain, err },

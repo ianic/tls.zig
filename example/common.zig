@@ -119,6 +119,9 @@ pub const domainsToSkip = [_][]const u8{
     //                                    ^
     // /home/ianic/Code/tls.zig/example/std_top_sites.zig:62:36: 0x1170f02 in get (std_top_sites.zig)
     //     const result = try client.fetch(.{
+
+    // blocks
+    "gnu.org",
 };
 
 pub const domainsWithErrors = [_][]const u8{
@@ -222,7 +225,8 @@ test "failRate" {
 }
 
 pub fn get(
-    allocator: std.mem.Allocator,
+    //allocator: std.mem.Allocator,
+    io: std.Io,
     domain: []const u8,
     port: ?u16,
     show_handshake_stat: bool,
@@ -242,26 +246,21 @@ pub fn get(
     };
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
+    const host_name = try std.Io.net.HostName.init(host);
 
     // Establish tcp connection
-    var tcp: std.net.Stream = undefined;
-    var tnsf: usize = 16;
-    while (true) {
-        tcp = std.net.tcpConnectToHost(allocator, host, if (port) |p| p else 443) catch |err| switch (err) {
-            error.TemporaryNameServerFailure => {
-                tnsf -= 1;
-                if (tnsf == 0) return err;
-                continue;
-            },
-            else => return err,
-        };
-        break;
-    }
-    defer tcp.close();
-    // Set socket timeout
-    const read_timeout: std.posix.timeval = .{ .sec = 10, .usec = 0 };
-    try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
-    try std.posix.setsockopt(tcp.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
+    var tcp = try host_name.connect(io, if (port) |p| p else 443, .{
+        .mode = .stream,
+        // TODO: imeout is not implemented
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(10), .clock = .real } },
+    });
+    defer tcp.close(io);
+
+    // // Set socket timeout
+    // const read_timeout: std.posix.timeval = .{ .sec = 10, .usec = 0 };
+    // const fd = tcp.socket.handle;
+    // try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.toBytes(read_timeout)[0..]);
+    // try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.toBytes(read_timeout)[0..]);
 
     // Prepare and show handshake stats
     if (show_handshake_stat and opt.diagnostic == null) {
@@ -272,11 +271,11 @@ pub fn get(
 
     // Upgrade tcp connection to tls
     opt.host = host;
-    var cli = try tls.clientFromStream(tcp, opt);
+    var cli = try tls.clientFromStream(io, tcp, opt);
 
     // Send http GET request
-    var buf: [64]u8 = undefined;
-    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
+    var buf: [256]u8 = undefined;
+    const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
     try cli.writeAll(req);
 
     // Read and print http response
@@ -294,6 +293,9 @@ pub fn get(
             std.mem.trimRight(u8, data, "\r\n"),
             "</html>",
         )) break;
+
+        if (data.len >= 4)
+            if (std.mem.eql(u8, &.{ 0xd, 0xa, 0xd, 0xa }, data[data.len - 4 .. data.len])) break;
     }
 
     cli.close() catch |err| switch (err) {

@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 const mem = std.mem;
 const crypto = std.crypto;
 const Certificate = crypto.Certificate;
+const Io = std.Io;
 
 const Transcript = @import("transcript.zig").Transcript;
 const PrivateKey = @import("PrivateKey.zig");
@@ -53,31 +54,33 @@ pub const CertKeyPair = struct {
 
     pub fn fromFilePath(
         allocator: mem.Allocator,
-        dir: std.fs.Dir,
+        io: Io,
+        dir: std.Io.Dir,
         cert_path: []const u8,
         key_path: []const u8,
     ) !CertKeyPair {
-        var bundle: cert.Bundle = .{};
-        try bundle.addCertsFromFilePath(allocator, dir, cert_path);
+        const bundle = try cert.fromFilePath(allocator, io, dir, cert_path);
+        const key_file = try dir.openFile(io, key_path, .{});
+        defer key_file.close(io);
+        var rdr = key_file.reader(io, &.{});
 
-        const key_file = try dir.openFile(key_path, .{});
-        defer key_file.close();
-        const key = try PrivateKey.fromFile(allocator, key_file);
+        const key = try PrivateKey.fromFile(allocator, &rdr.interface);
 
         return .{ .bundle = bundle, .key = key, .ecdsa_key_pair = try EcdsaKeyPair.init(key) };
     }
 
     pub fn fromFilePathAbsolute(
         allocator: mem.Allocator,
+        io: Io,
         cert_path: []const u8,
         key_path: []const u8,
     ) !CertKeyPair {
-        var bundle: cert.Bundle = .{};
-        try bundle.addCertsFromFilePathAbsolute(allocator, cert_path);
-
+        const bundle = try cert.fromFilePathAbsolute(allocator, io, cert_path);
         const key_file = try std.fs.openFileAbsolute(key_path, .{});
         defer key_file.close();
-        const key = try PrivateKey.fromFile(allocator, key_file);
+        var rdr = key_file.reader(io, &.{});
+
+        const key = try PrivateKey.fromFile(allocator, &rdr.interface);
 
         return .{ .bundle = bundle, .key = key, .ecdsa_key_pair = try EcdsaKeyPair.init(key) };
     }
@@ -120,21 +123,21 @@ pub const cert = struct {
     // forms valid trust chain.
     pub const Bundle = crypto.Certificate.Bundle;
 
-    pub fn fromFilePath(allocator: mem.Allocator, dir: std.fs.Dir, path: []const u8) !Bundle {
+    pub fn fromFilePath(allocator: mem.Allocator, io: Io, dir: std.Io.Dir, path: []const u8) !Bundle {
         var bundle: Bundle = .{};
-        try bundle.addCertsFromFilePath(allocator, dir, path);
+        try bundle.addCertsFromFilePath(allocator, io, try Io.Clock.real.now(io), dir, path);
         return bundle;
     }
 
-    pub fn fromFilePathAbsolute(allocator: mem.Allocator, path: []const u8) !Bundle {
+    pub fn fromFilePathAbsolute(allocator: mem.Allocator, io: Io, path: []const u8) !Bundle {
         var bundle: Bundle = .{};
-        try bundle.addCertsFromFilePathAbsolute(allocator, path);
+        try bundle.addCertsFromFilePathAbsolute(allocator, io, try Io.Clock.real.now(io), path);
         return bundle;
     }
 
-    pub fn fromSystem(allocator: mem.Allocator) !Bundle {
+    pub fn fromSystem(allocator: mem.Allocator, io: Io) !Bundle {
         var bundle: Bundle = .{};
-        try bundle.rescan(allocator);
+        try bundle.rescan(allocator, io, try Io.Clock.real.now(io));
         return bundle;
     }
 };
@@ -254,12 +257,9 @@ pub const CertificateParser = struct {
     root_ca: Certificate.Bundle,
     host: []const u8,
     skip_verify: bool = false,
-    now_sec: i64 = 0,
+    now_sec: i64,
 
     pub fn parseCertificate(h: *CertificateParser, d: *record.Decoder, tls_version: proto.Version) !void {
-        if (h.now_sec == 0) {
-            h.now_sec = std.time.timestamp();
-        }
         if (tls_version == .tls_1_3) {
             const request_context = try d.decode(u8);
             if (request_context != 0) return error.TlsIllegalParameter;

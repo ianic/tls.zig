@@ -8,6 +8,10 @@ pub fn main() !void {
     defer _ = dbga.deinit();
     const gpa = dbga.allocator();
 
+    var threaded: std.Io.Threaded = .init(gpa);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     const args = try std.process.argsAlloc(gpa);
     defer std.process.argsFree(gpa, args);
     const url = if (args.len > 1) args[1] else "https://www.lutrija.hr";
@@ -16,32 +20,34 @@ pub fn main() !void {
     const port = 443;
 
     // Load system root certificates
-    var root_ca = try tls.config.cert.fromSystem(gpa);
+    var root_ca = try tls.config.cert.fromSystem(gpa, io);
     defer root_ca.deinit(gpa);
     var diagnostic: tls.config.Client.Diagnostic = .{};
 
     // Establish tcp connection
-    var tcp = try std.net.tcpConnectToHost(gpa, host, port);
-    defer tcp.close();
+    const host_name = try std.Io.net.HostName.init(host);
+    var tcp = try host_name.connect(io, port, .{ .mode = .stream });
+    defer tcp.close(io);
 
     var tcp_reader_buf: [tls.input_buffer_len]u8 = undefined;
     var tcp_writer_buf: [tls.output_buffer_len]u8 = undefined;
-    var tcp_reader = tcp.reader(&tcp_reader_buf);
-    var tcp_writer = tcp.writer(&tcp_writer_buf);
+    var tcp_reader = tcp.reader(io, &tcp_reader_buf);
+    var tcp_writer = tcp.writer(io, &tcp_writer_buf);
 
     // Upgrade tcp connection to tls
-    var conn = try tls.client(tcp_reader.interface(), &tcp_writer.interface, .{
+    var conn = try tls.client(&tcp_reader.interface, &tcp_writer.interface, .{
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
+        .now = try std.Io.Clock.real.now(io),
     });
 
     // conn.output.buffer = conn.output.buffer[0..62];
     // std.debug.print("conn output buffer: {}\n", .{conn.output.buffer.len});
 
     { // Send http GET request
-        var buf: [64]u8 = undefined;
-        const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\n\r\n", .{host});
+        var buf: [256]u8 = undefined;
+        const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
         try conn.writeAll(req);
     }
     try readHttpResponse(gpa, &conn);
@@ -64,7 +70,7 @@ fn readHttpResponse(gpa: Allocator, conn: *tls.Connection) !void {
     };
 
     // Iterate headers and find content length
-    var content_length: usize = 0;
+    var content_length: ?usize = null;
     var chunked: bool = false;
     var header_iter: std.http.HeaderIterator = .init(try rdr.take(header_length));
     while (header_iter.next()) |h| {
@@ -80,7 +86,7 @@ fn readHttpResponse(gpa: Allocator, conn: *tls.Connection) !void {
     }
 
     std.debug.print(
-        "header length: {}, content length: {}, chunked: {}\n",
+        "header length: {}, content length: {any}, chunked: {}\n",
         .{ header_length, content_length, chunked },
     );
 
@@ -114,9 +120,11 @@ fn readHttpResponse(gpa: Allocator, conn: *tls.Connection) !void {
             try rdr.fillMore();
         }
         std.debug.print("chunked in {} chunks {} bytes\n", .{ chunks_count, body_bytes });
-    } else if (content_length > 0) {
-        const body = try rdr.readAlloc(gpa, content_length);
-        defer gpa.free(body);
+    } else if (content_length) |ct| {
+        if (ct > 0) {
+            const body = try rdr.readAlloc(gpa, ct);
+            defer gpa.free(body);
+        }
     } else {
         while (true) {
             const data = rdr.buffered();
