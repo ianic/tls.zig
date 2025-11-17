@@ -3,7 +3,7 @@
     .version = "0.1.0",
     .dependencies = .{},
     .fingerprint = 0xacfd1db3d29e1d11,
-    .minimum_zig_version = "0.16.0-dev.1303+ee0a0f119",
+    .minimum_zig_version = "0.16.0-dev.1344+bc589c271",
     .paths = .{
         "readme.md",
         "build.zig",
