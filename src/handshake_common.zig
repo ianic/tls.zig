@@ -93,7 +93,7 @@ pub const CertKeyPair = struct {
         ecdsa_secp256r1_sha256: EcdsaP256Sha256.KeyPair,
         ecdsa_secp384r1_sha384: EcdsaP384Sha384.KeyPair,
 
-        fn init(pk: PrivateKey) !?EcdsaKeyPair {
+        pub fn init(pk: PrivateKey) !?EcdsaKeyPair {
             switch (pk.signature_scheme) {
                 inline .ecdsa_secp256r1_sha256,
                 .ecdsa_secp384r1_sha384,
