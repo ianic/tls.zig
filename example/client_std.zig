@@ -8,8 +8,11 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
     // Init certificate bundle with ca
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
     var root_ca: Certificate.Bundle = .{};
     defer root_ca.deinit(allocator);
     try root_ca.addCertsFromFilePath(allocator, dir, "minica.pem");

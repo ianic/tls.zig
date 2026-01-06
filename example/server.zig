@@ -6,17 +6,17 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     const file_name = if (args.len > 1) args[1] else "example/cert/pg2600.txt";
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir.adaptToNewApi(), "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
     // try auth.bundle.addCertsFromFilePath(allocator, dir, "minica.pem");
 
@@ -32,8 +32,8 @@ pub fn main() !void {
         .reuse_address = true,
     });
 
-    const pg_file = try std.fs.cwd().openFile(file_name, .{});
-    defer pg_file.close();
+    const pg_file = try std.Io.Dir.cwd().openFile(io, file_name, .{});
+    defer pg_file.close(io);
 
     var buf: [32 * 1024]u8 = undefined;
     while (true) {
@@ -57,9 +57,8 @@ pub fn main() !void {
         // for testing key update
         // conn.max_encrypt_seq = 10;
 
-        try pg_file.seekTo(0);
         while (true) {
-            const n = try pg_file.read(&buf);
+            const n = try pg_file.readPositional(io, &.{&buf}, 0);
             try conn.writeAll(buf[0..n]);
             if (n < buf.len) break;
         }

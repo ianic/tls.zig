@@ -968,7 +968,7 @@ test "verify google.com certificate" {
         .client_random = @embedFile("testdata/google.com/client_random").*,
     };
 
-    var threaded: std.Io.Threaded = .init(testing.allocator);
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 

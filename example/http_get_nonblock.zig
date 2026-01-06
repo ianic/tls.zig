@@ -7,7 +7,7 @@ pub fn main() !void {
     const allocator = dbga.allocator();
     defer _ = dbga.deinit();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -94,7 +94,7 @@ pub fn main() !void {
 
 fn pageEnd(bytes: []const u8) bool {
     return (std.ascii.endsWithIgnoreCase(
-        std.mem.trimRight(u8, bytes, "\r\n"),
+        std.mem.trimEnd(u8, bytes, "\r\n"),
         "</html>",
     ) or std.ascii.endsWithIgnoreCase(bytes, "\r\n0\r\n\r\n") or
         std.ascii.endsWithIgnoreCase(bytes, "0\r\n\r\n"));

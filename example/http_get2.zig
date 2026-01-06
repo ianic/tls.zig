@@ -8,7 +8,7 @@ pub fn main() !void {
     defer _ = dbga.deinit();
     const gpa = dbga.allocator();
 
-    var threaded: std.Io.Threaded = .init(gpa);
+    var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
 

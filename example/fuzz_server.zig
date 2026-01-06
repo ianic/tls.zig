@@ -7,20 +7,20 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
-    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir.adaptToNewApi(), "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer rsa_auth.deinit(allocator);
 
-    var ec_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir.adaptToNewApi(), "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var ec_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer ec_auth.deinit(allocator);
 
     // ca to check client certificate
-    var client_root_ca = try tls.config.cert.fromFilePath(allocator, io, dir.adaptToNewApi(), "minica.pem");
+    var client_root_ca = try tls.config.cert.fromFilePath(allocator, io, dir, "minica.pem");
     defer client_root_ca.deinit(allocator);
 
     const now = try std.Io.Clock.real.now(io);

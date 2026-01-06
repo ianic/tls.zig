@@ -267,7 +267,12 @@ pub fn get(
 
     // Upgrade tcp connection to tls
     opt.host = host;
-    var cli = try tls.clientFromStream(io, tcp, opt);
+
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
+    var reader = tcp.reader(io, &input_buf);
+    var writer = tcp.writer(io, &output_buf);
+    var cli = try tls.client(&reader.interface, &writer.interface, opt);
 
     // Send http GET request
     var buf: [256]u8 = undefined;
@@ -279,14 +284,17 @@ pub fn get(
     defer if (show_response) std.debug.print("{} bytes read\n", .{n});
     while (cli.next() catch |err| switch (err) {
         error.WouldBlock, error.ConnectionResetByPeer => null,
-        error.ReadFailed => null,
+        error.ReadFailed => brk: {
+            if (reader.err) |e| if (e == error.Canceled) return e;
+            break :brk null;
+        },
         else => return err,
     }) |data| {
         n += data.len;
         if (show_response) std.debug.print("{s}", .{data});
 
         if (std.ascii.endsWithIgnoreCase(
-            std.mem.trimRight(u8, data, "\r\n"),
+            std.mem.trimEnd(u8, data, "\r\n"),
             "</html>",
         )) break;
 

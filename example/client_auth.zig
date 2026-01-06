@@ -18,15 +18,15 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
     // We are running binary from project root
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     // Init certificate bundle with ca
-    var root_ca = try tls.config.cert.fromFilePath(allocator, io, dir.adaptToNewApi(), "minica.pem");
+    var root_ca = try tls.config.cert.fromFilePath(allocator, io, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
     const host = "localhost";
@@ -54,8 +54,9 @@ pub fn main() !void {
             defer tcp.close(io);
 
             // Prepare client authentication key pair
-            const cert_dir = try dir.openDir(sub_path, .{});
-            var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, cert_dir.adaptToNewApi(), "cert.pem", "key.pem");
+            const cert_dir = try dir.openDir(io, sub_path, .{});
+
+            var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, cert_dir, "cert.pem", "key.pem");
             defer auth.deinit(allocator);
 
             // Upgrade tcp connection to tls client

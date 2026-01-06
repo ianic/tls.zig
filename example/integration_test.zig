@@ -62,7 +62,7 @@ fn connectReceive(io: Io, addr: Io.net.IpAddress, opt_: tls.config.Client) !void
 
 test "server without certificate" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
@@ -82,12 +82,12 @@ test "server without certificate" {
 
 test "server with ec key key pair" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
 
-    const dir = (try std.fs.cwd().openDir("example/cert", .{})).adaptToNewApi();
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
@@ -112,12 +112,12 @@ test "server with ec key key pair" {
 
 test "server with rsa key key pair" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
 
-    const dir = (try std.fs.cwd().openDir("example/cert", .{})).adaptToNewApi();
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
@@ -142,11 +142,11 @@ test "server with rsa key key pair" {
 
 test "server request client authentication" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
-    const dir = (try std.fs.cwd().openDir("example/cert", .{})).adaptToNewApi();
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
@@ -192,11 +192,11 @@ test "server request client authentication" {
 
 test "server require client authentication" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
-    const dir = (try std.fs.cwd().openDir("example/cert", .{})).adaptToNewApi();
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
     defer auth.deinit(allocator);
@@ -240,17 +240,20 @@ test "server require client authentication" {
 
 test "server send key update" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
-    const dir = try std.fs.cwd().openDir("example/cert", .{});
 
-    const server_cert_path = try dir.realpathAlloc(allocator, "localhost_rsa/cert.pem");
+    const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
+    var buf: [256]u8 = undefined;
+    const root = buf[0..try dir.realPath(io, &buf)];
+
+    const server_cert_path = try std.fs.path.join(allocator, &.{ root, "localhost_rsa/cert.pem" });
     defer allocator.free(server_cert_path);
-    const server_key_path = try dir.realpathAlloc(allocator, "localhost_rsa/key.pem");
+    const server_key_path = try std.fs.path.join(allocator, &.{ root, "localhost_rsa/key.pem" });
     defer allocator.free(server_key_path);
-    const ca_cert_path = try dir.realpathAlloc(allocator, "minica.pem");
+    const ca_cert_path = try std.fs.path.join(allocator, &.{ root, "minica.pem" });
     defer allocator.free(ca_cert_path);
 
     var auth = try tls.config.CertKeyPair.fromFilePathAbsolute(

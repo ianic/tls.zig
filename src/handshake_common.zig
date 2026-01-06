@@ -76,8 +76,8 @@ pub const CertKeyPair = struct {
         key_path: []const u8,
     ) !CertKeyPair {
         const bundle = try cert.fromFilePathAbsolute(allocator, io, cert_path);
-        const key_file = try std.fs.openFileAbsolute(key_path, .{});
-        defer key_file.close();
+        const key_file = try std.Io.Dir.openFileAbsolute(io, key_path, .{});
+        defer key_file.close(io);
         var rdr = key_file.reader(io, &.{});
 
         const key = try PrivateKey.fromFile(allocator, &rdr.interface);
@@ -417,7 +417,7 @@ pub const DhKeyPair = struct {
 
     secp256r1_pk_buf: [EcdsaP256Sha256.PublicKey.uncompressed_sec1_encoded_length]u8 = undefined, //65 bytes
     secp384r1_pk_buf: [EcdsaP384Sha384.PublicKey.uncompressed_sec1_encoded_length]u8 = undefined, //97
-    ml_kem768_pk_buf: [MLKem768.PublicKey.bytes_length + X25519.public_length]u8 = undefined, // 1216
+    ml_kem768_pk_buf: [MLKem768.PublicKey.encoded_length + X25519.public_length]u8 = undefined, // 1216
     shared_key_buf: [64]u8 = undefined,
 
     pub const seed_len = 32 + 32 + 48 + 64 + 64;

@@ -7,7 +7,7 @@ pub fn main() !void {
     defer _ = dbga.deinit();
     const allocator = dbga.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);

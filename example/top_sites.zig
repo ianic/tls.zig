@@ -8,7 +8,7 @@ pub fn main() !void {
     var debug_allocator = std.heap.DebugAllocator(.{}){};
     const gpa = debug_allocator.allocator();
 
-    var threaded: std.Io.Threaded = .init(gpa);
+    var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -40,27 +40,21 @@ pub fn main() !void {
     }
 
     var elapsed: usize = 0;
-    const max_sec: usize = tasks / 10;
     while (counter.total() < tasks) {
         try io.sleep(.fromSeconds(1), .real);
         elapsed += 1;
-        if (elapsed > max_sec) {
+        if (elapsed > 10) {
             group.cancel(io);
             break;
         }
     }
-    group.wait(io);
+    try group.await(io);
 
     counter.show();
-    if (counter.failRate() > 0.01) std.posix.exit(1);
+    if (counter.failRate() > 0.01) std.process.exit(1);
 }
 
-fn cancelGroup(io: Io, group: *Io.Group) !void {
-    try io.sleep(.fromSeconds(1), .real);
-    group.cancel(io);
-}
-
-pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) void {
+pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) Io.Cancelable!void {
     var diagnostic: tls.config.Client.Diagnostic = .{};
     var opt: tls.config.Client = .{
         .host = "",
@@ -78,6 +72,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
             error.ConnectionTimedOut,
             error.ConnectionRefused,
             error.NetworkUnreachable,
+            error.NameServerFailure,
             => {
                 counter.add(.err);
                 if (!only_fail) {
@@ -94,10 +89,11 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
                 if (!only_fail) {
                     std.debug.print("➰ {s:<25} {s}\n", .{ domain, @errorName(err) });
                 }
+                if (err == error.Canceled) return error.Canceled;
                 return;
             },
             else => {
-                curl(gpa, domain) catch |curl_err| {
+                curl(gpa, io, domain) catch |curl_err| {
                     if (!only_fail) {
                         std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
                     }
@@ -128,12 +124,11 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
     }
 }
 
-pub fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
+pub fn curl(allocator: std.mem.Allocator, io: std.Io, domain: []const u8) !void {
     var url_buf: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.Child.run(allocator, io, .{
         .argv = &[_][]const u8{ "curl", "-m10", "-sS", "-w %{errormsg}", url },
     });
     defer {
@@ -167,8 +162,4 @@ pub fn curl(allocator: std.mem.Allocator, domain: []const u8) !void {
     std.debug.print("{s}\n\n", .{result.stderr});
 
     return error.CurlFailed;
-}
-
-test "curl" {
-    try curl(std.testing.allocator, "youronlinechoices.com");
 }

@@ -7,7 +7,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -19,7 +19,7 @@ pub fn main() !void {
 
     const domain = if (args.len > 1) args[1] else "cloudflare.com";
     const fail_count = run(io, root_ca, domain, try std.Io.Clock.real.now(io));
-    if (fail_count > 0) std.posix.exit(1);
+    if (fail_count > 0) std.process.exit(1);
 }
 
 fn run(io: std.Io, root_ca: tls.config.cert.Bundle, domain: []const u8, now: std.Io.Timestamp) usize {

@@ -43,11 +43,13 @@ pub fn fileAppend(file_name: []const u8, label_: []const u8, client_random: []co
 }
 
 fn fileWrite(file_name: []const u8, line: []const u8) !void {
-    var file = try std.fs.createFileAbsolute(file_name, .{ .truncate = false });
-    defer file.close();
-    const stat = try file.stat();
-    try file.seekTo(stat.size);
-    try file.writeAll(line);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    var file = try std.Io.Dir.createFileAbsolute(io, file_name, .{ .truncate = false });
+    defer file.close(io);
+    const stat = try file.stat(io);
+    try file.writePositionalAll(io, line, stat.size);
 }
 
 pub fn formatLine(buf: []u8, label_: []const u8, client_random: []const u8, secret: []const u8) ![]const u8 {
