@@ -120,12 +120,12 @@ test "server with ec key key pair from slices" {
     var auth = try tls.config.CertKeyPair.fromSlice(
         allocator,
         io,
-        @embedFile("example/cert/localhost_ec/cert.pem"),
-        @embedFile("example/cert/localhost_ec/key.pem"),
+        @embedFile("cert/localhost_ec/cert.pem"),
+        @embedFile("cert/localhost_ec/key.pem"),
     );
     defer auth.deinit(allocator);
 
-    var root_ca = try tls.config.cert.fromSlice(allocator, io, @embedFile("example/cert/minica.pem"));
+    var root_ca = try tls.config.cert.fromSlice(allocator, io, @embedFile("cert/minica.pem"));
     defer root_ca.deinit(allocator);
 
     const opt: tls.config.Server = .{ .auth = &auth, .now = now };
