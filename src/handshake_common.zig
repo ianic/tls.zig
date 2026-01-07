@@ -85,6 +85,18 @@ pub const CertKeyPair = struct {
         return .{ .bundle = bundle, .key = key, .ecdsa_key_pair = try EcdsaKeyPair.init(key) };
     }
 
+    pub fn fromSlice(
+        allocator: mem.Allocator,
+        io: Io,
+        cert_slice: []const u8,
+        key_slice: []const u8,
+    ) !CertKeyPair {
+        const key = try PrivateKey.parsePem(key_slice);
+        const bundle = try cert.fromSlice(allocator, io, cert_slice);
+
+        return .{ .bundle = bundle, .key = key, .ecdsa_key_pair = try EcdsaKeyPair.init(key) };
+    }
+
     pub fn deinit(c: *CertKeyPair, allocator: mem.Allocator) void {
         c.bundle.deinit(allocator);
     }
@@ -93,7 +105,7 @@ pub const CertKeyPair = struct {
         ecdsa_secp256r1_sha256: EcdsaP256Sha256.KeyPair,
         ecdsa_secp384r1_sha384: EcdsaP384Sha384.KeyPair,
 
-        pub fn init(pk: PrivateKey) !?EcdsaKeyPair {
+        fn init(pk: PrivateKey) !?EcdsaKeyPair {
             switch (pk.signature_scheme) {
                 inline .ecdsa_secp256r1_sha256,
                 .ecdsa_secp384r1_sha384,
@@ -138,6 +150,41 @@ pub const cert = struct {
     pub fn fromSystem(allocator: mem.Allocator, io: Io) !Bundle {
         var bundle: Bundle = .{};
         try bundle.rescan(allocator, io, try Io.Clock.real.now(io));
+        return bundle;
+    }
+
+    pub fn fromSlice(allocator: mem.Allocator, io: Io, slice: []const u8) !Bundle {
+        const base64 = std.base64.standard.decoderWithIgnore(" \t\r\n");
+        const size = slice.len;
+        const ts = try Io.Clock.real.now(io);
+
+        var bundle: Bundle = .{};
+
+        //Contains modified code from std.crypto.Certificate.Bundle.addCertsFromFile 
+        const decoded_size_upper_bound = size / 4 * 3;
+        const needed_capacity = std.math.cast(u32, decoded_size_upper_bound + size) orelse
+            return Certificate.Bundle.AddCertsFromFileError.CertificateAuthorityBundleTooBig;
+        try bundle.bytes.ensureUnusedCapacity(allocator, needed_capacity);
+        const end_reserved: u32 = @intCast(bundle.bytes.items.len + decoded_size_upper_bound);
+        const buffer = bundle.bytes.allocatedSlice()[end_reserved..];
+        @memcpy(buffer[0..size], slice);
+        const encoded_bytes = buffer[0..size];
+
+        const begin_marker = "-----BEGIN CERTIFICATE-----";
+        const end_marker = "-----END CERTIFICATE-----";
+
+        var start_index: usize = 0;
+        while (mem.indexOfPos(u8, encoded_bytes, start_index, begin_marker)) |begin_marker_start| {
+            const cert_start = begin_marker_start + begin_marker.len;
+            const cert_end = mem.indexOfPos(u8, encoded_bytes, cert_start, end_marker) orelse
+                return Certificate.Bundle.AddCertsFromFileError.MissingEndCertificateMarker;
+            start_index = cert_end + end_marker.len;
+            const encoded_cert = mem.trim(u8, encoded_bytes[cert_start..cert_end], " \t\r\n");
+            const decoded_start: u32 = @intCast(bundle.bytes.items.len);
+            const dest_buf = bundle.bytes.allocatedSlice()[decoded_start..];
+            bundle.bytes.items.len += try base64.decode(dest_buf, encoded_cert);
+            try bundle.parseCert(allocator, decoded_start, ts.toSeconds());
+        }
         return bundle;
     }
 };

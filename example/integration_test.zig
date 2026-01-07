@@ -110,6 +110,39 @@ test "server with ec key key pair" {
     thr.join();
 }
 
+test "server with ec key key pair from slices" {
+    const allocator = testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const now = try std.Io.Clock.real.now(io);
+
+    var auth = try tls.config.CertKeyPair.fromSlice(
+        allocator,
+        io,
+        @embedFile("example/cert/localhost_ec/cert.pem"),
+        @embedFile("example/cert/localhost_ec/key.pem"),
+    );
+    defer auth.deinit(allocator);
+
+    var root_ca = try tls.config.cert.fromSlice(allocator, io, @embedFile("example/cert/minica.pem"));
+    defer root_ca.deinit(allocator);
+
+    const opt: tls.config.Server = .{ .auth = &auth, .now = now };
+    var server = try address.listen(io, .{});
+    const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
+    // client with insecure_skip_verify connects, server sends certificates but client skips verification
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now });
+    // client with root certificates connects; server certificates are validated
+    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now });
+    // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
+    try testing.expectError(
+        error.CertificateIssuerNotFound,
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now }),
+    );
+    thr.join();
+}
+
 test "server with rsa key key pair" {
     const allocator = testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});
