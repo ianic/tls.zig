@@ -3,19 +3,13 @@ const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 const cmn = @import("common.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var root_ca = try tls.config.cert.fromSystem(allocator, io);
-    defer root_ca.deinit(allocator);
+    var root_ca = try tls.config.cert.fromSystem(gpa, io);
+    defer root_ca.deinit(gpa);
 
     const domain = if (args.len > 1) args[1] else "cloudflare.com";
     const fail_count = run(io, root_ca, domain, try std.Io.Clock.real.now(io));

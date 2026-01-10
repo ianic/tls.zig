@@ -2,22 +2,16 @@ const std = @import("std");
 const tls = @import("tls");
 const cmn = @import("common.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len > 1) {
         const domain = args[1];
 
-        var ca_bundle = try tls.config.cert.fromSystem(allocator, io);
-        defer ca_bundle.deinit(allocator);
+        var ca_bundle = try tls.config.cert.fromSystem(gpa, io);
+        defer ca_bundle.deinit(gpa);
 
         try cmn.get(io, domain, null, true, true, .{
             .host = "",
@@ -27,7 +21,7 @@ pub fn main() !void {
             // to force cipher from specific tls version:
             //   .cipher_suites = tls.config.cipher_suites.tls12,
             .cipher_suites = tls.config.cipher_suites.secure,
-            .key_log_callback = tls.config.key_log.callback,
+            .key_log_callback = tls.config.key_log.init(init.minimal.environ),
             .now = try std.Io.Clock.real.now(io),
         });
     }

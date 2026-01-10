@@ -4,13 +4,9 @@ const Certificate = std.crypto.Certificate;
 const Io = std.Io;
 const cmn = @import("common.zig");
 
-pub fn main() !void {
-    var debug_allocator = std.heap.DebugAllocator(.{}){};
-    const gpa = debug_allocator.allocator();
-
-    var threaded: std.Io.Threaded = .init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
 
     var root_ca = try tls.config.cert.fromSystem(gpa, io);
     defer root_ca.deinit(gpa);
@@ -128,7 +124,7 @@ pub fn curl(allocator: std.mem.Allocator, io: std.Io, domain: []const u8) !void 
     var url_buf: [128]u8 = undefined;
     const url = try std.fmt.bufPrint(&url_buf, "https://{s}", .{domain});
 
-    const result = try std.process.Child.run(allocator, io, .{
+    const result = try std.process.run(allocator, io, .{
         .argv = &[_][]const u8{ "curl", "-m10", "-sS", "-w %{errormsg}", url },
     });
     defer {
@@ -138,7 +134,7 @@ pub fn curl(allocator: std.mem.Allocator, io: std.Io, domain: []const u8) !void 
 
     // ref: https://everything.curl.dev/cmdline/exitcode.html
     switch (result.term) {
-        .Exited => |error_code| switch (error_code) {
+        .exited => |error_code| switch (error_code) {
             0 => return,
             // curl command is not wroking
             2 => unreachable, //return error.FailedToInitialize,

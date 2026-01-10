@@ -2,22 +2,17 @@ const std = @import("std");
 const tls = @import("tls");
 const Certificate = std.crypto.Certificate;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
     const file_name = if (args.len > 1) args[1] else "example/cert/pg2600.txt";
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
-    defer auth.deinit(allocator);
+    var auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer auth.deinit(gpa);
     // try auth.bundle.addCertsFromFilePath(allocator, dir, "minica.pem");
 
     // // Load ca to check client certificate

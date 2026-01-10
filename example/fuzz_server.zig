@@ -3,25 +3,21 @@ const tls = @import("tls");
 const Io = std.Io;
 const Certificate = std.crypto.Certificate;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
-    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
-    defer rsa_auth.deinit(allocator);
+    var rsa_auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
+    defer rsa_auth.deinit(gpa);
 
-    var ec_auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
-    defer ec_auth.deinit(allocator);
+    var ec_auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    defer ec_auth.deinit(gpa);
 
     // ca to check client certificate
-    var client_root_ca = try tls.config.cert.fromFilePath(allocator, io, dir, "minica.pem");
-    defer client_root_ca.deinit(allocator);
+    var client_root_ca = try tls.config.cert.fromFilePath(gpa, io, dir, "minica.pem");
+    defer client_root_ca.deinit(gpa);
 
     const now = try std.Io.Clock.real.now(io);
 

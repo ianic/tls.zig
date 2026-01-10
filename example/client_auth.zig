@@ -14,20 +14,17 @@ const cmn = @import("common.zig");
 //   or
 //   zig build && zig-out/bin/client_auth
 //
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
 
     // We are running binary from project root
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     // Init certificate bundle with ca
-    var root_ca = try tls.config.cert.fromFilePath(allocator, io, dir, "minica.pem");
-    defer root_ca.deinit(allocator);
+    var root_ca = try tls.config.cert.fromFilePath(gpa, io, dir, "minica.pem");
+    defer root_ca.deinit(gpa);
 
     const host = "localhost";
     const port = 8443;
@@ -56,8 +53,8 @@ pub fn main() !void {
             // Prepare client authentication key pair
             const cert_dir = try dir.openDir(io, sub_path, .{});
 
-            var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, cert_dir, "cert.pem", "key.pem");
-            defer auth.deinit(allocator);
+            var auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, cert_dir, "cert.pem", "key.pem");
+            defer auth.deinit(gpa);
 
             // Upgrade tcp connection to tls client
             var diagnostic: tls.config.Client.Diagnostic = .{};
@@ -67,7 +64,7 @@ pub fn main() !void {
                 .cipher_suites = cipher_suites,
                 .auth = &auth,
                 .diagnostic = &diagnostic,
-                .key_log_callback = tls.config.key_log.callback,
+                .key_log_callback = tls.config.key_log.init(init.minimal.environ),
                 .now = try std.Io.Clock.real.now(io),
             });
 

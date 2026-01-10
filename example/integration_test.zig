@@ -41,11 +41,9 @@ fn acceptSend(io: Io, server: *Io.net.Server, opt: tls.config.Server, clients: u
     }
 }
 
-fn connectReceive(io: Io, addr: Io.net.IpAddress, opt_: tls.config.Client) !void {
+fn connectReceive(io: Io, addr: Io.net.IpAddress, opt: tls.config.Client) !void {
     var tcp = try addr.connect(io, .{ .mode = .stream });
     defer tcp.close(io);
-    var opt = opt_;
-    opt.key_log_callback = tls.config.key_log.callback;
     var conn = try tls.clientFromStream(io, tcp, opt);
 
     var n: usize = 0;
@@ -61,10 +59,7 @@ fn connectReceive(io: Io, addr: Io.net.IpAddress, opt_: tls.config.Client) !void
 }
 
 test "server without certificate" {
-    const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
 
     const opt: tls.config.Server = .{ .auth = null, .now = now };
@@ -82,9 +77,7 @@ test "server without certificate" {
 
 test "server with ec key key pair" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
@@ -112,9 +105,7 @@ test "server with ec key key pair" {
 
 test "server with ec key key pair from slices" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
 
     var auth = try tls.config.CertKeyPair.fromSlice(
@@ -145,9 +136,7 @@ test "server with ec key key pair from slices" {
 
 test "server with rsa key key pair" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
@@ -175,9 +164,7 @@ test "server with rsa key key pair" {
 
 test "server request client authentication" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
@@ -225,9 +212,7 @@ test "server request client authentication" {
 
 test "server require client authentication" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
@@ -273,9 +258,7 @@ test "server require client authentication" {
 
 test "server send key update" {
     const allocator = testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});

@@ -968,10 +968,7 @@ test "verify google.com certificate" {
         .client_random = @embedFile("testdata/google.com/client_random").*,
     };
 
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
+    const io = testing.io;
     var ca_bundle: Certificate.Bundle = .{};
     try ca_bundle.rescan(testing.allocator, io, try std.Io.Clock.real.now(io));
     defer ca_bundle.deinit(testing.allocator);

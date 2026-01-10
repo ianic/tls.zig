@@ -21,10 +21,17 @@ pub const label = struct {
     pub const client_random: []const u8 = "CLIENT_RANDOM";
 };
 
+var environ: std.process.Environ = .empty;
+
 pub const Callback = *const fn (label: []const u8, client_random: []const u8, secret: []const u8) void;
 
+pub fn init(env: std.process.Environ) Callback {
+    environ = env;
+    return callback;
+}
+
 /// Writes tls keys to the file pointed by SSLKEYLOGFILE environment variable.
-pub fn callback(label_: []const u8, client_random: []const u8, secret: []const u8) void {
+fn callback(label_: []const u8, client_random: []const u8, secret: []const u8) void {
     const builtin = @import("builtin");
     const native_os = builtin.os.tag;
     const file_name: []const u8 = if (native_os == .windows)
@@ -32,11 +39,11 @@ pub fn callback(label_: []const u8, client_random: []const u8, secret: []const u
     else if (native_os == .wasi and !builtin.link_libc)
         return
     else
-        std.posix.getenv(key_log_file_env) orelse return;
+        environ.getPosix(key_log_file_env) orelse return;
     fileAppend(file_name, label_, client_random, secret) catch return;
 }
 
-pub fn fileAppend(file_name: []const u8, label_: []const u8, client_random: []const u8, secret: []const u8) !void {
+fn fileAppend(file_name: []const u8, label_: []const u8, client_random: []const u8, secret: []const u8) !void {
     var buf: [1024]u8 = undefined;
     const line = try formatLine(&buf, label_, client_random, secret);
     try fileWrite(file_name, line);
@@ -52,7 +59,7 @@ fn fileWrite(file_name: []const u8, line: []const u8) !void {
     try file.writePositionalAll(io, line, stat.size);
 }
 
-pub fn formatLine(buf: []u8, label_: []const u8, client_random: []const u8, secret: []const u8) ![]const u8 {
+fn formatLine(buf: []u8, label_: []const u8, client_random: []const u8, secret: []const u8) ![]const u8 {
     var w = std.Io.Writer.fixed(buf);
     try w.print("{s} ", .{label_});
     for (client_random) |b| {

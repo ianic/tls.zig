@@ -23,15 +23,16 @@ https://github.com/ziglang/zig/issues/14172#issuecomment-2181202318
 To upgrade existing tcp connection to the tls connection call `tls.client`:
 ```zig
     // Establish tcp connection
-    var tcp = try std.net.tcpConnectToHost(allocator, host, port);
-    defer tcp.close();
+    const host_name = try std.Io.net.HostName.init(host);
+    var tcp = try host_name.connect(io, port, .{ .mode = .stream });
+    defer tcp.close(io);
 
     // Load system root certificates
     var root_ca = try tls.config.cert.fromSystem(allocator);
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
-    var conn = try tls.clientFromStream(tcp, .{
+    var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
     });
@@ -46,7 +47,7 @@ Second parameter in calling `tls.clientFromStream` are [tls.config.Client](https
 
 To use just ciphers which are graded secure or recommended on  https://ciphersuite.info:
 ```zig
-    var conn = try tls.clientFromStream(tcp, .{
+    var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
         .cipher_suites = tls.config.cipher_suites.secure,
@@ -61,10 +62,10 @@ If server requires client authentication set `auth` attribute in options. You ne
 
 ```zig
     // Prepare client authentication key pair
-    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, cert_dir, "cert.pem", "key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, cert_dir, "cert.pem", "key.pem");
     defer auth.deinit(allocator);
 
-    var conn = try tls.clientFromStream(tcp, .{
+    var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
         .auth = auth,
@@ -82,10 +83,10 @@ Session keys can be written to file so that external programs can decrypt TLS co
 Key logging is enabled by setting the environment variable SSLKEYLOGFILE to point to a file. And enabling key log callback in client options:
 
 ```zig
-    var conn = try tls.clientFromStream(tcp, .{
+    var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
-        .key_log_callback = tls.config.key_log.callback,
+        .key_log_callback = tls.config.key_log.init(init.minimal.environ),
     });
 ```
 
@@ -95,22 +96,27 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
 
 ```zig
     // Load server certificate key pair
-    var auth = try tls.config.CertKeyPair.fromFilePath(allocator, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
+    var auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, dir, "localhost_ec/cert.pem", "localhost_ec/key.pem");
     defer auth.deinit(allocator);
     
     // Tcp listener
     const port = 9443;
-    const address = std.net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, port);
-    var server = try address.listen(.{
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+    var server = try address.listen(io, .{
+        .mode = .stream,
         .reuse_address = true,
     });
     
      // Tcp accept
-     const tcp = try server.accept();
-     defer tcp.stream.close();
+     const stream = try server.accept(io);
+     defer stream.close(io);
+     
 
      // Upgrade tcp to tls
-     var conn = try tls.server(tcp.stream, .{ .auth = auth });
+     var conn = tls.serverFromStream(io, stream, .{
+         .auth = &auth,
+         .now = try std.Io.Clock.real.now(io),
+     }
      
      // use conn
 ```

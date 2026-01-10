@@ -9,12 +9,10 @@ pub fn build(b: *std.Build) void {
     });
 
     const examples = [_][]const u8{
-        "http_get",
-        // "http_get_std",
-        "server",
         "top_sites",
+        "http_get",
+        "server",
         "badssl",
-        // "std_top_sites",
         "all_ciphers",
         "client_auth",
         "fuzz_server",
@@ -22,6 +20,8 @@ pub fn build(b: *std.Build) void {
         "http_get_resumption",
         "http_get2",
 
+        // "http_get_std",
+        // "std_top_sites",
         //"client",
         //"client_std",
         // TODO: build tls zig on Linux

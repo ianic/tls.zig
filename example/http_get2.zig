@@ -3,17 +3,11 @@ const tls = @import("tls");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
-pub fn main() !void {
-    var dbga = std.heap.DebugAllocator(.{}){};
-    defer _ = dbga.deinit();
-    const gpa = dbga.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    var threaded: std.Io.Threaded = .init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
     const url = if (args.len > 1) args[1] else "https://www.lutrija.hr";
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;

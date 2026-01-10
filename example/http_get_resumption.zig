@@ -2,38 +2,33 @@ const std = @import("std");
 const tls = @import("tls");
 const cmn = @import("common.zig");
 
-pub fn main() !void {
-    var dbga = std.heap.DebugAllocator(.{}){};
-    defer _ = dbga.deinit();
-    const allocator = dbga.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
     const now = try std.Io.Clock.real.now(io);
 
     // Get url from args
     var url: []const u8 = "https://ziglang.org";
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
     if (args.len > 1) url = args[1];
     const uri = try std.Uri.parse(url);
     const host = uri.host.?.percent_encoded;
     const port = 443;
 
     // Load system root certificates
-    var root_ca = try tls.config.cert.fromSystem(allocator, io);
-    defer root_ca.deinit(allocator);
+    var root_ca = try tls.config.cert.fromSystem(gpa, io);
+    defer root_ca.deinit(gpa);
 
     // Prepare config with session resumption collector
-    var session_resumption: tls.config.Client.SessionResumption = .init(allocator, now);
+    var session_resumption: tls.config.Client.SessionResumption = .init(gpa, now);
     defer session_resumption.deinit();
     var diagnostic: tls.config.Client.Diagnostic = .{};
     const config: tls.config.Client = .{
         .host = host,
         .root_ca = root_ca,
         .session_resumption = &session_resumption,
-        .key_log_callback = tls.config.key_log.callback,
+        .key_log_callback = tls.config.key_log.init(init.minimal.environ),
         .diagnostic = &diagnostic,
         .now = now,
     };

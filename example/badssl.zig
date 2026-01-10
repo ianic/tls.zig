@@ -2,19 +2,15 @@ const std = @import("std");
 const tls = @import("tls");
 const cmn = @import("common.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
 
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const sets = try readBadssl(allocator);
+    const sets = try readBadssl(gpa);
     defer sets.deinit();
 
-    var root_ca = try tls.config.cert.fromSystem(allocator, io);
-    defer root_ca.deinit(allocator);
+    var root_ca = try tls.config.cert.fromSystem(gpa, io);
+    defer root_ca.deinit(gpa);
 
     for (sets.value) |set| {
         std.debug.print("\n{s}\n{s}\n", .{ set.heading, set.description });

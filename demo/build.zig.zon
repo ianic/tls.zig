@@ -2,6 +2,7 @@
     .name = .demo,
     .version = "0.0.0",
     .fingerprint = 0xd642dfa0bb514ab0,
+    .minimum_zig_version = "0.16.0-dev.2040+c475f1fcd",
     .dependencies = .{
         .tls = .{
             .path = "../",
