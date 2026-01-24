@@ -253,7 +253,8 @@ pub const Connection = struct {
 
         fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
             const self: *Reader = @fieldParentPtr("interface", r);
-            const n = self.conn.read(limit.slice(w.unusedCapacitySlice())) catch |err| {
+            const buf = limit.slice(try w.writableSliceGreedy(1));
+            const n = self.conn.read(buf) catch |err| {
                 self.err = err;
                 if (err == error.EndOfStream) return error.EndOfStream;
                 return error.ReadFailed;
