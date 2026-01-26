@@ -54,7 +54,7 @@ pub const Reader = struct {
 
     fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
         const self: *Reader = @fieldParentPtr("interface", r);
-        const buf = limit.slice(w.unusedCapacitySlice());
+        const buf = limit.slice(try w.writableSliceGreedy(1));
 
         while (true) {
             var iov: [1]posix.iovec = .{
