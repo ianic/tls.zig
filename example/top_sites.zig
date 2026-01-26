@@ -5,8 +5,13 @@ const Io = std.Io;
 const cmn = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const io = init.io;
     const gpa = init.gpa;
+    var threaded: std.Io.Threaded = .init(gpa, .{
+        .environ = init.minimal.environ,
+        .async_limit = Io.Limit.limited(32),
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
 
     var root_ca = try tls.config.cert.fromSystem(gpa, io);
     defer root_ca.deinit(gpa);
