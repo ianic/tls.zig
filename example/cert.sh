@@ -4,6 +4,7 @@ rm -rf cert
 mkdir -p cert
 cd cert
 
+PATH=$PATH:$(go env GOPATH)/bin
 git clone https://github.com/jsha/minica.git
 cd minica
 go install
