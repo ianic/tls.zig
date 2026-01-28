@@ -244,7 +244,7 @@ pub const CertificateBuilder = struct {
                 h.setSignatureVerifyBytes(&signer);
                 const signature = try signer.finalize();
                 var buf: [Ecdsa.Signature.der_encoded_length_max]u8 = undefined;
-                break :brk .{ toDer(Ecdsa, signature, &buf), comptime_scheme };
+                break :brk .{ signature.toDer(&buf), comptime_scheme };
             },
             inline .rsa_pss_rsae_sha256,
             .rsa_pss_rsae_sha384,
@@ -557,28 +557,4 @@ test "DhKeyPair.x25519" {
     );
     var kp = try DhKeyPair.init(seed, &.{.x25519});
     try testing.expectEqualSlices(u8, expected, try kp.sharedKey(.x25519, server_pub_key));
-}
-
-// This is copy from the standard library: std/crypto/ecdsa.zig:136
-// which currently fails to build.
-// TODO: Remove this when https://codeberg.org/ziglang/zig/pulls/30701 is merged.
-fn toDer(comptime Ecdsa: type, sig: Ecdsa.Signature, buf: *[Ecdsa.Signature.der_encoded_length_max]u8) []u8 {
-    var w: std.Io.Writer = .fixed(buf);
-    const sig_r = mem.trimStart(u8, &sig.r, &.{0});
-    const sig_s = mem.trimStart(u8, &sig.s, &.{0});
-    const r_len = @as(u8, @intCast(sig_r.len + (sig_r[0] >> 7)));
-    const s_len = @as(u8, @intCast(sig_s.len + (sig_s[0] >> 7)));
-    const seq_len = @as(u8, @intCast(2 + r_len + 2 + s_len));
-    w.writeAll(&[_]u8{ 0x30, seq_len }) catch unreachable;
-    w.writeAll(&[_]u8{ 0x02, r_len }) catch unreachable;
-    if (sig_r[0] >> 7 != 0) {
-        w.writeByte(0x00) catch unreachable;
-    }
-    w.writeAll(sig_r) catch unreachable;
-    w.writeAll(&[_]u8{ 0x02, s_len }) catch unreachable;
-    if (sig_s[0] >> 7 != 0) {
-        w.writeByte(0x00) catch unreachable;
-    }
-    w.writeAll(sig_s) catch unreachable;
-    return w.buffered();
 }
