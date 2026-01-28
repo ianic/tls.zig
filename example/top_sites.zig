@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     var threaded: std.Io.Threaded = .init(gpa, .{
         .environ = init.minimal.environ,
-        .async_limit = Io.Limit.limited(32),
+        .async_limit = Io.Limit.limited(128),
     });
     defer threaded.deinit();
     const io = threaded.io();
@@ -40,6 +40,8 @@ pub fn main(init: std.process.Init) !void {
         group.async(io, run, .{ gpa, io, domain, root_ca, &counter });
     }
 
+    std.log.debug("all task started", .{});
+
     var elapsed: usize = 0;
     while (counter.total() < tasks) {
         try io.sleep(.fromSeconds(1), .real);
@@ -49,7 +51,9 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
     }
-    try group.await(io);
+    if (elapsed <= 10) {
+        try group.await(io);
+    }
 
     counter.show();
     if (counter.failRate() > 0.01) std.process.exit(1);
