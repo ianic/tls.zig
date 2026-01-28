@@ -338,13 +338,14 @@ const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
 
 test "encrypt decrypt" {
+    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
     var output_buf: [1024]u8 = undefined;
     var stream_reader: Io.Reader = .fixed(&data12.server_pong ** 4);
     var stream_writer: Io.Writer = .fixed(&output_buf);
     var conn: Connection = .{
         .input = &stream_reader,
         .output = &stream_writer,
-        .cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client),
+        .cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client, rnd),
     };
     conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.rnd = testu.random(0); // use fixed rng
 
@@ -449,17 +450,18 @@ pub const VecPut = struct {
 };
 
 test "client/server connection" {
+    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
     // create ciphers pair
     const cipher_client, const cipher_server = brk: {
         const Transcript = @import("transcript.zig").Transcript;
         const CipherSuite = @import("cipher.zig").CipherSuite;
         const cipher_suite: CipherSuite = .AES_256_GCM_SHA384;
 
-        var rnd: [128]u8 = undefined;
-        std.crypto.random.bytes(&rnd);
+        var rnd_buf: [128]u8 = undefined;
+        rnd.bytes(&rnd_buf);
         const secret = Transcript.Secret{
-            .client = rnd[0..64],
-            .server = rnd[64..],
+            .client = rnd_buf[0..64],
+            .server = rnd_buf[64..],
         };
 
         break :brk .{

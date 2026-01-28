@@ -24,6 +24,7 @@ fn run(io: std.Io, root_ca: tls.config.cert.Bundle, domain: []const u8, now: std
             .host = "",
             .cipher_suites = &[_]tls.config.CipherSuite{cs},
             .now = now,
+            .random = (std.Random.IoSource{ .io = io }).interface(),
         }) catch |err| {
             std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
             fail_count += 1;

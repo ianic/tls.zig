@@ -272,12 +272,18 @@ pub fn get(
     var output_buf: [tls.output_buffer_len]u8 = undefined;
     var reader = tcp.reader(io, &input_buf);
     var writer = tcp.writer(io, &output_buf);
-    var cli = try tls.client(&reader.interface, &writer.interface, opt);
+    var cli = tls.client(&reader.interface, &writer.interface, opt) catch |err| {
+        if (reader.err) |e| return e;
+        return err;
+    };
 
     // Send http GET request
     var buf: [256]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
-    try cli.writeAll(req);
+    cli.writeAll(req) catch |err| {
+        if (writer.err) |e| return e;
+        return err;
+    };
 
     // Read and print http response
     var n: usize = 0;

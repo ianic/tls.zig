@@ -44,6 +44,7 @@ pub fn main(init: std.process.Init) !void {
             // },
             .auth = &auth,
             .now = try std.Io.Clock.real.now(io),
+            .random = (std.Random.IoSource{ .io = io }).interface(),
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             continue;

@@ -26,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
                 .root_ca = root_ca,
                 .host = "",
                 .now = try std.Io.Clock.real.now(io),
+                .random = (std.Random.IoSource{ .io = io }).interface(),
             }) catch |err| {
                 std.debug.print(
                     "\t{s} {s} {}\n",

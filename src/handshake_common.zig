@@ -160,7 +160,7 @@ pub const cert = struct {
 
         var bundle: Bundle = .{};
 
-        //Contains modified code from std.crypto.Certificate.Bundle.addCertsFromFile 
+        //Contains modified code from std.crypto.Certificate.Bundle.addCertsFromFile
         const decoded_size_upper_bound = size / 4 * 3;
         const needed_capacity = std.math.cast(u32, decoded_size_upper_bound + size) orelse
             return Certificate.Bundle.AddCertsFromFileError.CertificateAuthorityBundleTooBig;
@@ -194,6 +194,7 @@ pub const CertificateBuilder = struct {
     transcript: *Transcript,
     tls_version: proto.Version = .tls_1_3,
     side: proto.Side = .client,
+    rnd: std.Random,
 
     pub fn makeCertificate(h: CertificateBuilder, w: *record.Writer) !void {
         const certs = h.cert_key_pair.bundle.bytes.items;
@@ -253,7 +254,7 @@ pub const CertificateBuilder = struct {
                 var signer = try h.cert_key_pair.key.key.rsa.signerOaep(Hash, null);
                 h.setSignatureVerifyBytes(&signer);
                 var buf: [512]u8 = undefined;
-                const signature = try signer.finalize(&buf);
+                const signature = try signer.finalize(&buf, h.rnd);
                 break :brk .{ signature.bytes, comptime_scheme };
             },
             else => return error.TlsUnknownSignatureScheme,

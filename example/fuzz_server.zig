@@ -20,10 +20,12 @@ pub fn main(init: std.process.Init) !void {
     defer client_root_ca.deinit(gpa);
 
     const now = try std.Io.Clock.real.now(io);
+    const random = (std.Random.IoSource{ .io = io }).interface();
 
     const opt1: tls.config.Server = .{
         .auth = &rsa_auth,
         .now = now,
+        .random = random,
     };
     const opt2: tls.config.Server = .{
         .client_auth = .{
@@ -32,10 +34,12 @@ pub fn main(init: std.process.Init) !void {
         },
         .auth = &rsa_auth,
         .now = now,
+        .random = random,
     };
     const opt4: tls.config.Server = .{
         .auth = &ec_auth,
         .now = now,
+        .random = random,
     };
 
     const s1 = try std.Thread.spawn(.{}, runServer, .{ io, 4433, opt1 });

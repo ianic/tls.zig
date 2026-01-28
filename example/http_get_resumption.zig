@@ -31,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
         .key_log_callback = tls.config.key_log.init(init.minimal.environ),
         .diagnostic = &diagnostic,
         .now = now,
+        .random = (std.Random.IoSource{ .io = io }).interface(),
     };
 
     // Make multiple connections. After the first one other should use session

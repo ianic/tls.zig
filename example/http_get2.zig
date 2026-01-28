@@ -34,6 +34,7 @@ pub fn main(init: std.process.Init) !void {
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .now = try std.Io.Clock.real.now(io),
+        .random = (std.Random.IoSource{ .io = io }).interface(),
     });
 
     // conn.output.buffer = conn.output.buffer[0..62];

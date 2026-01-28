@@ -66,6 +66,7 @@ pub fn main(init: std.process.Init) !void {
                 .diagnostic = &diagnostic,
                 .key_log_callback = tls.config.key_log.init(init.minimal.environ),
                 .now = try std.Io.Clock.real.now(io),
+                .random = (std.Random.IoSource{ .io = io }).interface(),
             });
 
             // Show response

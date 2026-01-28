@@ -103,6 +103,7 @@ pub const Ktls = @import("Ktls.zig");
 
 test "nonblock handshake and connection" {
     const testing = @import("std").testing;
+    const random = (std.Random.IoSource{ .io = testing.io }).interface();
 
     // data from server to the client
     var sc_buf: [max_ciphertext_record_len]u8 = undefined;
@@ -112,12 +113,17 @@ test "nonblock handshake and connection" {
     // client/server handshake produces ciphers
     const cli_cipher, const srv_cipher = brk: {
         var cli = nonblock.Client.init(.{
+            .random = random,
             .root_ca = .{},
             .host = &.{},
             .insecure_skip_verify = true,
             .now = .zero,
         });
-        var srv = nonblock.Server.init(.{ .auth = null, .now = .zero });
+        var srv = nonblock.Server.init(.{
+            .random = random,
+            .auth = null,
+            .now = .zero,
+        });
 
         // client flight1; client hello is in buf1
         var cr = try cli.run(&sc_buf, &cs_buf);

@@ -1,9 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const crypto = std.crypto;
 const mem = std.mem;
 const Io = std.Io;
-const Certificate = crypto.Certificate;
+const Certificate = std.crypto.Certificate;
 
 const Cipher = @import("cipher.zig").Cipher;
 const CipherSuite = @import("cipher.zig").CipherSuite;
@@ -26,6 +25,8 @@ const cert = common.cert;
 const log = std.log.scoped(.tls);
 
 pub const Options = struct {
+    random: std.Random,
+
     /// Server authentication. If null server will not send Certificate and
     /// CertificateVerify message.
     auth: ?*CertKeyPair,
@@ -122,7 +123,7 @@ pub const Handshake = struct {
     }
 
     fn initKeys(h: *Self, opt: Options) void {
-        crypto.random.bytes(&h.server_random);
+        opt.random.bytes(&h.server_random);
         if (opt.auth) |a| {
             // required signature scheme in client hello
             h.signature_scheme = a.key.signature_scheme;
@@ -154,7 +155,7 @@ pub const Handshake = struct {
 
         const shared_key = brk: {
             var seed: [DhKeyPair.seed_len]u8 = undefined;
-            crypto.random.bytes(&seed);
+            opt.random.bytes(&seed);
             var kp = try DhKeyPair.init(seed, &[_]proto.NamedGroup{h.named_group});
             h.server_pub_key = try common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
             break :brk try kp.sharedKey(h.named_group, h.client_pub_key);
@@ -182,6 +183,7 @@ pub const Handshake = struct {
         }
         if (opt.auth) |auth| {
             const cb = CertificateBuilder{
+                .rnd = opt.random,
                 .cert_key_pair = auth,
                 .transcript = &h.transcript,
                 .side = .server,

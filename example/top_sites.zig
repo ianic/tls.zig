@@ -62,6 +62,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .now = std.Io.Clock.real.now(io) catch unreachable,
+        .random = (std.Random.IoSource{ .io = io }).interface(),
     };
     if (cmn.inList(domain, &cmn.no_keyber)) {
         opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };

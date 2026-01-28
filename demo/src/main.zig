@@ -28,6 +28,7 @@ pub fn main(init: std.process.Init) !void {
         .host = host,
         .root_ca = root_ca,
         .now = try std.Io.Clock.real.now(io),
+        .random = (std.Random.IoSource{ .io = io }).interface(),
     });
 
     // Send http GET request
