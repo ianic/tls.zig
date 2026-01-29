@@ -61,17 +61,18 @@ fn connectReceive(io: Io, addr: Io.net.IpAddress, opt: tls.config.Client) !void 
 test "server without certificate" {
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
 
-    const opt: tls.config.Server = .{ .auth = null, .now = now, .random = random };
+    const opt: tls.config.Server = .{ .auth = null, .now = now, .rng = rng };
     var server = try address.listen(io, .{ .reuse_address = true });
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 2 });
     // client with insecure_skip_verify connects
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
     // if insecure_skip_verify is not set connection fails
     try testing.expectError(
         error.TlsUnexpectedMessage,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .random = random }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -80,7 +81,8 @@ test "server with ec key key pair" {
     const allocator = testing.allocator;
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
@@ -90,17 +92,17 @@ test "server with ec key key pair" {
     var root_ca = try tls.config.cert.fromFilePath(allocator, io, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .random = random };
+    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .rng = rng };
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
     // client with root certificates connects; server certificates are validated
-    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .random = random }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -109,7 +111,8 @@ test "server with ec key key pair from slices" {
     const allocator = testing.allocator;
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
 
     var auth = try tls.config.CertKeyPair.fromSlice(
         allocator,
@@ -122,17 +125,17 @@ test "server with ec key key pair from slices" {
     var root_ca = try tls.config.cert.fromSlice(allocator, io, @embedFile("cert/minica.pem"));
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .random = random };
+    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .rng = rng };
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
     // client with root certificates connects; server certificates are validated
-    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .random = random }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -141,7 +144,8 @@ test "server with rsa key key pair" {
     const allocator = testing.allocator;
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
@@ -151,17 +155,17 @@ test "server with rsa key key pair" {
     var root_ca = try tls.config.cert.fromFilePath(allocator, io, dir, "minica.pem");
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .random = random };
+    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .rng = rng };
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
     // client with root certificates connects; server certificates are validated
-    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .random = random }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -170,7 +174,8 @@ test "server request client authentication" {
     const allocator = testing.allocator;
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
@@ -186,16 +191,16 @@ test "server request client authentication" {
         },
         .auth = &auth,
         .now = now,
-        .random = random,
+        .rng = rng,
     };
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 2 + client_keys.len });
 
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
 
     // 'normal' client connect, it's not sending client certificates but server don't require it
-    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
 
     // client with client certificate
     for (client_keys) |sub_path| {
@@ -209,7 +214,7 @@ test "server request client authentication" {
             .root_ca = root_ca,
             .auth = &client_auth,
             .now = now,
-            .random = random,
+            .rng = rng,
         };
         try connectReceive(io, server.socket.address, client_opt);
     }
@@ -221,7 +226,8 @@ test "server require client authentication" {
     const allocator = testing.allocator;
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
 
     var auth = try tls.config.CertKeyPair.fromFilePath(allocator, io, dir, "localhost_rsa/cert.pem", "localhost_rsa/key.pem");
@@ -237,7 +243,7 @@ test "server require client authentication" {
         },
         .auth = &auth,
         .now = now,
-        .random = random,
+        .rng = rng,
     };
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 1 + client_keys.len });
@@ -245,7 +251,7 @@ test "server require client authentication" {
     // 'normal' client without client certificates can't connect; server REQUIRES client certificate
     try testing.expectError(
         error.TlsAlertCertificateRequired,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .random = random }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng }),
     );
 
     // load client certificate and connect
@@ -258,7 +264,7 @@ test "server require client authentication" {
             .root_ca = root_ca,
             .auth = &client_auth,
             .now = now,
-            .random = random,
+            .rng = rng,
         };
         try connectReceive(io, server.socket.address, client_opt);
     }
@@ -270,7 +276,8 @@ test "server send key update" {
     const allocator = testing.allocator;
     const io = testing.io;
     const now = try std.Io.Clock.real.now(io);
-    const random = (std.Random.IoSource{ .io = io }).interface();
+    const rng_impl = std.Random.IoSource{ .io = io };
+    const rng = rng_impl.interface();
 
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
     var buf: [256]u8 = undefined;
@@ -294,11 +301,11 @@ test "server send key update" {
     var root_ca = try tls.config.cert.fromFilePathAbsolute(allocator, io, ca_cert_path);
     defer root_ca.deinit(allocator);
 
-    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .random = random };
+    const opt: tls.config.Server = .{ .auth = &auth, .now = now, .rng = rng };
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSendKeyUpdate, .{ io, &server, opt });
     // client will receive key multiple  times
-    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .random = random });
+    try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     thr.join();
 }
 

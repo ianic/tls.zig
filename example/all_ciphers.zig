@@ -18,13 +18,14 @@ pub fn main(init: std.process.Init) !void {
 
 fn run(io: std.Io, root_ca: tls.config.cert.Bundle, domain: []const u8, now: std.Io.Timestamp) usize {
     var fail_count: usize = 0;
+    const rng_impl: std.Random.IoSource = .{ .io = io };
     for (tls.config.cipher_suites.all) |cs| {
         cmn.get(io, domain, null, false, false, .{
             .root_ca = root_ca,
             .host = "",
             .cipher_suites = &[_]tls.config.CipherSuite{cs},
             .now = now,
-            .random = (std.Random.IoSource{ .io = io }).interface(),
+            .rng = rng_impl.interface(),
         }) catch |err| {
             std.debug.print("❌ {s} {s} {}\n", .{ @tagName(cs), domain, err });
             fail_count += 1;

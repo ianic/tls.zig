@@ -338,16 +338,17 @@ const data12 = @import("testdata/tls12.zig");
 const testu = @import("testu.zig");
 
 test "encrypt decrypt" {
-    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
     var output_buf: [1024]u8 = undefined;
     var stream_reader: Io.Reader = .fixed(&data12.server_pong ** 4);
     var stream_writer: Io.Writer = .fixed(&output_buf);
     var conn: Connection = .{
         .input = &stream_reader,
         .output = &stream_writer,
-        .cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client, rnd),
+        .cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client, rng),
     };
-    conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.rnd = testu.random(0); // use fixed rng
+    conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.rng = testu.random(0); // use fixed rng
 
     { // encrypt verify data from example
         _ = testu.random(0x40); // sets iv to 40, 41, ... 4f
@@ -450,7 +451,9 @@ pub const VecPut = struct {
 };
 
 test "client/server connection" {
-    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+
     // create ciphers pair
     const cipher_client, const cipher_server = brk: {
         const Transcript = @import("transcript.zig").Transcript;
@@ -458,7 +461,7 @@ test "client/server connection" {
         const cipher_suite: CipherSuite = .AES_256_GCM_SHA384;
 
         var rnd_buf: [128]u8 = undefined;
-        rnd.bytes(&rnd_buf);
+        rng.bytes(&rnd_buf);
         const secret = Transcript.Secret{
             .client = rnd_buf[0..64],
             .server = rnd_buf[64..],

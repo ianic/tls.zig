@@ -30,6 +30,7 @@ pub fn main(init: std.process.Init) !void {
     const pg_file = try std.Io.Dir.cwd().openFile(io, file_name, .{});
     defer pg_file.close(io);
 
+    const rng_impl: std.Random.IoSource = .{ .io = io };
     var buf: [32 * 1024]u8 = undefined;
     while (true) {
         // Tcp accept
@@ -44,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
             // },
             .auth = &auth,
             .now = try std.Io.Clock.real.now(io),
-            .random = (std.Random.IoSource{ .io = io }).interface(),
+            .rng = rng_impl.interface(),
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             continue;

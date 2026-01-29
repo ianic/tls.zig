@@ -13,6 +13,7 @@ pub fn main(init: std.process.Init) !void {
         var ca_bundle = try tls.config.cert.fromSystem(gpa, io);
         defer ca_bundle.deinit(gpa);
 
+        const rng_impl: std.Random.IoSource = .{ .io = io };
         try cmn.get(io, domain, null, true, true, .{
             .host = "",
             .root_ca = ca_bundle,
@@ -23,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
             .cipher_suites = tls.config.cipher_suites.secure,
             .key_log_callback = tls.config.key_log.init(init.minimal.environ),
             .now = try std.Io.Clock.real.now(io),
-            .random = (std.Random.IoSource{ .io = io }).interface(),
+            .rng = rng_impl.interface(),
         });
     }
 }

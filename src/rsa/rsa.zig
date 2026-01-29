@@ -59,7 +59,7 @@ pub const PublicKey = struct {
     /// Encrypt a short message using RSAES-PKCS1-v1_5.
     /// The use of this scheme for encrypting an arbitrary message, as opposed to a
     /// randomly generated key, is NOT RECOMMENDED.
-    pub fn encryptPkcsv1_5(pk: PublicKey, msg: []const u8, out: []u8, rnd: std.Random) ![]const u8 {
+    pub fn encryptPkcsv1_5(pk: PublicKey, msg: []const u8, out: []u8, rng: std.Random) ![]const u8 {
         // align variable names with spec
         const k = byteLen(pk.modulus.bits());
         if (out.len < k) return error.BufferTooSmall;
@@ -74,7 +74,7 @@ pub const PublicKey = struct {
         // Section: 7.2.1
         // PS consists of pseudo-randomly generated nonzero octets.
         for (ps) |*v| {
-            v.* = rnd.uintLessThan(u8, 0xff) + 1;
+            v.* = rng.uintLessThan(u8, 0xff) + 1;
         }
 
         em[em.len - msg.len - 1] = 0;
@@ -93,7 +93,7 @@ pub const PublicKey = struct {
         msg: []const u8,
         label: []const u8,
         out: []u8,
-        rnd: std.Random,
+        rng: std.Random,
     ) ![]const u8 {
         // align variable names with spec
         const k = byteLen(pk.modulus.bits());
@@ -105,7 +105,7 @@ pub const PublicKey = struct {
         var em = out[0..k];
         em[0] = 0;
         const seed = em[1..][0..Hash.digest_length];
-        rnd.bytes(seed);
+        rng.bytes(seed);
 
         // DB = lHash || PS || 0x01 || M.
         var db = em[1 + seed.len ..];
@@ -256,11 +256,11 @@ pub const KeyPair = struct {
         msg: []const u8,
         salt: ?[]const u8,
         out: []u8,
-        rnd: std.Random,
+        rng: std.Random,
     ) !Pss(Hash).Signature {
         var st = try signerOaep(kp, Hash, salt);
         st.update(msg);
-        return try st.finalize(out, rnd);
+        return try st.finalize(out, rng);
     }
 
     /// Salt must outlive returned `PSS.Signer`.
@@ -509,13 +509,13 @@ pub fn Pss(comptime Hash: type) type {
                 self.h.update(data);
             }
 
-            pub fn finalize(self: *Signer, out: []u8, rnd: std.Random) !PssT.Signature {
+            pub fn finalize(self: *Signer, out: []u8, rng: std.Random) !PssT.Signature {
                 var hashed: [Hash.digest_length]u8 = undefined;
                 self.h.final(&hashed);
 
                 const salt = if (self.salt) |s| s else brk: {
                     var res: [default_salt_len]u8 = undefined;
-                    rnd.bytes(&res);
+                    rng.bytes(&res);
                     break :brk &res;
                 };
 
@@ -835,8 +835,9 @@ test "rsa PKCS1-v1_5 encrypt and decrypt" {
 
     const msg = "rsa PKCS1-v1_5 encrypt and decrypt";
     var out: [max_modulus_len]u8 = undefined;
-    const rnd = (std.Random.IoSource{ .io = std.testing.io }).interface();
-    const enc = try kp.public.encryptPkcsv1_5(msg, &out, rnd);
+    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
+    const rng = rng_impl.interface();
+    const enc = try kp.public.encryptPkcsv1_5(msg, &out, rng);
 
     var out2: [max_modulus_len]u8 = undefined;
     const dec = try kp.decryptPkcsv1_5(enc, &out2);
@@ -851,8 +852,9 @@ test "rsa OAEP encrypt and decrypt" {
     const msg = "rsa OAEP encrypt and decrypt";
     const label = "";
     var out: [max_modulus_len]u8 = undefined;
-    const rnd = (std.Random.IoSource{ .io = std.testing.io }).interface();
-    const enc = try kp.public.encryptOaep(TestHash, msg, label, &out, rnd);
+    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
+    const rng = rng_impl.interface();
+    const enc = try kp.public.encryptOaep(TestHash, msg, label, &out, rng);
 
     var out2: [max_modulus_len]u8 = undefined;
     const dec = try kp.decryptOaep(TestHash, enc, label, &out2);
@@ -878,13 +880,15 @@ test "rsa PSS signature" {
     const msg = "rsa PSS signature";
     var out: [max_modulus_len]u8 = undefined;
 
-    const rnd = (std.Random.IoSource{ .io = std.testing.io }).interface();
+    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
+    const rng = rng_impl.interface();
+
     const salts = [_][]const u8{ "asdf", "" };
     for (salts) |salt| {
-        const signature = try kp.signOaep(TestHash, msg, salt, &out, rnd);
+        const signature = try kp.signOaep(TestHash, msg, salt, &out, rng);
         try signature.verify(msg, kp.public, salt.len);
     }
 
-    const signature = try kp.signOaep(TestHash, msg, null, &out, rnd); // random salt
+    const signature = try kp.signOaep(TestHash, msg, null, &out, rng); // random salt
     try signature.verify(msg, kp.public, null);
 }

@@ -194,7 +194,7 @@ pub const CertificateBuilder = struct {
     transcript: *Transcript,
     tls_version: proto.Version = .tls_1_3,
     side: proto.Side = .client,
-    rnd: std.Random,
+    rng: std.Random,
 
     pub fn makeCertificate(h: CertificateBuilder, w: *record.Writer) !void {
         const certs = h.cert_key_pair.bundle.bytes.items;
@@ -254,7 +254,7 @@ pub const CertificateBuilder = struct {
                 var signer = try h.cert_key_pair.key.key.rsa.signerOaep(Hash, null);
                 h.setSignatureVerifyBytes(&signer);
                 var buf: [512]u8 = undefined;
-                const signature = try signer.finalize(&buf, h.rnd);
+                const signature = try signer.finalize(&buf, h.rng);
                 break :brk .{ signature.bytes, comptime_scheme };
             },
             else => return error.TlsUnknownSignatureScheme,

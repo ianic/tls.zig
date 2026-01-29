@@ -24,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
     var session_resumption: tls.config.Client.SessionResumption = .init(gpa, now);
     defer session_resumption.deinit();
     var diagnostic: tls.config.Client.Diagnostic = .{};
+    const rng_impl: std.Random.IoSource = .{ .io = io };
     const config: tls.config.Client = .{
         .host = host,
         .root_ca = root_ca,
@@ -31,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         .key_log_callback = tls.config.key_log.init(init.minimal.environ),
         .diagnostic = &diagnostic,
         .now = now,
-        .random = (std.Random.IoSource{ .io = io }).interface(),
+        .rng = rng_impl.interface(),
     };
 
     // Make multiple connections. After the first one other should use session

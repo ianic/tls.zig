@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     var threaded: std.Io.Threaded = .init(gpa, .{
         .environ = init.minimal.environ,
-        .async_limit = Io.Limit.limited(128),
+        .async_limit = Io.Limit.limited(32),
     });
     defer threaded.deinit();
     const io = threaded.io();
@@ -61,12 +61,13 @@ pub fn main(init: std.process.Init) !void {
 
 pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.config.cert.Bundle, counter: *cmn.Counter) Io.Cancelable!void {
     var diagnostic: tls.config.Client.Diagnostic = .{};
+    const rng_impl: std.Random.IoSource = .{ .io = io };
     var opt: tls.config.Client = .{
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .now = std.Io.Clock.real.now(io) catch unreachable,
-        .random = (std.Random.IoSource{ .io = io }).interface(),
+        .rng = rng_impl.interface(),
     };
     if (cmn.inList(domain, &cmn.no_keyber)) {
         opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };

@@ -11,6 +11,7 @@ pub fn main(init: std.process.Init) !void {
 
     var root_ca = try tls.config.cert.fromSystem(gpa, io);
     defer root_ca.deinit(gpa);
+    const rng_impl: std.Random.IoSource = .{ .io = io };
 
     for (sets.value) |set| {
         std.debug.print("\n{s}\n{s}\n", .{ set.heading, set.description });
@@ -26,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
                 .root_ca = root_ca,
                 .host = "",
                 .now = try std.Io.Clock.real.now(io),
-                .random = (std.Random.IoSource{ .io = io }).interface(),
+                .rng = rng_impl.interface(),
             }) catch |err| {
                 std.debug.print(
                     "\t{s} {s} {}\n",

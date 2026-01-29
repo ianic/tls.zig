@@ -25,7 +25,7 @@ const cert = common.cert;
 const log = std.log.scoped(.tls);
 
 pub const Options = struct {
-    random: std.Random,
+    rng: std.Random,
 
     /// Server authentication. If null server will not send Certificate and
     /// CertificateVerify message.
@@ -123,7 +123,7 @@ pub const Handshake = struct {
     }
 
     fn initKeys(h: *Self, opt: Options) void {
-        opt.random.bytes(&h.server_random);
+        opt.rng.bytes(&h.server_random);
         if (opt.auth) |a| {
             // required signature scheme in client hello
             h.signature_scheme = a.key.signature_scheme;
@@ -155,7 +155,7 @@ pub const Handshake = struct {
 
         const shared_key = brk: {
             var seed: [DhKeyPair.seed_len]u8 = undefined;
-            opt.random.bytes(&seed);
+            opt.rng.bytes(&seed);
             var kp = try DhKeyPair.init(seed, &[_]proto.NamedGroup{h.named_group});
             h.server_pub_key = try common.dupe(&h.server_pub_key_buf, try kp.publicKey(h.named_group));
             break :brk try kp.sharedKey(h.named_group, h.client_pub_key);
@@ -183,7 +183,7 @@ pub const Handshake = struct {
         }
         if (opt.auth) |auth| {
             const cb = CertificateBuilder{
-                .rnd = opt.random,
+                .rng = opt.rng,
                 .cert_key_pair = auth,
                 .transcript = &h.transcript,
                 .side = .server,

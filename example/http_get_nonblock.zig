@@ -24,6 +24,8 @@ pub fn main(init: std.process.Init) !void {
     var wrt = tcp.writer(io, &.{});
     var w = &wrt.interface;
 
+    const rng_impl: std.Random.IoSource = .{ .io = io };
+
     // Do the handshake, cipher is handshake result.
     const cipher = brk: {
         var ca_bundle = try tls.config.cert.fromSystem(gpa, io);
@@ -34,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
             .cipher_suites = tls.config.cipher_suites.secure,
             .key_log_callback = tls.config.key_log.init(init.minimal.environ),
             .now = try std.Io.Clock.real.now(io),
-            .random = (std.Random.IoSource{ .io = io }).interface(),
+            .rng = rng_impl.interface(),
         };
         var handshake = tls.nonblock.Client.init(config);
 

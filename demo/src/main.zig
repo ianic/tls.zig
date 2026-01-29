@@ -24,11 +24,12 @@ pub fn main(init: std.process.Init) !void {
     var output_buf: [tls.output_buffer_len]u8 = undefined;
     var reader = tcp.reader(io, &input_buf);
     var writer = tcp.writer(io, &output_buf);
+    const rng_impl: std.Random.IoSource = .{ .io = io };
     var conn = try tls.client(&reader.interface, &writer.interface, .{
         .host = host,
         .root_ca = root_ca,
         .now = try std.Io.Clock.real.now(io),
-        .random = (std.Random.IoSource{ .io = io }).interface(),
+        .random = rng_impl.interface(),
     });
 
     // Send http GET request

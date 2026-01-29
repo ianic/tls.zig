@@ -28,7 +28,7 @@ const cert = common.cert;
 const log = std.log.scoped(.tls);
 
 pub const Options = struct {
-    random: std.Random,
+    rng: std.Random,
 
     now: Io.Timestamp,
 
@@ -241,10 +241,10 @@ pub const Handshake = struct {
     fn initKeys(h: *Self, opt: Options) !void {
         const init_keys_buf_len = 32 + 46 + DhKeyPair.seed_len;
         var buf: [init_keys_buf_len]u8 = undefined;
-        opt.random.bytes(&buf);
+        opt.rng.bytes(&buf);
 
         h.client_random = buf[0..32].*;
-        h.rsa_secret = RsaSecret.init(buf[32..][0..46].*, opt.random);
+        h.rsa_secret = RsaSecret.init(buf[32..][0..46].*, opt.rng);
         h.dh_kp = try DhKeyPair.init(buf[32 + 46 ..][0..DhKeyPair.seed_len].*, opt.named_groups);
 
         h.cert = .{
@@ -338,7 +338,7 @@ pub const Handshake = struct {
             try h.generateHandshakeCipher(opt.key_log_callback);
             try h.readEncryptedServerFlight1(resumption_ticket != null); // server flight 1
             const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
-            try h.makeClientFlight2Tls13(opt.auth, opt.random); // client flight 2
+            try h.makeClientFlight2Tls13(opt.auth, opt.rng); // client flight 2
             h.max_client_record_len = @max(h.max_client_record_len, h.output.end);
             try h.output.flush();
 
@@ -351,8 +351,8 @@ pub const Handshake = struct {
         }
 
         // tls 1.2 specific handshake part
-        try h.generateCipher(opt.key_log_callback, opt.random);
-        try h.makeClientFlight2Tls12(opt.auth, opt.random); // client flight 2
+        try h.generateCipher(opt.key_log_callback, opt.rng);
+        try h.makeClientFlight2Tls12(opt.auth, opt.rng); // client flight 2
         h.max_client_record_len = @max(h.max_client_record_len, h.output.end);
         try h.output.flush();
         try h.readServerFlight2(); // server flight 2
@@ -375,12 +375,12 @@ pub const Handshake = struct {
     fn clientFlight2(h: *Self, opt: Options) !void {
         if (h.tls_version == .tls_1_3) {
             const app_cipher = try h.generateApplicationCipher(opt.key_log_callback);
-            try h.makeClientFlight2Tls13(opt.auth, opt.random);
+            try h.makeClientFlight2Tls13(opt.auth, opt.rng);
             h.cipher = app_cipher;
         } else {
             // tls 1.2 specific handshake part
-            try h.generateCipher(opt.key_log_callback, opt.random);
-            try h.makeClientFlight2Tls12(opt.auth, opt.random);
+            try h.generateCipher(opt.key_log_callback, opt.rng);
+            try h.makeClientFlight2Tls12(opt.auth, opt.rng);
         }
     }
 
@@ -390,10 +390,10 @@ pub const Handshake = struct {
     }
 
     /// Prepare key material and generate cipher for TLS 1.2
-    fn generateCipher(h: *Self, key_log_callback: ?key_log.Callback, rnd: std.Random) !void {
+    fn generateCipher(h: *Self, key_log_callback: ?key_log.Callback, rng: std.Random) !void {
         try h.verifyCertificateSignatureTls12();
         try h.generateKeyMaterial(key_log_callback);
-        h.cipher = try Cipher.initTls12(h.cipher_suite, &h.key_material, .client, rnd);
+        h.cipher = try Cipher.initTls12(h.cipher_suite, &h.key_material, .client, rng);
     }
 
     /// Generate TLS 1.2 pre master secret, master secret and key material.
@@ -742,14 +742,14 @@ pub const Handshake = struct {
     /// finished messages for tls 1.2.
     /// If client certificate is requested also adds client certificate and
     /// certificate verify messages.
-    fn makeClientFlight2Tls12(h: *Self, auth: ?*CertKeyPair, rnd: std.Random) !void {
+    fn makeClientFlight2Tls12(h: *Self, auth: ?*CertKeyPair, rng: std.Random) !void {
         var w: record.Writer = .initFromIo(h.output);
         var cert_builder: ?CertificateBuilder = null;
 
         // Client certificate
         if (h.client_certificate_requested) {
             if (auth) |a| {
-                const cb = h.certificateBuilder(a, rnd);
+                const cb = h.certificateBuilder(a, rng);
                 cert_builder = cb;
                 var hw = try w.writerAdvance(record.header_len);
                 try cb.makeCertificate(&hw);
@@ -809,7 +809,7 @@ pub const Handshake = struct {
     /// and client certificate verify messages are also created. If the
     /// server has requested certificate but the client is not configured
     /// empty certificate message is sent, as is required by rfc.
-    fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair, rnd: std.Random) !void {
+    fn makeClientFlight2Tls13(h: *Self, auth: ?*CertKeyPair, rng: std.Random) !void {
         var w: record.Writer = .initFromIo(h.output);
 
         // Client change cipher spec
@@ -817,7 +817,7 @@ pub const Handshake = struct {
 
         if (h.client_certificate_requested) {
             if (auth) |a| {
-                const cb = h.certificateBuilder(a, rnd);
+                const cb = h.certificateBuilder(a, rng);
                 { // Certificate
                     var hw = try w.writerAdvance(record.header_len);
                     try cb.makeCertificate(&hw);
@@ -849,9 +849,9 @@ pub const Handshake = struct {
         h.output.advance(w.buffered().len);
     }
 
-    fn certificateBuilder(h: *Self, auth: *CertKeyPair, rnd: std.Random) CertificateBuilder {
+    fn certificateBuilder(h: *Self, auth: *CertKeyPair, rng: std.Random) CertificateBuilder {
         return .{
-            .rnd = rnd,
+            .rng = rng,
             .cert_key_pair = auth,
             .transcript = &h.transcript,
             .tls_version = h.tls_version,
@@ -906,12 +906,12 @@ pub const Handshake = struct {
 
 const RsaSecret = struct {
     secret: [48]u8,
-    rnd: std.Random,
+    rng: std.Random,
 
-    fn init(rand: [46]u8, rnd: std.Random) RsaSecret {
+    fn init(rand: [46]u8, rng: std.Random) RsaSecret {
         return .{
             .secret = [_]u8{ 0x03, 0x03 } ++ rand,
-            .rnd = rnd,
+            .rng = rng,
         };
     }
 
@@ -924,7 +924,7 @@ const RsaSecret = struct {
     ) ![]const u8 {
         if (cert_pub_key_algo != .rsaEncryption) return error.TlsBadSignatureScheme;
         const pk = try rsa.PublicKey.fromDer(cert_pub_key);
-        return try pk.encryptPkcsv1_5(&self.secret, out, self.rnd);
+        return try pk.encryptPkcsv1_5(&self.secret, out, self.rng);
     }
 };
 
@@ -1098,8 +1098,9 @@ test "tls 1.3 process server flight" {
         var buffer: [128]u8 = undefined;
         var w: Io.Writer = .fixed(&buffer);
         h.output = &w;
-        const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
-        try h.makeClientFlight2Tls13(null, rnd);
+        const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+        const rng = rng_impl.interface();
+        try h.makeClientFlight2Tls13(null, rng);
         try testing.expectEqualSlices(u8, &testu.hexToBytes("140303000101"), w.buffered()[0..6]);
         try testing.expectEqualSlices(u8, &data13.client_finished_wrapped, w.buffered()[6..]);
     }
@@ -1133,9 +1134,9 @@ test "create client hello" {
         };
     };
 
-    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
     try h.makeClientHello(.{
-        .random = rnd,
+        .rng = rng_impl.interface(),
         .host = "google.com",
         .root_ca = .{},
         .cipher_suites = &[_]CipherSuite{CipherSuite.ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -1150,9 +1151,9 @@ test "create client hello" {
 }
 
 test "client hello size" {
-    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
     const opt: Options = .{
-        .random = rnd,
+        .rng = rng_impl.interface(),
         .host = "some-host-name.net",
         .root_ca = .{},
         .cipher_suites = cipher_suites.all,
@@ -1193,8 +1194,9 @@ test "handshake verify server finished message" {
     try testing.expectEqualSlices(u8, &data12.client_finished, &record.handshakeHeader(.finished, 12) ++ client_finished);
 
     // init client with prepared key_material
-    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
-    h.cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client, rnd);
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+    h.cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &data12.key_material, .client, rng);
 
     // check that server verify data matches calculates from hashes of all handshake messages
     h.transcript.update(&data12.client_finished);
@@ -1329,9 +1331,9 @@ pub const NonBlock = struct {
 
 test "nonblock handshake" {
     var buffer: [1024]u8 = undefined;
-    const rnd = (std.Random.IoSource{ .io = testing.io }).interface();
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
     var h = NonBlock.init(.{
-        .random = rnd,
+        .rng = rng_impl.interface(),
         .host = "example.ulfheim.net",
         .insecure_skip_verify = true,
         .root_ca = .{},

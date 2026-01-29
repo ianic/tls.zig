@@ -28,13 +28,14 @@ pub fn main(init: std.process.Init) !void {
     var tcp_reader = tcp.reader(io, &tcp_reader_buf);
     var tcp_writer = tcp.writer(io, &tcp_writer_buf);
 
+    const rng_impl: std.Random.IoSource = .{ .io = io };
     // Upgrade tcp connection to tls
     var conn = try tls.client(&tcp_reader.interface, &tcp_writer.interface, .{
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .now = try std.Io.Clock.real.now(io),
-        .random = (std.Random.IoSource{ .io = io }).interface(),
+        .rng = rng_impl.interface(),
     });
 
     // conn.output.buffer = conn.output.buffer[0..62];
