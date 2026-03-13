@@ -80,7 +80,9 @@ fn acceptUpgrade(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !vo
     const stream = try server.accept(io);
     defer stream.close(io);
 
-    var conn = try tls.serverFromStream(io, stream, opt);
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
+    var conn = try tls.serverFromStream(io, stream, opt, &input_buf, &output_buf);
     while (try conn.next()) |buf| {
         //std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
@@ -114,7 +116,9 @@ fn acceptEcho(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void 
     const stream = try server.accept(io);
     defer stream.close(io);
 
-    var conn = try tls.serverFromStream(io, stream, opt);
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
+    var conn = try tls.serverFromStream(io, stream, opt, &input_buf, &output_buf);
     while (try conn.next()) |buf| try conn.writeAll(buf);
     try conn.close();
 }

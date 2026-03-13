@@ -38,6 +38,8 @@ pub fn main(init: std.process.Init) !void {
         defer stream.close(io);
 
         // Upgrade tcp to tls
+        var input_buf: [tls.input_buffer_len]u8 = undefined;
+        var output_buf: [tls.output_buffer_len]u8 = undefined;
         var conn = tls.serverFromStream(io, stream, .{
             // .client_auth = .{
             //     .auth_type = .request,
@@ -46,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
             .auth = &auth,
             .now = std.Io.Clock.real.now(io),
             .rng = rng_impl.interface(),
-        }) catch |err| {
+        }, &input_buf, &output_buf) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});
             continue;
         };

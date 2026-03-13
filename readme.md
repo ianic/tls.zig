@@ -32,10 +32,12 @@ To upgrade existing tcp connection to the tls connection call `tls.client`:
     defer root_ca.deinit(allocator);
 
     // Upgrade tcp connection to tls
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
     var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
-    });
+    }, &input_buf, &output_buf);
 ```
 After that you can use `conn` read/write methods as on plain tcp connection.
 
@@ -47,11 +49,13 @@ Second parameter in calling `tls.clientFromStream` are [tls.config.Client](https
 
 To use just ciphers which are graded secure or recommended on  https://ciphersuite.info:
 ```zig
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
     var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
         .cipher_suites = tls.config.cipher_suites.secure,
-    });
+    }, &input_buf, &output_buf);
 ```
 `cipher_suites` can be used to force tls 1.3 only or tls 1.2 only ciphers. Or to reorder cipher preferences.
 
@@ -65,11 +69,13 @@ If server requires client authentication set `auth` attribute in options. You ne
     var auth = try tls.config.CertKeyPair.fromFilePath(gpa, io, cert_dir, "cert.pem", "key.pem");
     defer auth.deinit(allocator);
 
+    var input_buf: [tls.input_buffer_len]u8 = undefined;
+    var output_buf: [tls.output_buffer_len]u8 = undefined;
     var conn = try tls.clientFromStream(io, tcp, .{
         .host = host,
         .root_ca = root_ca,
         .auth = auth,
-    });
+    }, &input_buf, &output_buf);
 ```
 
 When client receives certificate request from server during handshake it will respond with client certificates message build from provided certificate bundle and client certificate verify message where verify data is signed with client private key.
@@ -113,10 +119,12 @@ Library also has minimal, TLS 1.3 only server implementation. To upgrade tcp to 
      
 
      // Upgrade tcp to tls
+     var input_buf: [tls.input_buffer_len]u8 = undefined;
+     var output_buf: [tls.output_buffer_len]u8 = undefined;
      var conn = tls.serverFromStream(io, stream, .{
          .auth = &auth,
          .now = try std.Io.Clock.real.now(io),
-     }
+     }, &input_buf, &output_buf)
      
      // use conn
 ```

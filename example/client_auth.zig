@@ -57,6 +57,8 @@ pub fn main(init: std.process.Init) !void {
             defer auth.deinit(gpa);
 
             // Upgrade tcp connection to tls client
+            var input_buf: [tls.input_buffer_len]u8 = undefined;
+            var output_buf: [tls.output_buffer_len]u8 = undefined;
             var diagnostic: tls.config.Client.Diagnostic = .{};
             const rng_impl: std.Random.IoSource = .{ .io = io };
             var cli = try tls.clientFromStream(io, tcp, .{
@@ -68,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
                 .key_log_callback = tls.config.key_log.init(init.minimal.environ),
                 .now = std.Io.Clock.real.now(io),
                 .rng = rng_impl.interface(),
-            });
+            }, &input_buf, &output_buf);
 
             // Show response
             var n: usize = 0;

@@ -25,8 +25,15 @@ const handshake = struct {
 
 //TODO: io first
 /// Upgrades existing stream to the tls connection by the client tls handshake.
-pub inline fn clientFromStream(io: std.Io, stream: anytype, opt: config.Client) !Connection {
-    const input, const output = streamToRaderWriter(io, stream);
+/// Caller must provide buffers that outlive the connection.
+pub inline fn clientFromStream(
+    io: std.Io,
+    stream: anytype,
+    opt: config.Client,
+    input_buf: *[input_buffer_len]u8,
+    output_buf: *[output_buffer_len]u8,
+) !Connection {
+    const input, const output = streamToRaderWriter(io, stream, input_buf, output_buf);
     return try client(input, output, opt);
 }
 
@@ -46,8 +53,15 @@ pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connec
 }
 
 /// Upgrades existing stream to the tls connection by the server side tls handshake.
-pub inline fn serverFromStream(io: Io, stream: anytype, opt: config.Server) !Connection {
-    const input, const output = streamToRaderWriter(io, stream);
+/// Caller must provide buffers that outlive the connection.
+pub inline fn serverFromStream(
+    io: Io,
+    stream: anytype,
+    opt: config.Server,
+    input_buf: *[input_buffer_len]u8,
+    output_buf: *[output_buffer_len]u8,
+) !Connection {
+    const input, const output = streamToRaderWriter(io, stream, input_buf, output_buf);
     return try server(input, output, opt);
 }
 
@@ -61,12 +75,16 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
     };
 }
 
-/// With default buffer sizes
-inline fn streamToRaderWriter(io: std.Io, stream: anytype) struct { *Io.Reader, *Io.Writer } {
-    var input_buf: [input_buffer_len]u8 = undefined;
-    var output_buf: [output_buffer_len]u8 = undefined;
-    var reader = stream.reader(io, &input_buf);
-    var writer = stream.writer(io, &output_buf);
+/// Creates reader and writer from a stream using provided buffers.
+/// The caller must ensure buffers outlive the returned reader/writer.
+inline fn streamToRaderWriter(
+    io: std.Io,
+    stream: anytype,
+    input_buf: *[input_buffer_len]u8,
+    output_buf: *[output_buffer_len]u8,
+) struct { *Io.Reader, *Io.Writer } {
+    var reader = stream.reader(io, input_buf);
+    var writer = stream.writer(io, output_buf);
     const input = if (@hasField(@TypeOf(reader), "interface")) &reader.interface else reader.interface();
     const output = &writer.interface;
     return .{ input, output };
