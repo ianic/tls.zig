@@ -175,7 +175,7 @@ pub const Counter = struct {
     tls_1_3: usize = 0,
 
     pub fn add(self: *@This(), io: std.Io, res: Result) void {
-        self.mu.lock(io) catch return;
+        self.mu.lock(io) catch @panic("failed to lock counter: Io shutting down");
         defer self.mu.unlock(io);
 
         switch (res) {
@@ -187,7 +187,7 @@ pub const Counter = struct {
     }
 
     pub fn addSuccess(self: *@This(), io: std.Io, version: tls.config.Version) void {
-        self.mu.lock(io) catch return;
+        self.mu.lock(io) catch @panic("failed to lock counter: Io shutting down");
         defer self.mu.unlock(io);
 
         self.success += 1;
@@ -199,7 +199,7 @@ pub const Counter = struct {
     }
 
     pub fn total(self: *@This(), io: std.Io) usize {
-        self.mu.lock(io) catch return 0;
+        self.mu.lock(io) catch @panic("failed to lock counter: Io shutting down");
         defer self.mu.unlock(io);
         return self.success + self.fail + self.skip + self.err;
     }
