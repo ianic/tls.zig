@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     var client_root_ca = try tls.config.cert.fromFilePath(gpa, io, dir, "minica.pem");
     defer client_root_ca.deinit(gpa);
 
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl: std.Random.IoSource = .{ .io = io };
     const rng = rng_impl.interface();
 

@@ -60,7 +60,7 @@ fn connectReceive(io: Io, addr: Io.net.IpAddress, opt: tls.config.Client) !void 
 
 test "server without certificate" {
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
 
@@ -80,7 +80,7 @@ test "server without certificate" {
 test "server with ec key key pair" {
     const allocator = testing.allocator;
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
 
@@ -110,7 +110,7 @@ test "server with ec key key pair" {
 test "server with ec key key pair from slices" {
     const allocator = testing.allocator;
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
 
@@ -143,7 +143,7 @@ test "server with ec key key pair from slices" {
 test "server with rsa key key pair" {
     const allocator = testing.allocator;
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
 
@@ -173,7 +173,7 @@ test "server with rsa key key pair" {
 test "server request client authentication" {
     const allocator = testing.allocator;
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
@@ -225,7 +225,7 @@ test "server request client authentication" {
 test "server require client authentication" {
     const allocator = testing.allocator;
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
     const dir = try std.Io.Dir.cwd().openDir(io, "example/cert", .{});
@@ -275,7 +275,7 @@ test "server require client authentication" {
 test "server send key update" {
     const allocator = testing.allocator;
     const io = testing.io;
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
     const rng_impl = std.Random.IoSource{ .io = io };
     const rng = rng_impl.interface();
 

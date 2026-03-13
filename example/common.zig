@@ -161,7 +161,7 @@ pub const Counter = struct {
         err,
     };
 
-    mu: std.Thread.Mutex = .{},
+    mu: std.Io.Mutex = .init,
 
     success: usize = 0,
     fail: usize = 0,
@@ -174,9 +174,9 @@ pub const Counter = struct {
     tls_1_2: usize = 0,
     tls_1_3: usize = 0,
 
-    pub fn add(self: *@This(), res: Result) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+    pub fn add(self: *@This(), io: std.Io, res: Result) void {
+        self.mu.lock(io) catch return;
+        defer self.mu.unlock(io);
 
         switch (res) {
             .success => self.success += 1,
@@ -186,9 +186,9 @@ pub const Counter = struct {
         }
     }
 
-    pub fn addSuccess(self: *@This(), version: tls.config.Version) void {
-        self.mu.lock();
-        defer self.mu.unlock();
+    pub fn addSuccess(self: *@This(), io: std.Io, version: tls.config.Version) void {
+        self.mu.lock(io) catch return;
+        defer self.mu.unlock(io);
 
         self.success += 1;
         switch (version) {
@@ -198,16 +198,16 @@ pub const Counter = struct {
         }
     }
 
-    pub fn total(self: *@This()) usize {
-        self.mu.lock();
-        defer self.mu.unlock();
+    pub fn total(self: *@This(), io: std.Io) usize {
+        self.mu.lock(io) catch return 0;
+        defer self.mu.unlock(io);
         return self.success + self.fail + self.skip + self.err;
     }
 
-    pub fn show(self: *@This()) void {
+    pub fn show(self: *@This(), io: std.Io) void {
         std.debug.print(
             "stats:\n\t total: {}\n\t success: {}\n\t\t tls 1.2: {}\n\t\t tls 1.3: {}\n\t fail: {}\n\t error: {}\n\t skip: {}\n\n",
-            .{ self.total(), self.success, self.tls_1_2, self.tls_1_3, self.fail, self.err, self.skip },
+            .{ self.total(io), self.success, self.tls_1_2, self.tls_1_3, self.fail, self.err, self.skip },
         );
         std.debug.print("\t max client record:    {d:>5}\n", .{self.max_client_record_len});
         std.debug.print("\t max server record:    {d:>5}\n", .{self.max_server_record_len});
