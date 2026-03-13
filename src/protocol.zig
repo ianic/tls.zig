@@ -94,6 +94,41 @@ pub fn alertFromError(err: anyerror) [2]u8 {
     return [2]u8{ @intFromEnum(Alert.Level.fatal), @intFromEnum(Alert.fromError(err)) };
 }
 
+pub const TlsError = error{
+    TlsUnexpectedMessage,
+    TlsBadRecordMac,
+    TlsRecordOverflow,
+    TlsHandshakeFailure,
+    TlsBadCertificate,
+    TlsUnsupportedCertificate,
+    TlsCertificateRevoked,
+    TlsCertificateExpired,
+    TlsCertificateUnknown,
+    TlsIllegalParameter,
+    TlsUnknownCa,
+    TlsAccessDenied,
+    TlsDecodeError,
+    TlsDecryptError,
+    TlsProtocolVersion,
+    TlsBadVersion,
+    TlsInsufficientSecurity,
+    TlsInternalError,
+    TlsInappropriateFallback,
+    TlsMissingExtension,
+    TlsUnsupportedExtension,
+    TlsUnrecognizedName,
+    TlsBadCertificateStatusResponse,
+    TlsUnknownPskIdentity,
+    TlsCertificateRequired,
+    TlsNoApplicationProtocol,
+    TlsServerHelloRetryRequest,
+    TlsUnsupportedFragmentedHandshakeMessage,
+    TlsBadSignatureScheme,
+    TlsUnknownSignatureScheme,
+    TlsNoSupportedCiphers,
+    TlsDecryptFailure,
+};
+
 pub const Alert = enum(u8) {
     pub const Level = enum(u8) {
         warning = 1,

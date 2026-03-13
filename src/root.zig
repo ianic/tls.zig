@@ -16,6 +16,7 @@ pub const input_buffer_len = max_ciphertext_record_len; // 16645 bytes
 pub const output_buffer_len = @import("cipher.zig").max_encrypted_record_len; // 16469 bytes
 
 pub const Connection = @import("connection.zig").Connection;
+pub const TlsError = @import("protocol.zig").TlsError;
 
 const handshake = struct {
     const Client = @import("handshake_client.zig").Handshake;
