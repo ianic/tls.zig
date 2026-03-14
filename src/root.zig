@@ -23,18 +23,24 @@ const handshake = struct {
     const Server = @import("handshake_server.zig").Handshake;
 };
 
-//TODO: io first
 /// Upgrades existing stream to the tls connection by the client tls handshake.
-/// Caller must provide buffers that outlive the connection.
+/// Allocates input/output buffers sized by opt.input_buffer_len / opt.output_buffer_len.
+/// Call deinit(allocator) when done to free the buffers.
 pub inline fn clientFromStream(
+    allocator: std.mem.Allocator,
     io: std.Io,
     stream: anytype,
     opt: config.Client,
-    input_buf: *[input_buffer_len]u8,
-    output_buf: *[output_buffer_len]u8,
 ) !Connection {
+    const input_buf = try allocator.alloc(u8, opt.input_buffer_len);
+    errdefer allocator.free(input_buf);
+    const output_buf = try allocator.alloc(u8, opt.output_buffer_len);
+    errdefer allocator.free(output_buf);
     const input, const output = streamToReaderWriter(io, stream, input_buf, output_buf);
-    return try client(input, output, opt);
+    var conn = try client(input, output, opt);
+    conn.allocated_input_buf = input_buf;
+    conn.allocated_output_buf = output_buf;
+    return conn;
 }
 
 pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connection {
@@ -53,16 +59,23 @@ pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connec
 }
 
 /// Upgrades existing stream to the tls connection by the server side tls handshake.
-/// Caller must provide buffers that outlive the connection.
+/// Allocates input/output buffers sized by opt.input_buffer_len / opt.output_buffer_len.
+/// Call deinit(allocator) when done to free the buffers.
 pub inline fn serverFromStream(
+    allocator: std.mem.Allocator,
     io: Io,
     stream: anytype,
     opt: config.Server,
-    input_buf: *[input_buffer_len]u8,
-    output_buf: *[output_buffer_len]u8,
 ) !Connection {
+    const input_buf = try allocator.alloc(u8, opt.input_buffer_len);
+    errdefer allocator.free(input_buf);
+    const output_buf = try allocator.alloc(u8, opt.output_buffer_len);
+    errdefer allocator.free(output_buf);
     const input, const output = streamToReaderWriter(io, stream, input_buf, output_buf);
-    return try server(input, output, opt);
+    var conn = try server(input, output, opt);
+    conn.allocated_input_buf = input_buf;
+    conn.allocated_output_buf = output_buf;
+    return conn;
 }
 
 pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connection {
@@ -75,13 +88,11 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
     };
 }
 
-/// Creates reader and writer from a stream using provided buffers.
-/// The caller must ensure buffers outlive the returned reader/writer.
 inline fn streamToReaderWriter(
     io: std.Io,
     stream: anytype,
-    input_buf: *[input_buffer_len]u8,
-    output_buf: *[output_buffer_len]u8,
+    input_buf: []u8,
+    output_buf: []u8,
 ) struct { *Io.Reader, *Io.Writer } {
     var reader = stream.reader(io, input_buf);
     var writer = stream.writer(io, output_buf);

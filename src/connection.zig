@@ -28,6 +28,9 @@ pub const Connection = struct {
     session_resumption: ?*SessionResumption = null,
     session_resumption_secret_idx: ?usize = null,
 
+    allocated_input_buf: ?[]u8 = null,
+    allocated_output_buf: ?[]u8 = null,
+
     const Self = @This();
 
     /// Encrypts and writes single tls record to the stream.
@@ -145,6 +148,11 @@ pub const Connection = struct {
     pub fn close(c: *Self) anyerror!void {
         if (c.received_close_notify) return;
         try c.writeRecord(.alert, &proto.Alert.closeNotify());
+    }
+
+    pub fn deinit(c: *Self, allocator: std.mem.Allocator) void {
+        if (c.allocated_input_buf) |buf| allocator.free(buf);
+        if (c.allocated_output_buf) |buf| allocator.free(buf);
     }
 
     // write/read

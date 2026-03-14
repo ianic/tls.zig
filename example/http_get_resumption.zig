@@ -44,9 +44,8 @@ pub fn main(init: std.process.Init) !void {
         defer tcp.close(io);
 
         // Upgrade tcp connection to tls
-        var input_buf: [tls.input_buffer_len]u8 = undefined;
-        var output_buf: [tls.output_buffer_len]u8 = undefined;
-        var conn = try tls.clientFromStream(io, tcp, config, &input_buf, &output_buf);
+        var conn = try tls.clientFromStream(gpa, io, tcp, config);
+        defer conn.deinit(gpa);
 
         // Send http GET request
         var buf: [64]u8 = undefined;

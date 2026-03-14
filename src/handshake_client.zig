@@ -71,6 +71,9 @@ pub const Options = struct {
 
     session_resumption: ?*SessionResumption = null,
 
+    input_buffer_len: usize = @import("cipher.zig").max_ciphertext_record_len,
+    output_buffer_len: usize = @import("cipher.zig").max_encrypted_record_len,
+
     pub const Diagnostic = struct {
         tls_version: proto.Version = @enumFromInt(0),
         cipher_suite_tag: CipherSuite = @enumFromInt(0),

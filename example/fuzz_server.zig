@@ -43,11 +43,11 @@ pub fn main(init: std.process.Init) !void {
         .rng = rng,
     };
 
-    const s1 = try std.Thread.spawn(.{}, runServer, .{ io, 4433, opt1 });
-    const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ io, 4435, opt1 });
+    const s1 = try std.Thread.spawn(.{}, runServer, .{ gpa, io, 4433, opt1 });
+    const s3 = try std.Thread.spawn(.{}, runEchoServer, .{ gpa, io, 4435, opt1 });
 
-    const s2 = try std.Thread.spawn(.{}, runServer, .{ io, 4434, opt2 });
-    const s4 = try std.Thread.spawn(.{}, runServer, .{ io, 4436, opt4 });
+    const s2 = try std.Thread.spawn(.{}, runServer, .{ gpa, io, 4434, opt2 });
+    const s4 = try std.Thread.spawn(.{}, runServer, .{ gpa, io, 4436, opt4 });
 
     s1.join();
     s2.join();
@@ -55,12 +55,12 @@ pub fn main(init: std.process.Init) !void {
     s4.join();
 }
 
-fn runServer(io: Io, port: u16, opt: tls.config.Server) !void {
+fn runServer(allocator: std.mem.Allocator, io: Io, port: u16, opt: tls.config.Server) !void {
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
     var server = try address.listen(io, .{ .reuse_address = true, .mode = .stream });
 
     while (true) {
-        acceptUpgrade(io, &server, opt) catch |err| {
+        acceptUpgrade(allocator, io, &server, opt) catch |err| {
             if (err == error.TlsAlertCloseNotify) {
                 std.debug.print("c", .{});
             } else {
@@ -76,13 +76,12 @@ fn runServer(io: Io, port: u16, opt: tls.config.Server) !void {
     }
 }
 
-fn acceptUpgrade(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void {
+fn acceptUpgrade(allocator: std.mem.Allocator, io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void {
     const stream = try server.accept(io);
     defer stream.close(io);
 
-    var input_buf: [tls.input_buffer_len]u8 = undefined;
-    var output_buf: [tls.output_buffer_len]u8 = undefined;
-    var conn = try tls.serverFromStream(io, stream, opt, &input_buf, &output_buf);
+    var conn = try tls.serverFromStream(allocator, io, stream, opt);
+    defer conn.deinit(allocator);
     while (try conn.next()) |buf| {
         //std.debug.print("{s}", .{buf});
         if (std.mem.indexOf(u8, buf, "keyupdate")) |_| {
@@ -95,12 +94,12 @@ fn acceptUpgrade(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !vo
     try conn.close();
 }
 
-fn runEchoServer(io: Io, port: u16, opt: tls.config.Server) !void {
+fn runEchoServer(allocator: std.mem.Allocator, io: Io, port: u16, opt: tls.config.Server) !void {
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
     var server = try address.listen(io, .{ .reuse_address = true, .mode = .stream });
 
     while (true) {
-        acceptEcho(io, &server, opt) catch |err| {
+        acceptEcho(allocator, io, &server, opt) catch |err| {
             std.debug.print("e", .{});
             if (@errorReturnTrace()) |trace| {
                 std.debug.print("\n{}\n", .{err});
@@ -112,13 +111,12 @@ fn runEchoServer(io: Io, port: u16, opt: tls.config.Server) !void {
     }
 }
 
-fn acceptEcho(io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void {
+fn acceptEcho(allocator: std.mem.Allocator, io: Io, server: *std.Io.net.Server, opt: tls.config.Server) !void {
     const stream = try server.accept(io);
     defer stream.close(io);
 
-    var input_buf: [tls.input_buffer_len]u8 = undefined;
-    var output_buf: [tls.output_buffer_len]u8 = undefined;
-    var conn = try tls.serverFromStream(io, stream, opt, &input_buf, &output_buf);
+    var conn = try tls.serverFromStream(allocator, io, stream, opt);
+    defer conn.deinit(allocator);
     while (try conn.next()) |buf| try conn.writeAll(buf);
     try conn.close();
 }

@@ -24,9 +24,7 @@ fn acceptSend(io: Io, server: *Io.net.Server, opt: tls.config.Server, clients: u
     for (0..clients) |_| {
         const stream = try server.accept(io);
         defer stream.close(io);
-        var input_buf: [tls.input_buffer_len]u8 = undefined;
-        var output_buf: [tls.output_buffer_len]u8 = undefined;
-        var conn = tls.serverFromStream(io, stream, opt, &input_buf, &output_buf) catch |err| {
+        var conn = tls.serverFromStream(testing.allocator, io, stream, opt) catch |err| {
             switch (err) {
                 error.EndOfStream,
                 error.TlsCertificateRequired,
@@ -37,6 +35,7 @@ fn acceptSend(io: Io, server: *Io.net.Server, opt: tls.config.Server, clients: u
                 },
             }
         };
+        defer conn.deinit(testing.allocator);
 
         try conn.writeAll(data);
         try conn.close();
@@ -46,9 +45,8 @@ fn acceptSend(io: Io, server: *Io.net.Server, opt: tls.config.Server, clients: u
 fn connectReceive(io: Io, addr: Io.net.IpAddress, opt: tls.config.Client) !void {
     var tcp = try addr.connect(io, .{ .mode = .stream });
     defer tcp.close(io);
-    var input_buf: [tls.input_buffer_len]u8 = undefined;
-    var output_buf: [tls.output_buffer_len]u8 = undefined;
-    var conn = try tls.clientFromStream(io, tcp, opt, &input_buf, &output_buf);
+    var conn = try tls.clientFromStream(testing.allocator, io, tcp, opt);
+    defer conn.deinit(testing.allocator);
 
     var n: usize = 0;
     //var i: usize = 0;
@@ -316,9 +314,8 @@ test "server send key update" {
 fn acceptSendKeyUpdate(io: Io, server: *Io.net.Server, opt: tls.config.Server) !void {
     const stream = try server.accept(io);
     defer stream.close(io);
-    var input_buf: [tls.input_buffer_len]u8 = undefined;
-    var output_buf: [tls.output_buffer_len]u8 = undefined;
-    var conn = try tls.serverFromStream(io, stream, opt, &input_buf, &output_buf);
+    var conn = try tls.serverFromStream(testing.allocator, io, stream, opt);
+    defer conn.deinit(testing.allocator);
     conn.max_encrypt_seq = 8;
     try conn.writeAll(data);
     try conn.close();

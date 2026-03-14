@@ -40,6 +40,9 @@ pub const Options = struct {
     cipher_suites: []const CipherSuite = cipher_suites.tls13,
 
     now: Io.Timestamp,
+
+    input_buffer_len: usize = @import("cipher.zig").max_ciphertext_record_len,
+    output_buffer_len: usize = @import("cipher.zig").max_encrypted_record_len,
 };
 
 pub const ClientAuth = struct {
