@@ -33,7 +33,7 @@ pub inline fn clientFromStream(
     input_buf: *[input_buffer_len]u8,
     output_buf: *[output_buffer_len]u8,
 ) !Connection {
-    const input, const output = streamToRaderWriter(io, stream, input_buf, output_buf);
+    const input, const output = streamToReaderWriter(io, stream, input_buf, output_buf);
     return try client(input, output, opt);
 }
 
@@ -61,7 +61,7 @@ pub inline fn serverFromStream(
     input_buf: *[input_buffer_len]u8,
     output_buf: *[output_buffer_len]u8,
 ) !Connection {
-    const input, const output = streamToRaderWriter(io, stream, input_buf, output_buf);
+    const input, const output = streamToReaderWriter(io, stream, input_buf, output_buf);
     return try server(input, output, opt);
 }
 
@@ -77,7 +77,7 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
 
 /// Creates reader and writer from a stream using provided buffers.
 /// The caller must ensure buffers outlive the returned reader/writer.
-inline fn streamToRaderWriter(
+inline fn streamToReaderWriter(
     io: std.Io,
     stream: anytype,
     input_buf: *[input_buffer_len]u8,
