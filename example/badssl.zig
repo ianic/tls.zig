@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
             cmn.get(io, domain, if (sd.port == 0) null else sd.port, false, false, .{
                 .root_ca = root_ca,
                 .host = "",
-                .now = try std.Io.Clock.real.now(io),
+                .now = std.Io.Clock.real.now(io),
                 .rng = rng_impl.interface(),
             }) catch |err| {
                 std.debug.print(

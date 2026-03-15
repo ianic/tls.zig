@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
-        .now = try std.Io.Clock.real.now(io),
+        .now = std.Io.Clock.real.now(io),
         .rng = rng_impl.interface(),
     });
 

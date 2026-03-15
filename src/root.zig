@@ -22,10 +22,9 @@ const handshake = struct {
     const Server = @import("handshake_server.zig").Handshake;
 };
 
-//TODO: io first
 /// Upgrades existing stream to the tls connection by the client tls handshake.
 pub inline fn clientFromStream(io: std.Io, stream: anytype, opt: config.Client) !Connection {
-    const input, const output = streamToRaderWriter(io, stream);
+    const input, const output = streamToReaderWriter(io, stream);
     return try client(input, output, opt);
 }
 
@@ -46,7 +45,7 @@ pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connec
 
 /// Upgrades existing stream to the tls connection by the server side tls handshake.
 pub inline fn serverFromStream(io: Io, stream: anytype, opt: config.Server) !Connection {
-    const input, const output = streamToRaderWriter(io, stream);
+    const input, const output = streamToReaderWriter(io, stream);
     return try server(input, output, opt);
 }
 
@@ -61,7 +60,7 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
 }
 
 /// With default buffer sizes
-inline fn streamToRaderWriter(io: std.Io, stream: anytype) struct { *Io.Reader, *Io.Writer } {
+inline fn streamToReaderWriter(io: std.Io, stream: anytype) struct { *Io.Reader, *Io.Writer } {
     var input_buf: [input_buffer_len]u8 = undefined;
     var output_buf: [output_buffer_len]u8 = undefined;
     var reader = stream.reader(io, &input_buf);

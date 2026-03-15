@@ -7,7 +7,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    const now = try std.Io.Clock.real.now(io);
+    const now = std.Io.Clock.real.now(io);
 
     // Get url from args
     var url: []const u8 = "https://ziglang.org";

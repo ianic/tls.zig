@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     std.log.debug("all task started", .{});
 
     var elapsed: usize = 0;
-    while (counter.total() < tasks) {
+    while (counter.total(io) < tasks) {
         try io.sleep(.fromSeconds(1), .real);
         elapsed += 1;
         if (elapsed > 10) {
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
         try group.await(io);
     }
 
-    counter.show();
+    counter.show(io);
     if (counter.failRate() > 0.01) std.process.exit(1);
 }
 
@@ -66,7 +66,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
         .host = "",
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
-        .now = std.Io.Clock.real.now(io) catch unreachable,
+        .now = std.Io.Clock.real.now(io),
         .rng = rng_impl.interface(),
     };
     if (cmn.inList(domain, &cmn.no_keyber)) {
@@ -81,7 +81,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
             error.NetworkUnreachable,
             error.NameServerFailure,
             => {
-                counter.add(.err);
+                counter.add(io, .err);
                 if (!only_fail) {
                     std.debug.print("➖ {s:<25} {}\n", .{ domain, err });
                 }
@@ -92,7 +92,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
             error.ReadFailed,
             error.WriteFailed,
             => {
-                counter.add(.skip);
+                counter.add(io, .skip);
                 if (!only_fail) {
                     std.debug.print("➰ {s:<25} {s}\n", .{ domain, @errorName(err) });
                 }
@@ -104,16 +104,16 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
                     if (!only_fail) {
                         std.debug.print("➖ {s:<25} {} curl: {}\n", .{ domain, err, curl_err });
                     }
-                    counter.add(.err);
+                    counter.add(io, .err);
                     return;
                 };
             },
         }
         std.debug.print("❌ {s:<25} ERROR {}\n", .{ domain, err });
-        counter.add(.fail);
+        counter.add(io, .fail);
         return;
     };
-    counter.addSuccess(diagnostic.tls_version);
+    counter.addSuccess(io, diagnostic.tls_version);
     counter.max_server_record_len = @max(counter.max_server_record_len, diagnostic.max_server_record_len);
     counter.max_server_cleartext_len = @max(counter.max_server_cleartext_len, diagnostic.max_server_cleartext_len);
     counter.max_client_record_len = @max(counter.max_client_record_len, diagnostic.max_client_record_len);

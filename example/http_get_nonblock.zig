@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
             .root_ca = ca_bundle,
             .cipher_suites = tls.config.cipher_suites.secure,
             .key_log_callback = tls.config.key_log.init(init.minimal.environ),
-            .now = try std.Io.Clock.real.now(io),
+            .now = std.Io.Clock.real.now(io),
             .rng = rng_impl.interface(),
         };
         var handshake = tls.nonblock.Client.init(config);
