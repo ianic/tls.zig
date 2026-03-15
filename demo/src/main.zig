@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
     var conn = try tls.client(&reader.interface, &writer.interface, .{
         .host = host,
         .root_ca = root_ca,
-        .now = try std.Io.Clock.real.now(io),
+        .now = std.Io.Clock.real.now(io),
         .random = rng_impl.interface(),
     });
 

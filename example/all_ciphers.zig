@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
     defer root_ca.deinit(gpa);
 
     const domain = if (args.len > 1) args[1] else "cloudflare.com";
-    const fail_count = run(io, root_ca, domain, try std.Io.Clock.real.now(io));
+    const fail_count = run(io, root_ca, domain, std.Io.Clock.real.now(io));
     if (fail_count > 0) std.process.exit(1);
 }
 

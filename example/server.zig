@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
             //     .root_ca = client_root_ca,
             // },
             .auth = &auth,
-            .now = try std.Io.Clock.real.now(io),
+            .now = std.Io.Clock.real.now(io),
             .rng = rng_impl.interface(),
         }) catch |err| {
             std.debug.print("tls failed with {}\n", .{err});

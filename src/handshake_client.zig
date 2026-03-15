@@ -977,7 +977,7 @@ test "verify google.com certificate" {
 
     const io = testing.io;
     var ca_bundle: Certificate.Bundle = .{};
-    try ca_bundle.rescan(testing.allocator, io, try std.Io.Clock.real.now(io));
+    try ca_bundle.rescan(testing.allocator, io, std.Io.Clock.real.now(io));
     defer ca_bundle.deinit(testing.allocator);
 
     h.cert = .{ .host = "google.com", .skip_verify = true, .root_ca = .{}, .now_sec = 1714846451 };
