@@ -39,6 +39,10 @@ pub const Options = struct {
     /// List of supported tls 1.3 cipher suites
     cipher_suites: []const CipherSuite = cipher_suites.tls13,
 
+    /// ALPN protocol names supported by the server, in preference order.
+    /// If empty, no ALPN extension is sent in the response.
+    alpn_protocols: []const []const u8 = &.{},
+
     now: Io.Timestamp,
 };
 
@@ -82,6 +86,8 @@ pub const Handshake = struct {
 
     cipher: Cipher = undefined,
     transcript: Transcript = .{},
+    /// ALPN protocol selected during handshake.
+    alpn_protocol: ?[]const u8 = null,
 
     const Self = @This();
 
@@ -100,7 +106,7 @@ pub const Handshake = struct {
     pub fn handshake(h: *Self, opt: Options) !Cipher {
         h.initKeys(opt);
 
-        h.readClientHello(opt.cipher_suites) catch |err| {
+        h.readClientHello(opt.cipher_suites, opt.alpn_protocols) catch |err| {
             try h.writeAlert(null, err);
             return err;
         };
@@ -131,7 +137,7 @@ pub const Handshake = struct {
     }
 
     fn clientFlight1(h: *Self, opt: Options) !void {
-        try h.readClientHello(opt.cipher_suites);
+        try h.readClientHello(opt.cipher_suites, opt.alpn_protocols);
         h.transcript.use(h.cipher_suite.hash());
     }
 
@@ -171,7 +177,19 @@ pub const Handshake = struct {
         try w.record(.change_cipher_spec, &[_]u8{1});
         {
             var hw = try w.writerAdvance(record.header_len);
-            try hw.handshakeRecord(.encrypted_extensions, &[_]u8{ 0, 0 });
+            if (h.alpn_protocol) |selected| {
+                // EncryptedExtensions with ALPN
+                // Build the extensions payload first
+                const proto_len: u16 = @intCast(selected.len);
+                const alpn_ext_len = 2 + 2 + 2 + 1 + proto_len; // ext_type(2) + ext_len(2) + list_len(2) + proto_len_byte(1) + proto
+                const ee_header_pos = try hw.skip(4); // handshake header placeholder
+                try hw.int(u16, alpn_ext_len); // extensions length
+                try hw.alpn(&.{selected});
+                var hdr_w = hw.writerAt(ee_header_pos);
+                try hdr_w.handshakeRecordHeader(.encrypted_extensions, hw.pos() - ee_header_pos - 4);
+            } else {
+                try hw.handshakeRecord(.encrypted_extensions, &[_]u8{ 0, 0 });
+            }
             h.transcript.update(hw.buffered());
             try h.writeEncrypted(&w, hw.buffered());
         }
@@ -361,7 +379,7 @@ pub const Handshake = struct {
         try hw.int(u16, ext_len); // extensions length
     }
 
-    fn readClientHello(h: *Self, supported_cipher_suites: []const CipherSuite) !void {
+    fn readClientHello(h: *Self, supported_cipher_suites: []const CipherSuite, server_alpn_protocols: []const []const u8) !void {
         var d = try Record.decoder(h.input);
         if (d.payload.len > max_cleartext_len) return error.TlsRecordOverflow;
         try d.expectContentType(.handshake);
@@ -465,6 +483,35 @@ pub const Handshake = struct {
                         if (!found) return error.TlsHandshakeFailure;
                     }
                 },
+                .application_layer_protocol_negotiation => {
+                    // RFC 7301: parse client ALPN extension and select a protocol
+                    if (server_alpn_protocols.len > 0) {
+                        const list_end = try d.decode(u16) + d.idx;
+                        // Find the first server protocol that the client supports
+                        // (server preference order)
+                        var best_match: ?[]const u8 = null;
+                        var best_server_idx: usize = server_alpn_protocols.len;
+                        const saved_idx = d.idx;
+                        for (server_alpn_protocols, 0..) |server_proto, si| {
+                            d.idx = saved_idx;
+                            while (d.idx < list_end) {
+                                const proto_len = try d.decode(u8);
+                                const client_proto = try d.slice(proto_len);
+                                if (si < best_server_idx and mem.eql(u8, client_proto, server_proto)) {
+                                    best_match = server_proto;
+                                    best_server_idx = si;
+                                }
+                            }
+                        }
+                        d.idx = list_end;
+                        h.alpn_protocol = best_match;
+                        if (best_match == null) {
+                            return error.TlsNoApplicationProtocol;
+                        }
+                    } else {
+                        try d.skip(extension_len);
+                    }
+                },
                 else => {
                     try d.skip(extension_len);
                 },
@@ -486,7 +533,7 @@ test "read client hello" {
         .output = undefined,
     };
     h.signature_scheme = .ecdsa_secp521r1_sha512; // this must be supported in signature_algorithms extension
-    try h.readClientHello(cipher_suites.tls13);
+    try h.readClientHello(cipher_suites.tls13, &.{});
 
     try testing.expectEqual(CipherSuite.AES_256_GCM_SHA384, h.cipher_suite);
     try testing.expectEqual(.x25519, h.named_group);
@@ -661,5 +708,10 @@ pub const NonBlock = struct {
     /// Cipher produced in handshake, null until successful handshake.
     pub fn cipher(self: Self) ?Cipher {
         return if (self.done()) self.inner.cipher else null;
+    }
+
+    /// ALPN protocol negotiated during handshake, null if none.
+    pub fn alpnProtocol(self: Self) ?[]const u8 {
+        return self.inner.alpn_protocol;
     }
 };

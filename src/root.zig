@@ -40,6 +40,7 @@ pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connec
         .output = output,
         .session_resumption_secret_idx = session_resumption_secret_idx,
         .session_resumption = opt.session_resumption,
+        .alpn_protocol = hc.alpn_protocol,
     };
 }
 
@@ -56,6 +57,7 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
         .cipher = cipher,
         .input = input,
         .output = output,
+        .alpn_protocol = hs.alpn_protocol,
     };
 }
 
@@ -198,6 +200,143 @@ test "nonblock handshake and connection" {
             try testing.expect(d.closed);
         }
     }
+}
+
+test "ALPN negotiation: h2 selected" {
+    const testing = @import("std").testing;
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+
+    var sc_buf: [max_ciphertext_record_len]u8 = undefined;
+    var cs_buf: [max_ciphertext_record_len]u8 = undefined;
+
+    var cli = nonblock.Client.init(.{
+        .rng = rng,
+        .root_ca = .{},
+        .host = &.{},
+        .insecure_skip_verify = true,
+        .now = .zero,
+        .alpn_protocols = &.{ "h2", "http/1.1" },
+    });
+    var srv = nonblock.Server.init(.{
+        .rng = rng,
+        .auth = null,
+        .now = .zero,
+        .alpn_protocols = &.{ "h2", "http/1.1" },
+    });
+
+    // client flight 1
+    var cr = try cli.run(&sc_buf, &cs_buf);
+    // server flight 1
+    var sr = try srv.run(cs_buf[0..cr.send_pos], &sc_buf);
+    // client flight 2
+    cr = try cli.run(sc_buf[0..sr.send_pos], &cs_buf);
+    try testing.expect(cli.done());
+    // server parses client finished
+    sr = try srv.run(cs_buf[0..cr.send_pos], &sc_buf);
+    try testing.expect(srv.done());
+
+    // Both sides should have negotiated "h2"
+    try testing.expectEqualStrings("h2", cli.alpnProtocol().?);
+    try testing.expectEqualStrings("h2", srv.alpnProtocol().?);
+}
+
+test "ALPN negotiation: server picks preferred protocol" {
+    const testing = @import("std").testing;
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+
+    var sc_buf: [max_ciphertext_record_len]u8 = undefined;
+    var cs_buf: [max_ciphertext_record_len]u8 = undefined;
+
+    // Client offers http/1.1 and h2; server only supports http/1.1
+    var cli = nonblock.Client.init(.{
+        .rng = rng,
+        .root_ca = .{},
+        .host = &.{},
+        .insecure_skip_verify = true,
+        .now = .zero,
+        .alpn_protocols = &.{ "h2", "http/1.1" },
+    });
+    var srv = nonblock.Server.init(.{
+        .rng = rng,
+        .auth = null,
+        .now = .zero,
+        .alpn_protocols = &.{"http/1.1"},
+    });
+
+    var cr = try cli.run(&sc_buf, &cs_buf);
+    var sr = try srv.run(cs_buf[0..cr.send_pos], &sc_buf);
+    cr = try cli.run(sc_buf[0..sr.send_pos], &cs_buf);
+    try testing.expect(cli.done());
+    sr = try srv.run(cs_buf[0..cr.send_pos], &sc_buf);
+    try testing.expect(srv.done());
+
+    try testing.expectEqualStrings("http/1.1", cli.alpnProtocol().?);
+    try testing.expectEqualStrings("http/1.1", srv.alpnProtocol().?);
+}
+
+test "ALPN negotiation: no ALPN when not configured" {
+    const testing = @import("std").testing;
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+
+    var sc_buf: [max_ciphertext_record_len]u8 = undefined;
+    var cs_buf: [max_ciphertext_record_len]u8 = undefined;
+
+    // Neither side configures ALPN
+    var cli = nonblock.Client.init(.{
+        .rng = rng,
+        .root_ca = .{},
+        .host = &.{},
+        .insecure_skip_verify = true,
+        .now = .zero,
+    });
+    var srv = nonblock.Server.init(.{
+        .rng = rng,
+        .auth = null,
+        .now = .zero,
+    });
+
+    var cr = try cli.run(&sc_buf, &cs_buf);
+    var sr = try srv.run(cs_buf[0..cr.send_pos], &sc_buf);
+    cr = try cli.run(sc_buf[0..sr.send_pos], &cs_buf);
+    try testing.expect(cli.done());
+    sr = try srv.run(cs_buf[0..cr.send_pos], &sc_buf);
+    try testing.expect(srv.done());
+
+    // No ALPN negotiated
+    try testing.expectEqual(@as(?[]const u8, null), cli.alpnProtocol());
+    try testing.expectEqual(@as(?[]const u8, null), srv.alpnProtocol());
+}
+
+test "ALPN negotiation: no common protocol is error" {
+    const testing = @import("std").testing;
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+
+    var sc_buf: [max_ciphertext_record_len]u8 = undefined;
+    var cs_buf: [max_ciphertext_record_len]u8 = undefined;
+
+    // Client only offers h2, server only supports http/1.1
+    var cli = nonblock.Client.init(.{
+        .rng = rng,
+        .root_ca = .{},
+        .host = &.{},
+        .insecure_skip_verify = true,
+        .now = .zero,
+        .alpn_protocols = &.{"h2"},
+    });
+    var srv = nonblock.Server.init(.{
+        .rng = rng,
+        .auth = null,
+        .now = .zero,
+        .alpn_protocols = &.{"http/1.1"},
+    });
+
+    var cr = try cli.run(&sc_buf, &cs_buf);
+    // Server should reject with no_application_protocol
+    try testing.expectError(error.TlsNoApplicationProtocol, srv.run(cs_buf[0..cr.send_pos], &sc_buf));
 }
 
 test {

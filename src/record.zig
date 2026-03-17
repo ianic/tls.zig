@@ -336,6 +336,22 @@ pub const Writer = struct {
         try w.inner.writeAll(host);
     }
 
+    /// ALPN extension (RFC 7301)
+    pub fn alpn(w: *Writer, protocols: []const []const u8) !void {
+        // Calculate total length of the protocol name list
+        var list_len: u16 = 0;
+        for (protocols) |p| {
+            list_len += @as(u16, @intCast(p.len)) + 1; // 1 byte length prefix per protocol
+        }
+        try w.enumValue(proto.Extension.application_layer_protocol_negotiation);
+        try w.int(u16, list_len + 2); // extension data length
+        try w.int(u16, list_len); // protocol name list length
+        for (protocols) |p| {
+            try w.int(u8, p.len);
+            try w.slice(p);
+        }
+    }
+
     /// Writes header of the pre shared key extension, without binders
     pub fn preSharedKey(
         w: *Writer,
