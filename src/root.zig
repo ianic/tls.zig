@@ -5,7 +5,7 @@ const Io = std.Io;
 pub const max_ciphertext_record_len = @import("cipher.zig").max_ciphertext_record_len;
 
 /// Buffer of this size will fit any tls ciphertext record sent by other side.
-/// To decrytp we need full record, smalled buffer will not work in general
+/// To decrypt we need full record, smaller buffer will not work in general
 /// case. Bigger can be used for performance reason.
 pub const input_buffer_len = max_ciphertext_record_len; // 16645 bytes
 

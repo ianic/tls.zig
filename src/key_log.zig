@@ -1,6 +1,6 @@
 //! Exporting tls key so we can share them with Wireshark and analyze decrypted
 //! traffic in Wireshark.
-//! To configure Wireshark to use exprted keys see curl reference.
+//! To configure Wireshark to use exported keys see curl reference.
 //!
 //! References:
 //! curl: https://everything.curl.dev/usingcurl/tls/sslkeylogfile.html

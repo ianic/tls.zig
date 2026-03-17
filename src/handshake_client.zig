@@ -94,12 +94,12 @@ pub const Options = struct {
             created_at: i64,
             // value to add to the milliseconds age
             age_add: u32,
-            // nonce and identity are pointes to the part of the payload
+            // nonce and identity are pointers to the part of the payload
             nonce: []const u8, // <0..255>
             identity: []const u8, // <1..2^16-1>
             // payload is allocated and should be freed
             payload: []const u8,
-            // pointer to the externaly allocated secret
+            // pointer to the externally allocated secret
             secret: []const u8,
 
             pub fn init(payload: []const u8, secret: []const u8, now: Io.Timestamp) !Ticket {
@@ -666,7 +666,7 @@ pub const Handshake = struct {
                             return error.TlsUnsupportedFragmentedHandshakeMessage;
                         if (length > d.rest().len)
                             continue :outer; // handshake fragmented into multiple records
-                        // jump to outer must be before this defer to presrve buffers
+                        // jump to outer must be before this defer to preserve buffers
                         defer {
                             // 'd.idx' data is consumed
                             h.transcript.update(d.payload[0..d.idx]);

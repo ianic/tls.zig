@@ -86,7 +86,7 @@ pub const Connection = struct {
             const rec = try Record.read(c.input);
             if (rec.protocol_version != .tls_1_2) return error.TlsBadVersion;
 
-            // If provided buffer is not big enought reuse input buffer for
+            // If provided buffer is not big enough reuse input buffer for
             // cleartext. `rec.header` and `rec.payload`(ciphertext) are
             // pointing somewhere in this buffer. Decrypter is first reading
             // then writing a block, cleartext has less length then ciphertext,
@@ -183,7 +183,7 @@ pub const Connection = struct {
                 return cleartext.len;
             }
             // Buffer was too small input ciphertext buffer was used for cleartext
-            // Store referenct to the cleartext
+            // Store reference to the cleartext
             c.cleartext_buf = cleartext;
         }
         // move part of the cleartext_buf into provided buffer
@@ -493,7 +493,7 @@ test "client/server connection" {
 
     // cleartext -> client_conn -> ciphertext -> server_conn -> cleartext
     for (0..16) |_| {
-        // use random part of clartext_buf
+        // use random part of cleartext_buf
         const n = random.intRangeAtMost(usize, cipher.max_cleartext_len + 1, cleartext_buf.len);
         const client_cleartext = cleartext_buf[0..n];
 
@@ -577,10 +577,10 @@ pub const NonBlock = struct {
     }
 
     /// Decrypts ciphertext into cleartext.
-    /// NOTE: It is safe to reuses ciphertext buffer for cleartext data.
+    /// NOTE: It is safe to reuse ciphertext buffer for cleartext data.
     pub fn decrypt(
         self: *Self,
-        /// Ciphertext data recieved from the other side of the tls connection
+        /// Ciphertext data received from the other side of the tls connection
         ciphertext: []const u8,
         /// Write buffer for cleartext; decrypted data
         cleartext: []u8,

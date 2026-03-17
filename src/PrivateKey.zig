@@ -253,8 +253,8 @@ test "parse rsa pem" {
         try testing.expectEqualSlices(u8, public_exponent, bytes[bytes.len - public_exponent.len .. bytes.len]);
     }
     {
-        var btytes: [private_exponent.len]u8 = undefined;
-        try kp.secret.private_exponent.toBytes(&btytes, .big);
-        try testing.expectEqualSlices(u8, private_exponent, &btytes);
+        var bytes: [private_exponent.len]u8 = undefined;
+        try kp.secret.private_exponent.toBytes(&bytes, .big);
+        try testing.expectEqualSlices(u8, private_exponent, &bytes);
     }
 }
