@@ -22,6 +22,7 @@ pub fn main(init: std.process.Init) !void {
             // to force cipher from specific tls version:
             //   .cipher_suites = tls.config.cipher_suites.tls12,
             .cipher_suites = tls.config.cipher_suites.secure,
+            .alpn_protocols = &.{ "http/1.1", "h2" },
             .key_log_callback = tls.config.key_log.init(init.minimal.environ),
             .now = std.Io.Clock.real.now(io),
             .rng = rng_impl.interface(),
