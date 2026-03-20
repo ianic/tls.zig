@@ -28,6 +28,10 @@ pub const Connection = struct {
     session_resumption: ?*SessionResumption = null,
     session_resumption_secret_idx: ?usize = null,
 
+    /// ALPN protocol negotiated during TLS handshake (e.g., "h2", "http/1.1").
+    /// Points into static data or the options slice; valid for the connection lifetime.
+    alpn_protocol: ?[]const u8 = null,
+
     const Self = @This();
 
     /// Encrypts and writes single tls record to the stream.

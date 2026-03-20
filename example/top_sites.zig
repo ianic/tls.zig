@@ -68,6 +68,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
         .diagnostic = &diagnostic,
         .now = std.Io.Clock.real.now(io),
         .rng = rng_impl.interface(),
+        .alpn_protocols = &.{ "http/1.1", "h2" },
     };
     if (cmn.inList(domain, &cmn.no_keyber)) {
         opt.named_groups = &[_]tls.config.NamedGroup{ .x25519, .secp256r1 };

@@ -58,6 +58,10 @@ pub const Options = struct {
         .x25519_ml_kem768,
     },
 
+    /// ALPN protocol names to advertise (e.g., "h2", "http/1.1").
+    /// If empty, no ALPN extension is sent.
+    alpn_protocols: []const []const u8 = &.{},
+
     /// Client authentication certificates and private key.
     auth: ?*CertKeyPair = null,
 
@@ -231,6 +235,9 @@ pub const Handshake = struct {
     server_pub_key_buf: [1120]u8 = undefined,
     server_pub_key: []const u8 = undefined,
     pre_shared_selected_identity: ?u16 = null,
+    /// ALPN protocol selected by the server, copied into alpn_protocol_buf.
+    alpn_protocol: ?[]const u8 = null,
+    alpn_protocol_buf: [32]u8 = undefined,
     // statistics
     max_server_record_len: usize = 0,
     max_server_cleartext_len: usize = 0,
@@ -467,6 +474,9 @@ pub const Handshake = struct {
         try w.extension(.supported_groups, opt.named_groups);
         try w.keyShare(opt.named_groups, shared_keys);
         try w.serverName(opt.host);
+        if (opt.alpn_protocols.len > 0) {
+            try w.alpn(opt.alpn_protocols);
+        }
         // binder key placeholder
         const binder_pos: ?usize = if (resumption_ticket) |ticket| brk: {
             // Add pre shared key extension if this is session resumption. Must be last extension.
@@ -602,6 +612,16 @@ pub const Handshake = struct {
                         h.server_pub_key = try common.dupe(&h.server_pub_key_buf, try d.slice(try d.decode(u16)));
                         if (len != h.server_pub_key.len + 4) return error.TlsIllegalParameter;
                     },
+                    .application_layer_protocol_negotiation => {
+                        // RFC 7301: server ALPN response contains a single protocol
+                        // ProtocolNameList (u16 len) -> ProtocolName (u8 len + name)
+                        _ = try d.decode(u16); // protocol_name_list length
+                        const proto_len = try d.decode(u8);
+                        const proto_slice = try d.slice(proto_len);
+                        if (proto_len > h.alpn_protocol_buf.len) return error.TlsDecodeError;
+                        @memcpy(h.alpn_protocol_buf[0..proto_len], proto_slice);
+                        h.alpn_protocol = h.alpn_protocol_buf[0..proto_len];
+                    },
                     .pre_shared_key => {
                         h.pre_shared_selected_identity = try d.decode(u16);
                     },
@@ -681,7 +701,29 @@ pub const Handshake = struct {
                         }
                         switch (handshake_type) {
                             .encrypted_extensions => {
-                                try d.skip(length);
+                                // Parse extensions within EncryptedExtensions
+                                const ee_end = d.idx + length;
+                                if (length >= 2) {
+                                    const exts_len = try d.decode(u16);
+                                    const exts_end = d.idx + exts_len;
+                                    while (d.idx < exts_end) {
+                                        const ext_type = try d.decode(proto.Extension);
+                                        const ext_len = try d.decode(u16);
+                                        switch (ext_type) {
+                                            .application_layer_protocol_negotiation => {
+                                                _ = try d.decode(u16); // protocol_name_list length
+                                                const proto_len = try d.decode(u8);
+                                                const proto_slice = try d.slice(proto_len);
+                                                if (proto_len > h.alpn_protocol_buf.len) return error.TlsDecodeError;
+                                                @memcpy(h.alpn_protocol_buf[0..proto_len], proto_slice);
+                                                h.alpn_protocol = h.alpn_protocol_buf[0..proto_len];
+                                            },
+                                            else => try d.skip(ext_len),
+                                        }
+                                    }
+                                }
+                                // Skip any remaining bytes
+                                if (d.idx < ee_end) try d.skip(ee_end - d.idx);
                                 handshake_states = if (is_session_resumption)
                                     &.{ .certificate_request, .certificate, .finished }
                                 else if (h.cert.skip_verify)
@@ -1326,6 +1368,11 @@ pub const NonBlock = struct {
     /// Cipher produced in handshake, null until successful handshake.
     pub fn cipher(self: Self) ?Cipher {
         return if (self.done()) self.inner.cipher else null;
+    }
+
+    /// ALPN protocol negotiated during handshake, null if none.
+    pub fn alpnProtocol(self: Self) ?[]const u8 {
+        return self.inner.alpn_protocol;
     }
 };
 
