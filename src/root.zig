@@ -116,7 +116,7 @@ test "nonblock handshake and connection" {
     const cli_cipher, const srv_cipher = brk: {
         var cli = nonblock.Client.init(.{
             .rng = rng,
-            .root_ca = .{},
+            .root_ca = .empty,
             .host = &.{},
             .insecure_skip_verify = true,
             .now = .zero,
@@ -212,7 +212,7 @@ test "ALPN negotiation: h2 selected" {
 
     var cli = nonblock.Client.init(.{
         .rng = rng,
-        .root_ca = .{},
+        .root_ca = .empty,
         .host = &.{},
         .insecure_skip_verify = true,
         .now = .zero,
@@ -252,7 +252,7 @@ test "ALPN negotiation: server picks preferred protocol" {
     // Client offers http/1.1 and h2; server only supports http/1.1
     var cli = nonblock.Client.init(.{
         .rng = rng,
-        .root_ca = .{},
+        .root_ca = .empty,
         .host = &.{},
         .insecure_skip_verify = true,
         .now = .zero,
@@ -287,7 +287,7 @@ test "ALPN negotiation: no ALPN when not configured" {
     // Neither side configures ALPN
     var cli = nonblock.Client.init(.{
         .rng = rng,
-        .root_ca = .{},
+        .root_ca = .empty,
         .host = &.{},
         .insecure_skip_verify = true,
         .now = .zero,
@@ -321,7 +321,7 @@ test "ALPN negotiation: no common protocol is error" {
     // Client only offers h2, server only supports http/1.1
     var cli = nonblock.Client.init(.{
         .rng = rng,
-        .root_ca = .{},
+        .root_ca = .empty,
         .host = &.{},
         .insecure_skip_verify = true,
         .now = .zero,
@@ -334,7 +334,7 @@ test "ALPN negotiation: no common protocol is error" {
         .alpn_protocols = &.{"http/1.1"},
     });
 
-    var cr = try cli.run(&sc_buf, &cs_buf);
+    const cr = try cli.run(&sc_buf, &cs_buf);
     // Server should reject with no_application_protocol
     try testing.expectError(error.TlsNoApplicationProtocol, srv.run(cs_buf[0..cr.send_pos], &sc_buf));
 }

@@ -68,11 +68,11 @@ test "server without certificate" {
     var server = try address.listen(io, .{ .reuse_address = true });
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 2 });
     // client with insecure_skip_verify connects
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .empty, .now = now, .rng = rng });
     // if insecure_skip_verify is not set connection fails
     try testing.expectError(
         error.TlsUnexpectedMessage,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .empty, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -96,13 +96,13 @@ test "server with ec key key pair" {
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .empty, .now = now, .rng = rng });
     // client with root certificates connects; server certificates are validated
     try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .empty, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -129,13 +129,13 @@ test "server with ec key key pair from slices" {
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .empty, .now = now, .rng = rng });
     // client with root certificates connects; server certificates are validated
     try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .empty, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -159,13 +159,13 @@ test "server with rsa key key pair" {
     var server = try address.listen(io, .{});
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 3 });
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .empty, .now = now, .rng = rng });
     // client with root certificates connects; server certificates are validated
     try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
     // client without insecure_skip_verify but not root ca fails; client can't verify server certificates
     try testing.expectError(
         error.CertificateIssuerNotFound,
-        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .{}, .now = now, .rng = rng }),
+        connectReceive(io, server.socket.address, .{ .host = host, .root_ca = .empty, .now = now, .rng = rng }),
     );
     thr.join();
 }
@@ -197,7 +197,7 @@ test "server request client authentication" {
     const thr = try std.Thread.spawn(.{}, acceptSend, .{ io, &server, opt, 2 + client_keys.len });
 
     // client with insecure_skip_verify connects, server sends certificates but client skips verification
-    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .{}, .now = now, .rng = rng });
+    try connectReceive(io, server.socket.address, .{ .insecure_skip_verify = true, .host = host, .root_ca = .empty, .now = now, .rng = rng });
 
     // 'normal' client connect, it's not sending client certificates but server don't require it
     try connectReceive(io, server.socket.address, .{ .host = host, .root_ca = root_ca, .now = now, .rng = rng });
