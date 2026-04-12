@@ -192,7 +192,7 @@ pub const Connection = struct {
         }
         // move part of the cleartext_buf into provided buffer
         const n = @min(c.cleartext_buf.len, buffer.len);
-        @memcpy(buffer[0..n], c.cleartext_buf[0..n]);
+        @memmove(buffer[0..n], c.cleartext_buf[0..n]);
         c.cleartext_buf = c.cleartext_buf[n..];
         return n;
     }
