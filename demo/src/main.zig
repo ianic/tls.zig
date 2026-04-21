@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
         .host = host,
         .root_ca = root_ca,
         .now = std.Io.Clock.real.now(io),
-        .random = rng_impl.interface(),
+        .rng = rng_impl.interface(),
     });
 
     // Send http GET request
