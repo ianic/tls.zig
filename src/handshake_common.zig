@@ -319,7 +319,7 @@ pub const CertificateParser = struct {
     pub_key_buf: [1038]u8 = undefined,
     pub_key: []const u8 = undefined,
 
-    signature_scheme: proto.SignatureScheme = @enumFromInt(0),
+    signature_scheme: proto.SignatureScheme = @fromBackingInt(@intCast(0)),
     signature_buf: [1024]u8 = undefined,
     signature: []const u8 = undefined,
 
@@ -361,7 +361,7 @@ pub const CertificateParser = struct {
                 }
             } else { // first certificate
                 if (!h.skip_verify and h.host.len > 0) {
-                    try subject.verifyHostName(h.host);
+                    try verifyIdentity(subject, h.host);
                 }
                 h.pub_key = try dupe(&h.pub_key_buf, subject.pubKey());
                 h.pub_key_algo = subject.pub_key_algo;
@@ -449,6 +449,78 @@ pub const CertificateParser = struct {
         };
     }
 };
+
+/// Verifies that `subject` names `host`, where `host` may be an IP literal.
+///
+/// `Certificate.verifyHostName` matches only `dNSName` SANs. RFC 6125
+/// section 6.4 requires IP reference identities to match `iPAddress` SANs
+/// instead, so dispatch based on the form of `host` rather than trying both.
+pub fn verifyIdentity(
+    subject: Certificate.Parsed,
+    host: []const u8,
+) Certificate.Parsed.VerifyHostNameError!void {
+    const address = parseIpLiteral(host) orelse return subject.verifyHostName(host);
+    return verifyIpAddress(subject, address);
+}
+
+const IpLiteral = struct {
+    bytes: [16]u8,
+    len: u5,
+
+    fn slice(self: *const IpLiteral) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+/// Parses `text` as an IP literal. A zone suffix is local routing
+/// information, so it is excluded from the certificate identity.
+fn parseIpLiteral(text: []const u8) ?IpLiteral {
+    if (text.len == 0) return null;
+
+    const bare = if (mem.indexOfScalar(u8, text, '%')) |zone| text[0..zone] else text;
+    if (bare.len == 0) return null;
+
+    var result: IpLiteral = .{ .bytes = undefined, .len = 0 };
+    if (Io.net.Ip4Address.parse(bare, 0)) |ip4| {
+        @memcpy(result.bytes[0..4], &ip4.bytes);
+        result.len = 4;
+        return result;
+    } else |_| {}
+
+    if (Io.net.Ip6Address.parse(bare, 0)) |ip6| {
+        @memcpy(result.bytes[0..16], &ip6.bytes);
+        result.len = 16;
+        return result;
+    } else |_| {}
+
+    return null;
+}
+
+fn verifyIpAddress(
+    subject: Certificate.Parsed,
+    address: IpLiteral,
+) Certificate.Parsed.VerifyHostNameError!void {
+    const subject_alt_name = subject.subjectAltName();
+    if (subject_alt_name.len == 0) return error.CertificateHostMismatch;
+
+    const general_names = try Certificate.der.Element.parse(subject_alt_name, 0);
+    var name_i = general_names.slice.start;
+    while (name_i < general_names.slice.end) {
+        const general_name = try Certificate.der.Element.parse(subject_alt_name, name_i);
+        name_i = general_name.slice.end;
+
+        const tag: Certificate.GeneralNameTag =
+            @fromBackingInt(@intCast(@backingInt(general_name.identifier.tag)));
+        if (tag != .iPAddress) continue;
+
+        const encoded = subject_alt_name[general_name.slice.start..general_name.slice.end];
+        // RFC 5280 section 4.2.1.6 defines only 4-byte and 16-byte encodings.
+        if (encoded.len != 4 and encoded.len != 16) continue;
+        if (mem.eql(u8, encoded, address.slice())) return;
+    }
+
+    return error.CertificateHostMismatch;
+}
 
 fn SchemeHash(comptime scheme: proto.SignatureScheme) type {
     const Sha256 = crypto.hash.sha2.Sha256;
@@ -679,4 +751,99 @@ test "CertificateBuilder.makeCertificateVerify rsa" {
     const Pss = rsa.Pss(crypto.hash.sha2.Sha256);
     const sig = Pss.Signature{ .bytes = signature };
     try sig.verify(transcript.serverCertificateVerify(), pk.key.rsa.public, null);
+}
+
+test "IP literals are parsed without confusing host names" {
+    try testing.expectEqual(@as(u5, 4), parseIpLiteral("192.168.31.132").?.len);
+    try testing.expectEqual(@as(u5, 16), parseIpLiteral("2001:db8::1").?.len);
+    try testing.expectEqual(@as(u5, 16), parseIpLiteral("::1").?.len);
+
+    try testing.expect(parseIpLiteral("bmc.example") == null);
+    try testing.expect(parseIpLiteral("192.168.31.132.example.com") == null);
+    try testing.expect(parseIpLiteral("") == null);
+    try testing.expect(parseIpLiteral("999.999.999.999") == null);
+}
+
+test "IPv6 zone suffixes are excluded from certificate identity" {
+    const zoned = parseIpLiteral("fe80::1%eth0").?;
+    const bare = parseIpLiteral("fe80::1").?;
+    try testing.expectEqualSlices(u8, bare.slice(), zoned.slice());
+}
+
+test "IPv4 literals use the octets encoded in an IP SAN" {
+    const parsed = parseIpLiteral("192.168.31.132").?;
+    try testing.expectEqualSlices(u8, &.{ 192, 168, 31, 132 }, parsed.slice());
+}
+
+/// Self-signed certificate with SANs for `bmc.example`, `192.168.31.132`,
+/// and `2001:db8::1`.
+const multi_san_der = testu.hexToBytes(
+    \\3082034130820229a00302010202142d695dd0357926093f6bd5a060771b756c
+    \\49cd34300d06092a864886f70d01010b050030163114301206035504030c0b62
+    \\6d632e6578616d706c653020170d3236303831393033303330345a180f323132
+    \\36303732363033303330345a30163114301206035504030c0b626d632e657861
+    \\6d706c6530820122300d06092a864886f70d01010105000382010f003082010a
+    \\0282010100c31291dc34d0848fbd6041da3115c6e3bc784f09761547b588ddb6
+    \\38f543046505b3f978cc7f3ae1d22277df2979c3b3a9e91b92f178b6425ecb41
+    \\f92609f77d1e19bff4c36c6a966d3ac590f46fd2db7b44f3c3af6d4216285623
+    \\ad2b0cbf61b4df4e3bf37d4945172ddb076ae48983f377675466305cb600a764
+    \\4b5761e823ad3184157735fa3bde0fa1248925eaf49ad7481fdf714af74c8484
+    \\3ca9403b7819aac51a7f93ced273853c287d6d0f7b45fd8865ed1756d66b8a1e
+    \\09a1265dd5f67071d37e5acb4fd7fcfa64d0c0fa06d1c2d2a91f70bd82a5e091
+    \\8d1cd388d6f54e50c8315eaf989c1046009edf91bfc30eca8cb94a01028e5fe3
+    \\f98dfbf0750203010001a38184308181301d0603551d0e04160414ecf4982bf8
+    \\7029856e4b37e19eb59277281f792b301f0603551d23041830168014ecf4982b
+    \\f87029856e4b37e19eb59277281f792b300f0603551d130101ff040530030101
+    \\ff302e0603551d1104273025820b626d632e6578616d706c658704c0a81f8487
+    \\1020010db8000000000000000000000001300d06092a864886f70d01010b0500
+    \\03820101007f92d4bc4d616cd29a3e2e6036896b63e6ebfd042df730ea2646a9
+    \\6ce8db30d49d1e74b88062b8be1379523068226548efcb516395ddf72cc4e892
+    \\61a0f1f93b57d8db2b1d7a3e4f669dd5fcd03155cd0a6718db1662e8fcf599ac
+    \\b6a9fe808d799dbec47565fe9a68eaae4084b7d1f44ccfc727911d41b8b21777
+    \\5b64a852e3f443f0c87ae5d85fbb8e77b7ea77d96bcafad4047779fc40527865
+    \\40a6eb30207e983988c09e10be529416fbf4c953360a4f32d551f9e2b3a235a9
+    \\43aad1b2a82b8dbc85cfd4b7c33c6d29b3611a8f78ee505ced12ab2ef4f6467d
+    \\d3765f0bd8d391b257affdc5177238de982eb93107a3de2994973709a5e72cbd
+    \\4e26b576b1
+);
+
+fn multiSan() !Certificate.Parsed {
+    const cert_bytes: Certificate = .{ .buffer = &multi_san_der, .index = 0 };
+    return cert_bytes.parse();
+}
+
+test "IP SANs match equivalent IPv4 and IPv6 reference identities" {
+    const parsed = try multiSan();
+    try verifyIdentity(parsed, "192.168.31.132");
+    try verifyIdentity(parsed, "2001:db8::1");
+    try verifyIdentity(parsed, "2001:0db8:0000:0000:0000:0000:0000:0001");
+}
+
+test "different IP addresses are refused" {
+    const parsed = try multiSan();
+    try testing.expectError(
+        error.CertificateHostMismatch,
+        verifyIdentity(parsed, "192.168.31.133"),
+    );
+    try testing.expectError(
+        error.CertificateHostMismatch,
+        verifyIdentity(parsed, "2001:db8::2"),
+    );
+}
+
+test "DNS identity verification remains unchanged" {
+    const parsed = try multiSan();
+    try verifyIdentity(parsed, "bmc.example");
+    try testing.expectError(
+        error.CertificateHostMismatch,
+        verifyIdentity(parsed, "other.example"),
+    );
+}
+
+test "IP reference identities do not match DNS SANs" {
+    const parsed = try multiSan();
+    try testing.expectError(
+        error.CertificateHostMismatch,
+        verifyIdentity(parsed, "10.0.0.1"),
+    );
 }
