@@ -67,6 +67,19 @@ pub const Transcript = struct {
         }
     }
 
+    pub fn extendedMasterSecret(
+        t: *Transcript,
+        out: []u8,
+        pre_master_secret: []const u8,
+    ) void {
+        switch (t.tag) {
+            inline else => |h| @field(t, @tagName(h)).extendedMasterSecret(
+                out,
+                pre_master_secret,
+            ),
+        }
+    }
+
     pub fn keyMaterial(
         t: *Transcript,
         out: []u8,
@@ -233,6 +246,28 @@ fn TranscriptT(comptime Hash: type) type {
             server_random: [32]u8,
         ) void {
             const seed = "master secret" ++ client_random ++ server_random;
+
+            var a1: [hash_length]u8 = undefined;
+            var a2: [hash_length]u8 = undefined;
+            Hmac.create(&a1, seed, pre_master_secret);
+            Hmac.create(&a2, &a1, pre_master_secret);
+
+            var p1: [hash_length]u8 = undefined;
+            var p2: [hash_length]u8 = undefined;
+            Hmac.create(&p1, a1 ++ seed, pre_master_secret);
+            Hmac.create(&p2, a2 ++ seed, pre_master_secret);
+
+            const master_secret = p1 ++ p2;
+            const len = @min(out.len, master_secret.len);
+            @memcpy(out[0..len], master_secret[0..len]);
+        }
+
+        fn extendedMasterSecret(
+            self: *Self,
+            out: []u8,
+            pre_master_secret: []const u8,
+        ) void {
+            const seed = "extended master secret" ++ self.hash.peek();
 
             var a1: [hash_length]u8 = undefined;
             var a2: [hash_length]u8 = undefined;

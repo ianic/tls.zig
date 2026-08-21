@@ -66,6 +66,8 @@ pub const Extension = enum(u16) {
     server_certificate_type = 20,
     /// RFC 7685
     padding = 21,
+    /// RFC 7627
+    extended_master_secret = 23,
     /// RFC 8446
     pre_shared_key = 41,
     /// RFC 8446
