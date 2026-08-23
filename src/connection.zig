@@ -231,7 +231,7 @@ pub const Connection = struct {
             const n = vp.put(c.cleartext_buf);
             const read_buf_len = c.cleartext_buf.len;
             c.cleartext_buf = c.cleartext_buf[n..];
-            if (n < read_buf_len) break;
+            if (n < read_buf_len or vp.idx >= vp.iovecs.len) break;
         }
         return vp.total;
     }
@@ -367,7 +367,7 @@ test "encrypt decrypt" {
     var output_buf: [1024]u8 = undefined;
     // Records are decrypted in place inside the reader's buffer, so the test
     // data has to be writable; `var` makes a mutable copy of it.
-    var input_data = data12.server_pong ** 4;
+    var input_data = data12.server_pong ** 5;
     var stream_reader: Io.Reader = .fixed(&input_data);
     var stream_writer: Io.Writer = .fixed(&output_buf);
     var conn: Connection = .{
@@ -429,15 +429,16 @@ test "encrypt decrypt" {
     }
     { // test readv interface
         conn.cipher.ECDHE_RSA_WITH_AES_128_CBC_SHA.decrypt_seq = 1;
-        var buffer: [9]u8 = undefined;
+        var buffer: [4]u8 = undefined;
         var iovecs = [_]std.posix.iovec{
-            .{ .base = &buffer, .len = 3 },
-            .{ .base = buffer[3..], .len = 3 },
-            .{ .base = buffer[6..], .len = 3 },
+            .{ .base = buffer[0..2], .len = 2 },
+            .{ .base = buffer[2..4], .len = 2 },
         };
         const n = try conn.readv(iovecs[0..]);
         try testing.expectEqual(4, n);
         try testing.expectEqualStrings("pong", buffer[0..n]);
+        // must not have pulled a record the caller had no room for
+        try testing.expectEqualStrings("", conn.cleartext_buf);
     }
 }
 
