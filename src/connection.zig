@@ -103,6 +103,9 @@ pub const Connection = struct {
             switch (content_type) {
                 .application_data => {},
                 .handshake => {
+                    // rfc 8446: implementations MUST NOT send zero-length
+                    // fragments of Handshake types.
+                    if (cleartext.len == 0) return error.TlsUnexpectedMessage;
                     const handshake_type: proto.Handshake = @enumFromInt(cleartext[0]);
                     switch (handshake_type) {
                         .new_session_ticket => {
@@ -691,4 +694,36 @@ test "nonblock decrypt" {
 
     const res = try conn.decrypt(&ciphertext, &cleartext_buf);
     try testing.expectEqualSlices(u8, "ping", res.cleartext);
+}
+
+test "handshake record with an empty body" {
+    const data13 = @import("testdata/tls13.zig");
+    const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
+
+    // A record whose inner plaintext is nothing but the content type byte.
+    // `Cipher.encrypt` cannot produce one, so build it by hand; with sequence
+    // number 0 the nonce is the iv unchanged.
+    var rec: [record.header_len + 1 + Aes256Gcm.tag_length]u8 = undefined;
+    rec[0..record.header_len].* = record.header(.application_data, 1 + Aes256Gcm.tag_length);
+    var ciphertext: [1]u8 = .{@intFromEnum(proto.ContentType.handshake)};
+    var auth_tag: [Aes256Gcm.tag_length]u8 = undefined;
+    Aes256Gcm.encrypt(
+        &ciphertext,
+        &auth_tag,
+        &ciphertext,
+        rec[0..record.header_len],
+        data13.server_application_iv,
+        data13.server_application_key,
+    );
+    rec[record.header_len..][0..1].* = ciphertext;
+    rec[record.header_len + 1 ..][0..Aes256Gcm.tag_length].* = auth_tag;
+
+    const client_cipher, _ = cipher.testCiphers();
+    var input: Io.Reader = .fixed(&rec);
+    var output_buf: [128]u8 = undefined;
+    var output: Io.Writer = .fixed(&output_buf);
+    var conn: Connection = .{ .input = &input, .output = &output, .cipher = client_cipher };
+
+    var buf: [128]u8 = undefined;
+    try testing.expectError(error.TlsUnexpectedMessage, conn.nextRecord(&buf));
 }
