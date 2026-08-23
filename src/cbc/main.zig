@@ -26,6 +26,8 @@ pub fn CBC(comptime BlockCipher: anytype) type {
     return struct {
         const Self = @This();
 
+        pub const block_length = EncryptCtx.block_length;
+
         enc_ctx: EncryptCtx,
         dec_ctx: DecryptCtx,
 
@@ -48,7 +50,6 @@ pub fn CBC(comptime BlockCipher: anytype) type {
         /// IV must be secret and unpredictable.
         pub fn encrypt(self: Self, dst: []u8, src: []const u8, iv: [EncryptCtx.block_length]u8) void {
             // Note: encryption *could* be parallelized, see https://research.kudelskisecurity.com/2022/11/17/some-aes-cbc-encryption-myth-busting/
-            const block_length = EncryptCtx.block_length;
             const padded_length = paddedLength(src.len);
             debug.assert(dst.len == padded_length); // destination buffer must hold the padded plaintext
             var cv = iv;
@@ -73,7 +74,6 @@ pub fn CBC(comptime BlockCipher: anytype) type {
         /// The destination buffer must be large enough to hold the plaintext.
         /// IV must be secret, unpredictable and match the one used for encryption.
         pub fn decrypt(self: Self, dst: []u8, src: []const u8, iv: [DecryptCtx.block_length]u8) !void {
-            const block_length = DecryptCtx.block_length;
             if (src.len != dst.len) {
                 return error.EncodingError;
             }
