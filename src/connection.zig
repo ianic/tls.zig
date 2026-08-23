@@ -135,7 +135,8 @@ pub const Connection = struct {
                 },
                 .alert => {
                     if (cleartext.len < 2) return error.TlsUnexpectedMessage;
-                    try proto.Alert.parse(cleartext[0..2].*).toError();
+                    // Decide on the description alone; see `Alert.parse`.
+                    try proto.Alert.parse(cleartext[0..2].*).description.toError();
                     // server side clean shutdown
                     @atomicStore(bool, &c.received_close_notify, true, .monotonic);
                     return error.EndOfStream;

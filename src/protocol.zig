@@ -227,11 +227,20 @@ pub const Alert = enum(u8) {
         };
     }
 
-    pub fn parse(buf: [2]u8) Alert {
-        const level: Alert.Level = @enumFromInt(buf[0]);
-        const alert: Alert = @enumFromInt(buf[1]);
-        _ = level;
-        return alert;
+    pub const Parsed = struct {
+        level: Level,
+        description: Alert,
+    };
+
+    /// Callers deliberately decide on `description` alone. TLS 1.3 makes
+    /// severity implicit in the alert type and says `level` "can safely be
+    /// ignored" (RFC 8446 6), and treating a TLS 1.2 warning-level alert as
+    /// fatal is the safe reading. `level` is kept for diagnostics.
+    pub fn parse(buf: [2]u8) Parsed {
+        return .{
+            .level = @enumFromInt(buf[0]),
+            .description = @enumFromInt(buf[1]),
+        };
     }
 
     pub fn format(alert: Alert) [2]u8 {
@@ -314,3 +323,14 @@ pub const Side = enum {
     client,
     server,
 };
+
+const testing = @import("std").testing;
+
+test "Alert.parse keeps the level" {
+    const parsed = Alert.parse(.{
+        @intFromEnum(Alert.Level.warning),
+        @intFromEnum(Alert.close_notify),
+    });
+    try testing.expectEqual(Alert.Level.warning, parsed.level);
+    try testing.expectEqual(Alert.close_notify, parsed.description);
+}
