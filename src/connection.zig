@@ -159,6 +159,7 @@ pub const Connection = struct {
     /// tls record. Max single tls record payload length is 1<<14 (16K)
     /// bytes.
     pub fn write(c: *Self, bytes: []const u8) !usize {
+        if (bytes.len == 0) return 0;
         const encrypt_overhead = c.cipher.encryptOverhead();
         assert(c.output.buffer.len > encrypt_overhead);
         // Find maximum number of bytes which can fit into output buffer as encrypted ciphertext
@@ -691,4 +692,15 @@ test "nonblock decrypt" {
 
     const res = try conn.decrypt(&ciphertext, &cleartext_buf);
     try testing.expectEqualSlices(u8, "ping", res.cleartext);
+}
+
+test "write with nothing to write" {
+    const client_cipher, _ = cipher.testCiphers();
+    var output_buf: [256]u8 = undefined;
+    var output: Io.Writer = .fixed(&output_buf);
+    var input: Io.Reader = .fixed("");
+    var conn: Connection = .{ .input = &input, .output = &output, .cipher = client_cipher };
+
+    try testing.expectEqual(0, try conn.write(""));
+    try testing.expectEqual(0, output.buffered().len);
 }
