@@ -99,6 +99,7 @@ pub const config = struct {
 
     pub const Client = @import("handshake_client.zig").Options;
     pub const Server = @import("handshake_server.zig").Options;
+    pub const ClientAuth = @import("handshake_server.zig").ClientAuth;
 };
 
 /// Non-blocking client/server handshake and connection. Handshake produces
