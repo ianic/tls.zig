@@ -473,7 +473,9 @@ pub const Handshake = struct {
         try w.extension(.signature_algorithms, common.supported_signature_algorithms);
         try w.extension(.supported_groups, opt.named_groups);
         try w.keyShare(opt.named_groups, shared_keys);
-        try w.serverName(opt.host);
+        if (opt.host.len > 0) {
+            try w.serverName(opt.host);
+        }
         if (opt.alpn_protocols.len > 0) {
             try w.alpn(opt.alpn_protocols);
         }
@@ -1212,7 +1214,13 @@ test "client hello size" {
     try h.initKeys(opt);
     try h.makeClientHello(opt, null);
     try testing.expectEqual(1572 + opt.host.len, h.output.end);
-    //try testing.expectEqual(2794 + opt.host.len, h.stream_writer.end);
+
+    // empty host omits the extension, 9 bytes of server_name framing
+    var no_sni = opt;
+    no_sni.host = "";
+    stream_writer = .fixed(&buffer);
+    try h.makeClientHello(no_sni, null);
+    try testing.expectEqual(1572 - 9, h.output.end);
 }
 
 test "handshake verify server finished message" {
