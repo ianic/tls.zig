@@ -73,7 +73,10 @@ pub fn build(b: *std.Build) void {
 fn setupExample(b: *std.Build, exe: *std.Build.Step.Compile, comptime name: []const u8) void {
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);
-    run_cmd.addPassthruArgs();
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
     const run_step = b.step("example_" ++ name, "Run the " ++ name ++ " example");
     run_step.dependOn(&run_cmd.step);
 }

@@ -110,7 +110,7 @@ pub const Decoder = struct {
             },
             .@"enum" => |info| {
                 const int = try d.decode(info.tag_type);
-                if (info.mode == .exhaustive) @compileError("exhaustive enum cannot be used");
+                if (info.is_exhaustive) @compileError("exhaustive enum cannot be used");
                 return @as(T, @enumFromInt(int));
             },
             else => @compileError("unsupported type: " ++ @typeName(T)),
