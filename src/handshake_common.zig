@@ -187,12 +187,28 @@ pub const cert = struct {
     }
 };
 
+/// Somewhere other than the calling thread to run the handshake's private-key
+/// operation. `run` calls `job(arg)` and returns once it has finished; where
+/// it runs it is the caller's business.
+///
+/// The signature is the one expensive step of a server handshake: an RSA-2048
+/// signature is milliseconds. An event loop that serves many connections on
+/// one thread has every other connection on that thread wait behind it, so a
+/// burst of new connections stalls the requests of the ones already open.
+/// Handing the signature to a thread pool keeps the loop serving them.
+pub const Offload = struct {
+    context: ?*anyopaque = null,
+    run: *const fn (context: ?*anyopaque, job: *const fn (arg: *anyopaque) void, arg: *anyopaque) void,
+};
+
 pub const CertificateBuilder = struct {
     cert_key_pair: *CertKeyPair,
     transcript: *Transcript,
     tls_version: proto.Version = .tls_1_3,
     side: proto.Side = .client,
     rng: std.Random,
+    /// Where the signature is computed. Null computes it here.
+    offload: ?Offload = null,
 
     pub fn makeCertificate(h: CertificateBuilder, w: *record.Writer) !void {
         const certs = h.cert_key_pair.bundle.bytes.items;
@@ -226,14 +242,47 @@ pub const CertificateBuilder = struct {
     }
 
     pub fn makeCertificateVerify(h: CertificateBuilder, w: *record.Writer) !void {
-        // Creates signature for client certificate signature message.
-        // Returns signature bytes and signature scheme.
-        //
-        // Every branch below returns a slice pointing into this buffer, so it
-        // has to outlive the switch. 512 bytes is the largest of the three: an
+        // Every branch of `sign` returns a slice pointing into this buffer, so
+        // it has to outlive the call. 512 bytes is the largest of the three: an
         // RSA-4096 signature. ECDSA DER and Ed25519 are much smaller.
         var buf: [512]u8 = undefined;
-        const signature, const signature_scheme = switch (h.cert_key_pair.key.signature_scheme) {
+        const signature, const signature_scheme = if (h.offload) |offload| signed: {
+            // The randomness is drawn here, on the caller's side of the hop:
+            // `rng` may be bound to the caller's thread or event loop, and
+            // the job may run on neither. Only RSA-PSS uses it, for the salt.
+            var job: SignJob = .{ .h = h, .buf = &buf, .seed = undefined };
+            h.rng.bytes(&job.seed);
+            offload.run(offload.context, SignJob.run, &job);
+            break :signed try job.result;
+        } else try h.sign(&buf, h.rng);
+
+        try w.handshakeRecordHeader(.certificate_verify, signature.len + 4);
+        try w.enumValue(signature_scheme);
+        try w.int(u16, signature.len);
+        try w.slice(signature);
+    }
+
+    const Signed = struct { []const u8, proto.SignatureScheme };
+    const SignError = @typeInfo(@typeInfo(@TypeOf(sign)).@"fn".return_type.?).error_union.error_set;
+
+    /// One signature, carried to wherever `Offload.run` runs it.
+    const SignJob = struct {
+        h: CertificateBuilder,
+        buf: *[512]u8,
+        seed: [std.Random.DefaultCsprng.secret_seed_length]u8,
+        result: SignError!Signed = undefined,
+
+        fn run(arg: *anyopaque) void {
+            const job: *SignJob = @ptrCast(@alignCast(arg));
+            var csprng: std.Random.DefaultCsprng = .init(job.seed);
+            job.result = job.h.sign(job.buf, csprng.random());
+        }
+    };
+
+    /// Creates the signature for the CertificateVerify message. Returns the
+    /// signature bytes, in `buf`, and the signature scheme.
+    fn sign(h: CertificateBuilder, buf: *[512]u8, rng: std.Random) !Signed {
+        return switch (h.cert_key_pair.key.signature_scheme) {
             inline .ecdsa_secp256r1_sha256,
             .ecdsa_secp384r1_sha384,
             => |comptime_scheme| brk: {
@@ -258,7 +307,7 @@ pub const CertificateBuilder = struct {
                 const Hash = SchemeHash(comptime_scheme);
                 var signer = try h.cert_key_pair.key.key.rsa.signerOaep(Hash, null);
                 h.setSignatureVerifyBytes(&signer);
-                const signature = try signer.finalize(&buf, h.rng);
+                const signature = try signer.finalize(buf, rng);
                 break :brk .{ signature.bytes, comptime_scheme };
             },
             .ed25519 => brk: {
@@ -278,11 +327,6 @@ pub const CertificateBuilder = struct {
             },
             else => return error.TlsUnknownSignatureScheme,
         };
-
-        try w.handshakeRecordHeader(.certificate_verify, signature.len + 4);
-        try w.enumValue(signature_scheme);
-        try w.int(u16, signature.len);
-        try w.slice(signature);
     }
 
     fn setSignatureVerifyBytes(h: CertificateBuilder, signer: anytype) void {
@@ -616,6 +660,7 @@ fn testCertificateVerify(
     key_pem: []const u8,
     buf: []u8,
     transcript: *Transcript,
+    offload: ?Offload,
 ) !struct { proto.SignatureScheme, []const u8 } {
     // Bundle is unused by makeCertificateVerify (it only signs the
     // transcript with cert_key_pair.key), so an empty one is fine here.
@@ -632,6 +677,7 @@ fn testCertificateVerify(
         .transcript = transcript,
         .side = .server,
         .rng = prng.random(),
+        .offload = offload,
     };
 
     var w = record.Writer.init(buf);
@@ -650,6 +696,7 @@ test "CertificateBuilder.makeCertificateVerify ecdsa" {
         @embedFile("testdata/ec_prime256v1_private_key.pem"),
         &buf,
         &transcript,
+        null,
     );
     try testing.expectEqual(.ecdsa_secp256r1_sha256, scheme);
 
@@ -670,7 +717,40 @@ test "CertificateBuilder.makeCertificateVerify rsa" {
         @embedFile("testdata/rsa_private_key.pem"),
         &buf,
         &transcript,
+        null,
     );
+    try testing.expectEqual(.rsa_pss_rsae_sha256, scheme);
+
+    const pk = try PrivateKey.parsePem(@embedFile("testdata/rsa_private_key.pem"));
+    const Pss = rsa.Pss(crypto.hash.sha2.Sha256);
+    const sig = Pss.Signature{ .bytes = signature };
+    try sig.verify(transcript.serverCertificateVerify(), pk.key.rsa.public, null);
+}
+
+test "CertificateBuilder.makeCertificateVerify rsa, signed on another thread" {
+    const OtherThread = struct {
+        var calls: usize = 0;
+
+        fn run(_: ?*anyopaque, job: *const fn (arg: *anyopaque) void, arg: *anyopaque) void {
+            calls += 1;
+            const thread = std.Thread.spawn(.{}, call, .{ job, arg }) catch @panic("no thread");
+            thread.join();
+        }
+
+        fn call(job: *const fn (arg: *anyopaque) void, arg: *anyopaque) void {
+            job(arg);
+        }
+    };
+
+    var transcript = Transcript{};
+    var buf: [1024]u8 = undefined;
+    const scheme, const signature = try testCertificateVerify(
+        @embedFile("testdata/rsa_private_key.pem"),
+        &buf,
+        &transcript,
+        .{ .run = OtherThread.run },
+    );
+    try testing.expectEqual(1, OtherThread.calls);
     try testing.expectEqual(.rsa_pss_rsae_sha256, scheme);
 
     const pk = try PrivateKey.parsePem(@embedFile("testdata/rsa_private_key.pem"));
