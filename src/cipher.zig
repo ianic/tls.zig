@@ -493,7 +493,7 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             header.* = record.header(.application_data, payload_len);
 
             // Skip @memcpy if cleartext is already part of the buf at right position
-            if (&cleartext[0] != &buf[record.header_len]) {
+            if (cleartext.ptr != buf[record.header_len..].ptr) {
                 @memcpy(buf[record.header_len..][0..cleartext.len], cleartext);
             }
             buf[record.header_len + cleartext.len] = @intFromEnum(content_type);
@@ -1144,4 +1144,16 @@ test "cbc reports padding and mac failures alike" {
     // A peer must not be able to tell the two apart.
     try testing.expectEqual(error.TlsBadRecordMac, errors[0]);
     try testing.expectEqual(error.TlsBadRecordMac, errors[1]);
+}
+
+test "encrypt a record with no cleartext" {
+    var client_cipher, var server_cipher = testCiphers();
+
+    var buf: [128]u8 = undefined;
+    const encrypted = try client_cipher.encrypt(&buf, .application_data, "");
+
+    var out: [128]u8 = undefined;
+    const content_type, const decrypted = try server_cipher.decrypt(&out, Record.init(encrypted));
+    try testing.expectEqual(.application_data, content_type);
+    try testing.expectEqualStrings("", decrypted);
 }
