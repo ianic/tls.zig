@@ -70,7 +70,8 @@ pub const Connection = struct {
         failed,
     };
 
-    pub const ReadError = Io.Reader.Error || error{
+    pub const ReadError = error{
+        ReadFailed,
         InputBufferUndersize,
         TlsConnectionTruncated,
         TlsRecordOverflow,
@@ -84,7 +85,8 @@ pub const Connection = struct {
         TlsConnectionFailed,
     } || proto.Alert.Error;
 
-    pub const WriteError = Io.Writer.Error || error{
+    pub const WriteError = error{
+        WriteFailed,
         TlsCipherNoSpaceLeft,
         TlsUnexpectedMessage,
         TlsConnectionFailed,
@@ -95,7 +97,7 @@ pub const Connection = struct {
     /// `nextRecord` does not decide. For a transport it is the peer closing
     /// without close_notify (`read`/`next` call `inputEnded`); for a caller
     /// buffer it means come back with more (`NonBlock.decrypt` stops).
-    const RecordError = ReadError || error{EndOfInput};
+    const RecordError = ReadError || error{ EndOfStream, EndOfInput };
 
     fn queueAlert(c: *Self, err: RecordError) void {
         const alert = switch (err) {
@@ -530,7 +532,6 @@ pub const Connection = struct {
             const buf = limit.slice(try w.writableSliceGreedy(1));
             const n = self.conn.read(buf) catch |err| {
                 self.err = err;
-                if (err == error.EndOfStream) return error.EndOfStream;
                 return error.ReadFailed;
             };
             if (n == 0) return error.EndOfStream;
