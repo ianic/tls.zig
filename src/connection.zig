@@ -564,11 +564,26 @@ pub const NonBlock = struct {
     /// Required ciphertext buffer length for the given cleartext length.
     pub fn encryptedLength(self: Self, cleartext_len: usize) usize {
         const c = self.inner.cipher;
-        const records_count = cleartext_len / cipher.max_cleartext_len;
-        if (records_count == 0) return c.recordLen(cleartext_len);
-        const last_chunk_len = cleartext_len - cipher.max_cleartext_len * records_count;
-        return c.recordLen(cipher.max_cleartext_len) * records_count +
-            if (last_chunk_len == 0) 0 else c.recordLen(last_chunk_len);
+        // Walk the same chunking `encrypt` walks, so the key update records
+        // it emits are counted too. No cleartext means no records at all,
+        // which the loop already gives.
+        const key_update = &record.handshakeHeader(.key_update, 1) ++ [_]u8{0};
+        var total: usize = 0;
+        var pos: usize = 0;
+        var seq = c.encryptSeq();
+        var update_requested = @atomicLoad(bool, &self.inner.key_update_requested, .monotonic);
+        while (pos < cleartext_len) {
+            if (update_requested or seq >= self.inner.max_encrypt_seq) {
+                total += c.recordLen(key_update.len);
+                seq = 0;
+                update_requested = false;
+            }
+            const n = @min(cleartext_len - pos, cipher.max_cleartext_len);
+            total += c.recordLen(n);
+            seq +%= 1;
+            pos += n;
+        }
+        return total;
     }
 
     fn reset(self: *Self) void {
@@ -739,4 +754,39 @@ test "write with nothing to write" {
 
     try testing.expectEqual(0, try conn.write(""));
     try testing.expectEqual(0, output.buffered().len);
+}
+
+test "nonblock key update is included in encryptedLength" {
+    const Transcript = @import("transcript.zig").Transcript;
+    const client_secret = [_]u8{1} ** 48;
+    const server_secret = [_]u8{2} ** 48;
+    const secret: Transcript.Secret = .{
+        .client = &client_secret,
+        .server = &server_secret,
+    };
+    var client = NonBlock.init(try Cipher.initTls13(.AES_256_GCM_SHA384, secret, .client));
+    var server = NonBlock.init(try Cipher.initTls13(.AES_256_GCM_SHA384, secret, .server));
+
+    // The peer asks for a key update, so our next record has to be preceded
+    // by one of our own.
+    var in_buf: [128]u8 = undefined;
+    const key_update = &record.handshakeHeader(.key_update, 1) ++ [_]u8{1}; // update_requested
+    const requested = try server.inner.cipher.encrypt(&in_buf, .handshake, key_update);
+    var cleartext_buf: [64]u8 = undefined;
+    _ = try client.decrypt(requested, &cleartext_buf);
+    try testing.expect(@atomicLoad(bool, &client.inner.key_update_requested, .monotonic));
+
+    // Size the buffer the way `encrypt` documents, and everything fits.
+    const cleartext = "ping";
+    const encrypted_len = client.encryptedLength(cleartext.len);
+    try testing.expect(encrypted_len > client.inner.cipher.recordLen(cleartext.len));
+    var ciphertext_buf: [128]u8 = undefined;
+    const encrypted = try client.encrypt(cleartext, ciphertext_buf[0..encrypted_len]);
+    try testing.expectEqual(cleartext.len, encrypted.cleartext_pos);
+    try testing.expectEqual(encrypted_len, encrypted.ciphertext.len);
+
+    // The peer reads the data through our KeyUpdate response.
+    const decrypted = try server.decrypt(encrypted.ciphertext, &cleartext_buf);
+    try testing.expectEqualSlices(u8, cleartext, decrypted.cleartext);
+    try testing.expectEqual(encrypted_len, decrypted.ciphertext_pos);
 }
