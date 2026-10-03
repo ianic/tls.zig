@@ -30,13 +30,17 @@ pub fn main(init: std.process.Init) !void {
 
     const rng_impl: std.Random.IoSource = .{ .io = io };
     // Upgrade tcp connection to tls
-    var conn = try tls.client(&tcp_reader.interface, &tcp_writer.interface, .{
+    var conn = tls.client(&tcp_reader.interface, &tcp_writer.interface, .{
         .host = host,
         .root_ca = root_ca,
         .diagnostic = &diagnostic,
         .now = std.Io.Clock.real.now(io),
         .rng = rng_impl.interface(),
-    });
+    }) catch |err| return switch (err) {
+        error.ReadFailed => tcp_reader.err orelse err,
+        error.WriteFailed => tcp_writer.err orelse err,
+        else => err,
+    };
 
     // conn.output.buffer = conn.output.buffer[0..62];
     // std.debug.print("conn output buffer: {}\n", .{conn.output.buffer.len});
@@ -44,18 +48,33 @@ pub fn main(init: std.process.Init) !void {
     { // Send http GET request
         var buf: [256]u8 = undefined;
         const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
-        try conn.writeAll(req);
+        conn.writeAll(req) catch |err| return switch (err) {
+            error.WriteFailed => tcp_writer.err orelse err,
+            else => err,
+        };
     }
-    try readHttpResponse(gpa, &conn);
-    try conn.close();
-}
-
-fn readHttpResponse(gpa: Allocator, conn: *tls.Connection) !void {
 
     // Buffer must be big enough for http headers
     var http_reader_buf: [4096]u8 = undefined;
     var http_reader = conn.reader(&http_reader_buf);
-    var rdr = &http_reader.interface;
+    readHttpResponse(gpa, &http_reader.interface) catch |err| return switch (err) {
+        // The Io.Reader interface reports the generic error; walk down the
+        // layers until one of them says what actually happened.
+        error.ReadFailed => brk: {
+            const tls_err = http_reader.err orelse break :brk err;
+            if (tls_err != error.ReadFailed) break :brk tls_err;
+            break :brk tcp_reader.err orelse tls_err;
+        },
+        else => err,
+    };
+
+    conn.close() catch |err| return switch (err) {
+        error.WriteFailed => tcp_writer.err orelse err,
+        else => err,
+    };
+}
+
+fn readHttpResponse(gpa: Allocator, rdr: *std.Io.Reader) !void {
 
     // Find headers length
     const header_length = while (true) {

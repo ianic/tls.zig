@@ -75,6 +75,12 @@ pub const Options = struct {
 
     session_resumption: ?*SessionResumption = null,
 
+    /// Require the peer to send close_notify before closing the transport.
+    /// Without this, a close at a record boundary is a clean end of stream.
+    ///
+    /// An EOF in the middle of a record is always an error, either way.
+    strict_close_notify: bool = false,
+
     pub const Diagnostic = struct {
         tls_version: proto.Version = @enumFromInt(0),
         cipher_suite_tag: CipherSuite = @enumFromInt(0),

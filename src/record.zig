@@ -28,8 +28,8 @@ pub const Record = struct {
     }
 
     const Error = error{
-        EndOfStream, // clean close of the stream
-        ReadFailed, // all other stream close
+        EndOfStream, // input ran out; `Connection` decides what that means
+        ReadFailed, // the reader underneath failed; its own error says why
         InputBufferUndersize, // input can't fit tls record
         TlsRecordOverflow, // incorrect tls record
     };

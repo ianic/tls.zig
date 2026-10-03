@@ -40,6 +40,7 @@ pub fn client(input: *Io.Reader, output: *Io.Writer, opt: config.Client) !Connec
         .output = output,
         .session_resumption_secret_idx = session_resumption_secret_idx,
         .session_resumption = opt.session_resumption,
+        .strict_close_notify = opt.strict_close_notify,
         .alpn_protocol = findAlpnProtocol(opt.alpn_protocols, hc.alpn_protocol),
     };
 }
@@ -58,6 +59,7 @@ pub fn server(input: *Io.Reader, output: *Io.Writer, opt: config.Server) !Connec
         .input = input,
         .output = output,
         .alpn_protocol = hs.alpn_protocol,
+        .strict_close_notify = opt.strict_close_notify,
     };
 }
 

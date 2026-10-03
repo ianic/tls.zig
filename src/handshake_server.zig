@@ -44,6 +44,12 @@ pub const Options = struct {
     alpn_protocols: []const []const u8 = &.{},
 
     now: Io.Timestamp,
+
+    /// Require the peer to send close_notify before closing the transport.
+    /// Without this, a close at a record boundary is a clean end of stream.
+    ///
+    /// An EOF in the middle of a record is always an error, either way.
+    strict_close_notify: bool = false,
 };
 
 pub const ClientAuth = struct {

@@ -460,16 +460,21 @@ fn Aead13Type(comptime AeadType: type, comptime Hash: type) type {
             self.decrypt_iv = hkdfExpandLabel(Hkdf, self.decrypt_secret, "iv", "", nonce_len);
         }
 
+        // Key updates touch only their own direction's fields; the other
+        // half may be in concurrent use (Connection's reader/writer split).
+
         pub fn keyUpdateEncrypt(self: *Self) void {
             self.encrypt_secret = hkdfExpandLabel(Hkdf, self.encrypt_secret, "traffic upd", "", digest_len);
             self.encrypt_seq = 0;
-            self.keyGenerate();
+            self.encrypt_key = hkdfExpandLabel(Hkdf, self.encrypt_secret, "key", "", key_len);
+            self.encrypt_iv = hkdfExpandLabel(Hkdf, self.encrypt_secret, "iv", "", nonce_len);
         }
 
         pub fn keyUpdateDecrypt(self: *Self) void {
             self.decrypt_secret = hkdfExpandLabel(Hkdf, self.decrypt_secret, "traffic upd", "", digest_len);
             self.decrypt_seq = 0;
-            self.keyGenerate();
+            self.decrypt_key = hkdfExpandLabel(Hkdf, self.decrypt_secret, "key", "", key_len);
+            self.decrypt_iv = hkdfExpandLabel(Hkdf, self.decrypt_secret, "iv", "", nonce_len);
         }
 
         /// Returns encrypted tls record in format:

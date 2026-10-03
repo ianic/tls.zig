@@ -272,28 +272,25 @@ pub fn get(
     var output_buf: [tls.output_buffer_len]u8 = undefined;
     var reader = tcp.reader(io, &input_buf);
     var writer = tcp.writer(io, &output_buf);
-    var cli = tls.client(&reader.interface, &writer.interface, opt) catch |err| {
-        if (reader.err) |e| return e;
-        return err;
+    var cli = tls.client(&reader.interface, &writer.interface, opt) catch |err| return switch (err) {
+        error.ReadFailed => reader.err orelse err,
+        error.WriteFailed => writer.err orelse err,
+        else => err,
     };
 
     // Send http GET request
     var buf: [256]u8 = undefined;
     const req = try std.fmt.bufPrint(&buf, "GET / HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{host});
-    cli.writeAll(req) catch |err| {
-        if (writer.err) |e| return e;
-        return err;
+    cli.writeAll(req) catch |err| return switch (err) {
+        error.WriteFailed => writer.err orelse err,
+        else => err,
     };
 
     // Read and print http response
     var n: usize = 0;
     defer if (show_response) std.debug.print("{} bytes read\n", .{n});
     while (cli.next() catch |err| switch (err) {
-        error.WouldBlock, error.ConnectionResetByPeer => null,
-        error.ReadFailed => brk: {
-            if (reader.err) |e| if (e == error.Canceled) return e;
-            break :brk null;
-        },
+        error.ReadFailed => return reader.err orelse err,
         else => return err,
     }) |data| {
         n += data.len;
@@ -309,8 +306,7 @@ pub fn get(
     }
 
     cli.close() catch |err| switch (err) {
-        error.BrokenPipe => return,
-        error.WriteFailed => return,
+        error.WriteFailed => return writer.err orelse err,
         else => return err,
     };
 }

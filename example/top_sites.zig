@@ -77,7 +77,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, domain: []const u8, root_ca: tls.conf
     cmn.get(io, domain, null, false, false, opt) catch |err| {
         switch (err) {
             error.UnknownHostName,
-            error.ConnectionTimedOut,
+            error.Timeout,
             error.ConnectionRefused,
             error.NetworkUnreachable,
             error.NameServerFailure,

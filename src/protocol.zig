@@ -216,6 +216,8 @@ pub const Alert = enum(u8) {
             error.ReadFailed,
             error.WriteFailed,
             error.EndOfStream,
+            error.TlsConnectionTruncated,
+            error.TlsConnectionFailed,
             error.Canceled,
             error.OutOfMemory,
             => null,
@@ -382,6 +384,8 @@ test "Alert.forLocalError sends nothing for transport failures" {
         error.ReadFailed,
         error.WriteFailed,
         error.EndOfStream,
+        error.TlsConnectionTruncated,
+        error.TlsConnectionFailed,
         error.Canceled,
         error.OutOfMemory,
     }) |err| {
