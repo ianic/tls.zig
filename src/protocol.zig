@@ -94,7 +94,7 @@ pub const Extension = enum(u16) {
 /// there is nothing to tell the peer about. See `Alert.forLocalError`.
 pub fn alertForLocalError(err: anyerror) ?[2]u8 {
     const alert = Alert.forLocalError(err) orelse return null;
-    return [2]u8{ @intFromEnum(Alert.Level.fatal), @intFromEnum(alert) };
+    return [2]u8{ @backingInt(Alert.Level.fatal), @backingInt(alert) };
 }
 
 pub const Alert = enum(u8) {
@@ -199,8 +199,8 @@ pub const Alert = enum(u8) {
     /// us. Derived from `Error` rather than from the error name, so it cannot
     /// drift as that set changes.
     pub fn isFromPeer(err: anyerror) bool {
-        inline for (@typeInfo(Error).error_set.?) |e| {
-            if (err == @field(anyerror, e.name)) return true;
+        inline for (@typeInfo(Error).error_set.error_names.?) |name| {
+            if (err == @field(anyerror, name)) return true;
         }
         return false;
     }
@@ -272,22 +272,22 @@ pub const Alert = enum(u8) {
     /// fatal is the safe reading. `level` is kept for diagnostics.
     pub fn parse(buf: [2]u8) Parsed {
         return .{
-            .level = @enumFromInt(buf[0]),
-            .description = @enumFromInt(buf[1]),
+            .level = @fromBackingInt(@intCast(buf[0])),
+            .description = @fromBackingInt(@intCast(buf[1])),
         };
     }
 
     pub fn format(alert: Alert) [2]u8 {
         return [2]u8{
-            @intFromEnum(if (alert == .close_notify) Alert.Level.warning else Alert.Level.fatal),
-            @intFromEnum(alert),
+            @backingInt(if (alert == .close_notify) Alert.Level.warning else Alert.Level.fatal),
+            @backingInt(alert),
         };
     }
 
     pub fn closeNotify() [2]u8 {
         return [2]u8{
-            @intFromEnum(Alert.Level.warning),
-            @intFromEnum(Alert.close_notify),
+            @backingInt(Alert.Level.warning),
+            @backingInt(Alert.close_notify),
         };
     }
 };
@@ -362,16 +362,16 @@ const testing = @import("std").testing;
 
 test "Alert.parse keeps the level" {
     const parsed = Alert.parse(.{
-        @intFromEnum(Alert.Level.warning),
-        @intFromEnum(Alert.close_notify),
+        @backingInt(Alert.Level.warning),
+        @backingInt(Alert.close_notify),
     });
     try testing.expectEqual(Alert.Level.warning, parsed.level);
     try testing.expectEqual(Alert.close_notify, parsed.description);
 }
 
 test "Alert.isFromPeer covers exactly the alerts we can receive" {
-    inline for (@typeInfo(Alert.Error).error_set.?) |e| {
-        const err = @field(anyerror, e.name);
+    inline for (@typeInfo(Alert.Error).error_set.error_names.?) |name| {
+        const err = @field(anyerror, name);
         try testing.expect(Alert.isFromPeer(err));
         // An alert the peer sent is its failure to report, not ours.
         try testing.expectEqual(@as(?Alert, null), Alert.forLocalError(err));
@@ -415,8 +415,8 @@ test "Alert.forLocalError maps local failures to a matching alert" {
 
 test "alertForLocalError builds a fatal record body, or none" {
     try testing.expectEqualSlices(u8, &.{
-        @intFromEnum(Alert.Level.fatal),
-        @intFromEnum(Alert.protocol_version),
+        @backingInt(Alert.Level.fatal),
+        @backingInt(Alert.protocol_version),
     }, &(alertForLocalError(error.TlsBadVersion).?));
     try testing.expectEqual(@as(?[2]u8, null), alertForLocalError(error.TlsAlertHandshakeFailure));
 }

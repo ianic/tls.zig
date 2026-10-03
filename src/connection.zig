@@ -310,8 +310,8 @@ pub const Connection = struct {
             .open => .{ proto.Alert.closeNotify(), .close_sent },
             .peer_closed => .{ proto.Alert.closeNotify(), .closed },
             .fatal_alert_pending => .{ [2]u8{
-                @intFromEnum(proto.Alert.Level.fatal),
-                @intFromEnum(c.pending_alert.?),
+                @backingInt(proto.Alert.Level.fatal),
+                @backingInt(c.pending_alert.?),
             }, .failed },
             .close_sent, .closed, .failed => return null,
         };
@@ -820,7 +820,7 @@ test "read queues protocol alert without writing" {
     // A complete record header with a version rejected by established TLS
     // connections. The payload is empty, so no decryption is attempted.
     const invalid_record = [_]u8{
-        @intFromEnum(proto.ContentType.application_data),
+        @backingInt(proto.ContentType.application_data),
         0x03,
         0x04,
         0,
@@ -850,8 +850,8 @@ test "read queues protocol alert without writing" {
     );
     try testing.expectEqual(.alert, content_type);
     try testing.expectEqualSlices(u8, &.{
-        @intFromEnum(proto.Alert.Level.fatal),
-        @intFromEnum(proto.Alert.protocol_version),
+        @backingInt(proto.Alert.Level.fatal),
+        @backingInt(proto.Alert.protocol_version),
     }, alert);
     const alert_end = output.end;
     try conn.close();
@@ -861,7 +861,7 @@ test "read queues protocol alert without writing" {
 
 test "protocol failure after close_notify sends nothing further" {
     const invalid_record = [_]u8{
-        @intFromEnum(proto.ContentType.application_data),
+        @backingInt(proto.ContentType.application_data),
         0x03,
         0x04,
         0,
@@ -963,7 +963,7 @@ const PartialReader = struct {
 
 test "transport EOF without close_notify" {
     // Three bytes of a five byte record header, then end of stream.
-    const partial_header = [_]u8{ @intFromEnum(proto.ContentType.application_data), 0x03, 0x03 };
+    const partial_header = [_]u8{ @backingInt(proto.ContentType.application_data), 0x03, 0x03 };
 
     const cases = [_]struct {
         prefix: []const u8,
@@ -1342,8 +1342,8 @@ test "write with nothing to write" {
 
 test "nonblock key update is included in encryptedLength" {
     const Transcript = @import("transcript.zig").Transcript;
-    const client_secret = [_]u8{1} ** 48;
-    const server_secret = [_]u8{2} ** 48;
+    const client_secret: [48]u8 = @splat(1);
+    const server_secret: [48]u8 = @splat(2);
     const secret: Transcript.Secret = .{
         .client = &client_secret,
         .server = &server_secret,
@@ -1401,7 +1401,7 @@ test "nonblock close uses pending fatal alert and state" {
     const client_cipher, _ = cipher.testCiphers();
     var conn = NonBlock.init(client_cipher);
     const invalid_record = [_]u8{
-        @intFromEnum(proto.ContentType.application_data),
+        @backingInt(proto.ContentType.application_data),
         0x03,
         0x04,
         0,
@@ -1435,8 +1435,8 @@ test "nonblock graceful close is idempotent" {
 /// secrets undefined.
 fn testTls13CipherPair() !struct { Cipher, Cipher } {
     const Transcript = @import("transcript.zig").Transcript;
-    const client_secret = [_]u8{1} ** 48;
-    const server_secret = [_]u8{2} ** 48;
+    const client_secret: [48]u8 = @splat(1);
+    const server_secret: [48]u8 = @splat(2);
     const secret: Transcript.Secret = .{
         .client = &client_secret,
         .server = &server_secret,
