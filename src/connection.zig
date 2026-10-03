@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const mem = std.mem;
 const Io = std.Io;
 const assert = std.debug.assert;
 
@@ -73,10 +72,10 @@ pub const Connection = struct {
     pub fn next(c: *Self) anyerror!?[]const u8 {
         return c.nextRecord(&.{}) catch |err| {
             if (err == error.EndOfStream) return null;
-            // Write alert on tls errors.
-            // Stream errors return to the caller.
-            if (mem.startsWith(u8, @errorName(err), "Tls"))
-                @atomicStore(proto.Alert, &c.close_alert, proto.Alert.fromError(err), .monotonic);
+            // Remember the alert for `close` to send, when the failure is
+            // ours to report at all.
+            if (proto.Alert.forLocalError(err)) |alert|
+                @atomicStore(proto.Alert, &c.close_alert, alert, .monotonic);
             return err;
         };
     }
@@ -185,8 +184,8 @@ pub const Connection = struct {
         if (c.cleartext_buf.len == 0) {
             const cleartext = c.nextRecord(buffer) catch |err| {
                 if (err == error.EndOfStream) return 0;
-                if (mem.startsWith(u8, @errorName(err), "Tls"))
-                    @atomicStore(proto.Alert, &c.close_alert, proto.Alert.fromError(err), .monotonic);
+                if (proto.Alert.forLocalError(err)) |alert|
+                    @atomicStore(proto.Alert, &c.close_alert, alert, .monotonic);
                 return err;
             };
             if (cleartext.ptr == buffer.ptr) {

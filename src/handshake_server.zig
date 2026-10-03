@@ -91,13 +91,20 @@ pub const Handshake = struct {
 
     const Self = @This();
 
+    /// Tells the peer why we are failing, when the failure is ours to report.
+    ///
+    /// Sending errors are propagated, not swallowed. Their real cause is
+    /// recorded on the caller's writer and can be `error.Canceled`; dropping
+    /// it would lose a cancellation. A dead transport also outranks the
+    /// protocol error it would have replaced, since the peer will never see
+    /// the alert anyway.
     fn writeAlert(h: *Self, cph: ?*Cipher, err: anyerror) !void {
+        const cleartext = proto.alertForLocalError(err) orelse return;
         if (cph) |c| {
-            const cleartext = proto.alertFromError(err);
             const ciphertext = try c.encrypt(h.output.unusedCapacitySlice(), .alert, &cleartext);
             h.output.advance(ciphertext.len);
         } else {
-            const alert = record.header(.alert, 2) ++ proto.alertFromError(err);
+            const alert = record.header(.alert, 2) ++ cleartext;
             try h.output.writeAll(&alert);
         }
         try h.output.flush();
@@ -119,10 +126,8 @@ pub const Handshake = struct {
         try h.output.flush();
 
         h.clientFlight2(opt) catch |err| {
-            // Alert received from client
-            if (!mem.startsWith(u8, @errorName(err), "TlsAlert")) {
-                try h.writeAlert(&h.cipher, err);
-            }
+            // writeAlert stays quiet when the client is the one that failed.
+            try h.writeAlert(&h.cipher, err);
             return err;
         };
         return h.cipher;

@@ -90,8 +90,11 @@ pub const Extension = enum(u16) {
     _,
 };
 
-pub fn alertFromError(err: anyerror) [2]u8 {
-    return [2]u8{ @intFromEnum(Alert.Level.fatal), @intFromEnum(Alert.fromError(err)) };
+/// The fatal alert to send for a locally detected failure, or null when
+/// there is nothing to tell the peer about. See `Alert.forLocalError`.
+pub fn alertForLocalError(err: anyerror) ?[2]u8 {
+    const alert = Alert.forLocalError(err) orelse return null;
+    return [2]u8{ @intFromEnum(Alert.Level.fatal), @intFromEnum(alert) };
 }
 
 pub const Alert = enum(u8) {
@@ -192,8 +195,31 @@ pub const Alert = enum(u8) {
         };
     }
 
-    pub fn fromError(err: anyerror) Alert {
+    /// True for the errors produced by `toError`, i.e. an alert the peer sent
+    /// us. Derived from `Error` rather than from the error name, so it cannot
+    /// drift as that set changes.
+    pub fn isFromPeer(err: anyerror) bool {
+        inline for (@typeInfo(Error).error_set.?) |e| {
+            if (err == @field(anyerror, e.name)) return true;
+        }
+        return false;
+    }
+
+    /// The alert describing a failure we detected locally, or null when the
+    /// peer should not be sent one: it already told us about its own failure,
+    /// or the transport is gone and there is nothing to send on.
+    pub fn forLocalError(err: anyerror) ?Alert {
+        if (isFromPeer(err)) return null;
         return switch (err) {
+            // Transport or resource failures. Not protocol violations, and
+            // in most cases there is no longer a connection to send on.
+            error.ReadFailed,
+            error.WriteFailed,
+            error.EndOfStream,
+            error.Canceled,
+            error.OutOfMemory,
+            => null,
+
             error.TlsUnexpectedMessage => .unexpected_message,
             error.TlsBadRecordMac => .bad_record_mac,
             error.TlsRecordOverflow => .record_overflow,
@@ -207,12 +233,18 @@ pub const Alert = enum(u8) {
             error.IdentityElement,
             error.InvalidEncoding,
             error.TlsNoSupportedCiphers,
+            error.TlsBadSignatureScheme,
+            error.TlsUnknownSignatureScheme,
             => .illegal_parameter,
             error.TlsUnknownCa => .unknown_ca,
             error.TlsAccessDenied => .access_denied,
             error.TlsDecodeError => .decode_error,
-            error.TlsDecryptError => .decrypt_error,
-            error.TlsProtocolVersion => .protocol_version,
+            error.TlsDecryptError, error.TlsDecryptFailure => .decrypt_error,
+            error.TlsProtocolVersion, error.TlsBadVersion => .protocol_version,
+            // The peer offered nothing we can complete the handshake with.
+            error.TlsServerHelloRetryRequest => .handshake_failure,
+            // Our own limitation rather than anything the peer did wrong.
+            error.TlsUnsupportedFragmentedHandshakeMessage => .internal_error,
             error.TlsInsufficientSecurity => .insufficient_security,
             error.TlsInternalError => .internal_error,
             error.TlsInappropriateFallback => .inappropriate_fallback,
@@ -333,4 +365,54 @@ test "Alert.parse keeps the level" {
     });
     try testing.expectEqual(Alert.Level.warning, parsed.level);
     try testing.expectEqual(Alert.close_notify, parsed.description);
+}
+
+test "Alert.isFromPeer covers exactly the alerts we can receive" {
+    inline for (@typeInfo(Alert.Error).error_set.?) |e| {
+        const err = @field(anyerror, e.name);
+        try testing.expect(Alert.isFromPeer(err));
+        // An alert the peer sent is its failure to report, not ours.
+        try testing.expectEqual(@as(?Alert, null), Alert.forLocalError(err));
+    }
+    try testing.expect(!Alert.isFromPeer(error.TlsDecodeError));
+}
+
+test "Alert.forLocalError sends nothing for transport failures" {
+    for ([_]anyerror{
+        error.ReadFailed,
+        error.WriteFailed,
+        error.EndOfStream,
+        error.Canceled,
+        error.OutOfMemory,
+    }) |err| {
+        try testing.expectEqual(@as(?Alert, null), Alert.forLocalError(err));
+    }
+}
+
+test "Alert.forLocalError maps local failures to a matching alert" {
+    const cases = [_]struct { err: anyerror, alert: Alert }{
+        .{ .err = error.TlsBadVersion, .alert = .protocol_version },
+        .{ .err = error.TlsProtocolVersion, .alert = .protocol_version },
+        .{ .err = error.TlsDecryptFailure, .alert = .decrypt_error },
+        .{ .err = error.TlsDecryptError, .alert = .decrypt_error },
+        .{ .err = error.TlsBadSignatureScheme, .alert = .illegal_parameter },
+        .{ .err = error.TlsUnknownSignatureScheme, .alert = .illegal_parameter },
+        .{ .err = error.TlsServerHelloRetryRequest, .alert = .handshake_failure },
+        .{ .err = error.TlsUnsupportedFragmentedHandshakeMessage, .alert = .internal_error },
+        .{ .err = error.TlsBadRecordMac, .alert = .bad_record_mac },
+        .{ .err = error.TlsNoApplicationProtocol, .alert = .no_application_protocol },
+    };
+    for (cases) |c| {
+        try testing.expectEqual(@as(?Alert, c.alert), Alert.forLocalError(c.err));
+    }
+    // Anything we did not classify is still reported, as internal_error.
+    try testing.expectEqual(@as(?Alert, .internal_error), Alert.forLocalError(error.Unexpected));
+}
+
+test "alertForLocalError builds a fatal record body, or none" {
+    try testing.expectEqualSlices(u8, &.{
+        @intFromEnum(Alert.Level.fatal),
+        @intFromEnum(Alert.protocol_version),
+    }, &(alertForLocalError(error.TlsBadVersion).?));
+    try testing.expectEqual(@as(?[2]u8, null), alertForLocalError(error.TlsAlertHandshakeFailure));
 }
