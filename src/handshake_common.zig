@@ -62,9 +62,8 @@ pub const CertKeyPair = struct {
         const bundle = try cert.fromFilePath(allocator, io, dir, cert_path);
         const key_file = try dir.openFile(io, key_path, .{});
         defer key_file.close(io);
-        var rdr = key_file.reader(io, &.{});
 
-        const key = try PrivateKey.fromFile(allocator, &rdr.interface);
+        const key = try PrivateKey.fromFile(allocator, io, key_file);
 
         return .{ .bundle = bundle, .key = key, .ecdsa_key_pair = try EcdsaKeyPair.init(key) };
     }
@@ -78,9 +77,8 @@ pub const CertKeyPair = struct {
         const bundle = try cert.fromFilePathAbsolute(allocator, io, cert_path);
         const key_file = try std.Io.Dir.openFileAbsolute(io, key_path, .{});
         defer key_file.close(io);
-        var rdr = key_file.reader(io, &.{});
 
-        const key = try PrivateKey.fromFile(allocator, &rdr.interface);
+        const key = try PrivateKey.fromFile(allocator, io, key_file);
 
         return .{ .bundle = bundle, .key = key, .ecdsa_key_pair = try EcdsaKeyPair.init(key) };
     }

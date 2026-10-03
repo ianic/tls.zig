@@ -229,13 +229,20 @@ pub const Element = struct {
         }
     };
 
-    pub const Error = error{ InvalidLength, EndOfStream, ReadFailed };
+    pub const Error = error{ InvalidLength, EndOfStream };
+
+    fn takeByte(reader: *std.Io.Reader) error{EndOfStream}!u8 {
+        return reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => error.EndOfStream,
+            error.ReadFailed => unreachable,
+        };
+    }
 
     pub fn init(bytes: []const u8, index: Index) Error!Element {
         var reader = std.Io.Reader.fixed(bytes[index..]);
 
-        const identifier = @as(Identifier, @bitCast(try reader.takeByte()));
-        const size_or_len_size = try reader.takeByte();
+        const identifier = @as(Identifier, @bitCast(try takeByte(&reader)));
+        const size_or_len_size = try takeByte(&reader);
 
         var start = index + 2;
         // short form between 0-127
@@ -250,7 +257,10 @@ pub const Element = struct {
         const len_size: u7 = @truncate(size_or_len_size);
         start += len_size;
         if (len_size > @sizeOf(Index)) return error.InvalidLength;
-        const len = try reader.takeVarInt(Index, .big, len_size);
+        const len = reader.takeVarInt(Index, .big, len_size) catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            error.ReadFailed => unreachable,
+        };
         if (len < 128) return error.InvalidLength; // should have used short form
 
         const end = std.math.add(Index, start, len) catch return error.InvalidLength;

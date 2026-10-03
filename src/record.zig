@@ -260,24 +260,30 @@ pub const Writer = struct {
         return w.inner.end;
     }
 
+    // `inner` is a fixed writer, so its only failure is a full buffer, and
+    // each of these reserves exactly what it goes on to write. Discharging
+    // that here keeps `WriteFailed` out of the error set of everything built
+    // on top, all the way up through the handshake, so a caller seeing it
+    // knows it came from the transport.
+
     pub fn byte(w: *Writer, b: u8) !void {
         try w.ensureCapacity(1);
-        try w.inner.writeByte(b);
+        w.inner.writeByte(b) catch unreachable;
     }
 
     pub fn slice(w: *Writer, bytes: []const u8) !void {
         try w.ensureCapacity(bytes.len);
-        try w.inner.writeAll(bytes);
+        w.inner.writeAll(bytes) catch unreachable;
     }
 
     pub fn int(w: *Writer, comptime T: type, value: anytype) !void {
         try w.ensureCapacity(@divExact(@typeInfo(T).int.bits, 8));
-        try w.inner.writeInt(T, @intCast(value), .big);
+        w.inner.writeInt(T, @intCast(value), .big) catch unreachable;
     }
 
     pub fn writableArray(w: *Writer, comptime len: usize) !*[len]u8 {
         try w.ensureCapacity(len);
-        return try w.inner.writableArray(len);
+        return w.inner.writableArray(len) catch unreachable;
     }
 
     pub fn enumValue(w: *Writer, value: anytype) !void {
@@ -326,7 +332,7 @@ pub const Writer = struct {
             const key = keys[i];
             try w.enumValue(ng);
             try w.int(u16, key.len);
-            try w.inner.writeAll(key);
+            try w.slice(key);
         }
     }
 
@@ -336,9 +342,9 @@ pub const Writer = struct {
         try w.enumValue(proto.Extension.server_name);
         try w.int(u16, host_len + 5); // byte length of extension payload
         try w.int(u16, host_len + 3); // server_name_list byte count
-        try w.inner.writeByte(0); // name type
+        try w.byte(0); // name type
         try w.int(u16, host_len);
-        try w.inner.writeAll(host);
+        try w.slice(host);
     }
 
     /// ALPN extension (RFC 7301)
@@ -368,7 +374,7 @@ pub const Writer = struct {
         try w.int(u16, identity.len + binder_len + 4 + 2 + 2);
         try w.int(u16, identity.len + 4 + 2);
         try w.int(u16, identity.len);
-        try w.inner.writeAll(identity);
+        try w.slice(identity);
         try w.int(u32, obfuscated_age);
     }
 
@@ -376,7 +382,7 @@ pub const Writer = struct {
     pub fn preSharedKeyBinder(w: *Writer, binder: []const u8) !void {
         try w.int(u16, binder.len + 1);
         try w.int(u8, binder.len);
-        try w.inner.writeAll(binder);
+        try w.slice(binder);
     }
 
     /// tls record
@@ -496,4 +502,21 @@ test "raiseAlert distinguishes the alerts that are not failures" {
         var d: Decoder = .init(.alert, &payload);
         try testing.expectError(c.expected, d.raiseAlert());
     }
+}
+
+test "a write too big for the buffer says so" {
+    var buf: [16]u8 = undefined;
+
+    var w: Writer = .init(&buf);
+    try testing.expectError(error.OutputBufferUndersize, w.serverName("a-host-far-longer-than-the-buffer"));
+
+    w = .init(&buf);
+    try testing.expectError(error.OutputBufferUndersize, w.preSharedKey("an-identity-longer-than-the-buffer", 0, 8));
+
+    w = .init(&buf);
+    try testing.expectError(error.OutputBufferUndersize, w.preSharedKeyBinder("a-binder-longer-than-the-buffer"));
+
+    w = .init(&buf);
+    const key: [32]u8 = @splat(0);
+    try testing.expectError(error.OutputBufferUndersize, w.keyShare(&.{.x25519}, &.{&key}));
 }
