@@ -654,15 +654,17 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             buf: []u8,
             rec: Record,
         ) !struct { proto.ContentType, []u8 } {
-            if (rec.payload.len < iv_len + mac_len + 1) return error.TlsDecryptError;
+            // rfc 5246 7.2.2: bad_record_mac is also the answer when a record
+            // "wasn't an even multiple of the block length, or its padding
+            // values, when checked, weren't correct". Every rejection below
+            // uses it, so a peer cannot tell a padding failure from a mac one.
+            if (rec.payload.len < iv_len + mac_len + 1) return error.TlsBadRecordMac;
 
             // --------- payload ------------
             // iv | ------ ciphertext -------
             // iv | cleartext | mac | padding
             const iv = rec.payload[0..iv_len];
             const ciphertext = rec.payload[iv_len..];
-            // rfc 5246 7.2.2: bad_record_mac is the alert for a ciphertext
-            // that "wasn't an even multiple of the block length".
             if (ciphertext.len % CBC.block_length != 0) return error.TlsBadRecordMac;
 
             if (buf.len < ciphertext.len + additional_data_len) return error.TlsCipherNoSpaceLeft;
@@ -671,11 +673,11 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             // ad | cleartext | mac | padding
             const plaintext = buf[additional_data_len..][0..ciphertext.len];
             // decrypt ciphertext -> plaintext
-            CBC.init(self.decrypt_key).decrypt(plaintext, ciphertext, iv[0..iv_len].*) catch return error.TlsDecryptError;
+            CBC.init(self.decrypt_key).decrypt(plaintext, ciphertext, iv[0..iv_len].*) catch return error.TlsBadRecordMac;
 
             // get padding len from last padding byte
             const padding_len = @as(usize, plaintext[plaintext.len - 1]) + 1;
-            if (plaintext.len < mac_len + padding_len) return error.TlsDecryptError;
+            if (plaintext.len < mac_len + padding_len) return error.TlsBadRecordMac;
             // split plaintext into cleartext and mac
             const cleartext_len = plaintext.len - mac_len - padding_len;
             const cleartext = plaintext[0..cleartext_len];
@@ -1108,4 +1110,38 @@ test "cbc rejects a ciphertext that is not a whole number of blocks" {
 
     var buf: [256]u8 = undefined;
     try testing.expectError(error.TlsBadRecordMac, server_cipher.decrypt(&buf, Record.init(&rec)));
+}
+
+test "cbc reports padding and mac failures alike" {
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    const rng = rng_impl.interface();
+    var key_material: [256]u8 = undefined;
+    testu.fill(&key_material);
+    var client_cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &key_material, .client, rng);
+
+    var rec_buf: [256]u8 = undefined;
+    const rec = try client_cipher.encrypt(&rec_buf, .application_data, "ping");
+
+    // Plaintext is 4 cleartext + 20 mac + 8 padding = 32 bytes, so the last
+    // byte -- the padding length -- sits in the second ciphertext block.
+    // Flipping bits in the block before it sets that byte to a chosen value
+    // and garbles the mac, so the only thing that varies between the two
+    // records below is whether the padding length parses.
+    const last_padding_byte = record.header_len + CbcAes128Sha1.iv_len + 15;
+    const original: u8 = 7;
+
+    var errors: [2]anyerror = undefined;
+    for ([_]u8{ 0xff, 0x00 }, &errors) |forged, *result| {
+        var tampered: [256]u8 = undefined;
+        @memcpy(tampered[0..rec.len], rec);
+        tampered[last_padding_byte] ^= original ^ forged;
+
+        var server_cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &key_material, .server, rng);
+        var buf: [256]u8 = undefined;
+        result.* = if (server_cipher.decrypt(&buf, Record.init(tampered[0..rec.len]))) |_| error.TlsUnexpectedMessage else |err| err;
+    }
+
+    // A peer must not be able to tell the two apart.
+    try testing.expectEqual(error.TlsBadRecordMac, errors[0]);
+    try testing.expectEqual(error.TlsBadRecordMac, errors[1]);
 }
