@@ -661,6 +661,9 @@ fn CbcType(comptime BlockCipher: type, comptime HashType: type) type {
             // iv | cleartext | mac | padding
             const iv = rec.payload[0..iv_len];
             const ciphertext = rec.payload[iv_len..];
+            // rfc 5246 7.2.2: bad_record_mac is the alert for a ciphertext
+            // that "wasn't an even multiple of the block length".
+            if (ciphertext.len % CBC.block_length != 0) return error.TlsBadRecordMac;
 
             if (buf.len < ciphertext.len + additional_data_len) return error.TlsCipherNoSpaceLeft;
             // ---------- buf ---------------
@@ -1088,4 +1091,21 @@ test testCiphers {
         try testing.expectEqualStrings(close_notify, cleartext);
         try testing.expectEqual(.alert, content_type);
     }
+}
+
+test "cbc rejects a ciphertext that is not a whole number of blocks" {
+    const rng_impl: std.Random.IoSource = .{ .io = testing.io };
+    var key_material: [256]u8 = undefined;
+    testu.fill(&key_material);
+    var server_cipher = try Cipher.initTls12(.ECDHE_RSA_WITH_AES_128_CBC_SHA, &key_material, .server, rng_impl.interface());
+
+    // Long enough to pass the minimum payload check, one byte short of a
+    // whole number of blocks after the iv.
+    const payload_len = CbcAes128Sha1.iv_len + 3 * 16 - 1;
+    var rec: [record.header_len + payload_len]u8 = undefined;
+    rec[0..record.header_len].* = record.header(.application_data, payload_len);
+    testu.fill(rec[record.header_len..]);
+
+    var buf: [256]u8 = undefined;
+    try testing.expectError(error.TlsBadRecordMac, server_cipher.decrypt(&buf, Record.init(&rec)));
 }
