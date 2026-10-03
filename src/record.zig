@@ -151,8 +151,13 @@ pub const Decoder = struct {
 
     pub fn raiseAlert(d: *Decoder) !void {
         if (d.payload.len < 2) return error.TlsUnexpectedMessage;
-        try proto.Alert.parse(try d.array(2)).toError();
-        return error.TlsAlertCloseNotify;
+        const alert = proto.Alert.parse(try d.array(2));
+        try alert.description.toError();
+        // toError only succeeds for the two alerts that are not failures.
+        return switch (alert.description) {
+            .user_canceled => error.TlsAlertUserCanceled,
+            else => error.TlsAlertCloseNotify,
+        };
     }
 };
 
@@ -475,4 +480,20 @@ pub fn handshakeHeader(handshake_type: proto.Handshake, payload_len: usize) [4]u
     ret[0] = @intFromEnum(handshake_type);
     std.mem.writeInt(u24, ret[1..4], @intCast(payload_len), .big);
     return ret;
+}
+
+test "raiseAlert distinguishes the alerts that are not failures" {
+    const cases = [_]struct { alert: proto.Alert, expected: anyerror }{
+        .{ .alert = .close_notify, .expected = error.TlsAlertCloseNotify },
+        .{ .alert = .user_canceled, .expected = error.TlsAlertUserCanceled },
+        .{ .alert = .handshake_failure, .expected = error.TlsAlertHandshakeFailure },
+    };
+    for (cases) |c| {
+        const payload = [2]u8{
+            @intFromEnum(proto.Alert.Level.fatal),
+            @intFromEnum(c.alert),
+        };
+        var d: Decoder = .init(.alert, &payload);
+        try testing.expectError(c.expected, d.raiseAlert());
+    }
 }
