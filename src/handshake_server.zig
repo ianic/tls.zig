@@ -50,6 +50,10 @@ pub const Options = struct {
     ///
     /// An EOF in the middle of a record is always an error, either way.
     strict_close_notify: bool = false,
+
+    /// Where the CertificateVerify signature is computed. Null computes it on
+    /// the thread running the handshake. See `Offload`.
+    offload: ?common.Offload = null,
 };
 
 pub const ClientAuth = struct {
@@ -216,6 +220,7 @@ pub const Handshake = struct {
                 .cert_key_pair = auth,
                 .transcript = &h.transcript,
                 .side = .server,
+                .offload = opt.offload,
             };
             { // Certificate
                 var hw = try w.writerAdvance(record.header_len);
