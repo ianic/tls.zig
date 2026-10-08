@@ -86,7 +86,8 @@ pub fn parseDer(buf: []const u8) !PrivateKey {
             const private_exponent = try der.Element.parse(buf, public_exponent.slice.end);
 
             const public_key = try rsa.PublicKey.fromBytes(content(buf, modulus), content(buf, public_exponent));
-            const secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, content(buf, private_exponent));
+            var secret_key = try rsa.SecretKey.fromBytes(public_key.modulus, content(buf, private_exponent));
+            secret_key.crt = rsaCrt(buf, private_exponent.slice.end, public_key);
             const key_pair = rsa.KeyPair{ .public = public_key, .secret = secret_key };
 
             return .{
@@ -163,6 +164,25 @@ fn ecdsaKey(bytes: []const u8, e: der.Element) [max_ecdsa_key_len]u8 {
 
 fn content(bytes: []const u8, e: der.Element) []const u8 {
     return bytes[e.slice.start..e.slice.end];
+}
+
+/// The five integers after the private exponent of an `RSAPrivateKey`
+/// (RFC 8017, appendix A.1.2), as the key's CRT form. Null if any of them is
+/// missing or does not fit the key, which leaves signing on `d` alone.
+fn rsaCrt(buf: []const u8, start: u32, public_key: rsa.PublicKey) ?rsa.Crt {
+    const prime1 = der.Element.parse(buf, start) catch return null;
+    const prime2 = der.Element.parse(buf, prime1.slice.end) catch return null;
+    const exponent1 = der.Element.parse(buf, prime2.slice.end) catch return null;
+    const exponent2 = der.Element.parse(buf, exponent1.slice.end) catch return null;
+    const coefficient = der.Element.parse(buf, exponent2.slice.end) catch return null;
+    return rsa.Crt.init(
+        public_key.modulus,
+        content(buf, prime1),
+        content(buf, prime2),
+        content(buf, exponent1),
+        content(buf, exponent2),
+        content(buf, coefficient),
+    );
 }
 
 const testing = std.testing;
@@ -316,4 +336,6 @@ test "parse rsa pem" {
         try kp.secret.private_exponent.toBytes(&bytes, .big);
         try testing.expectEqualSlices(u8, private_exponent, &bytes);
     }
+    // The primes and their exponents are read too, so signing takes the CRT path.
+    try testing.expect(kp.secret.crt != null);
 }
